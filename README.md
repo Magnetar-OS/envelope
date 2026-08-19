@@ -48,12 +48,13 @@ Envelope reads, threads, syncs, and sends. What works:
 - **`mailto:` links**, so Circle's "send a message" and Slate's attendee
   addresses land here.
 
-What does not work yet: **drafts**. A composer that is closed is discarded,
-because a Drafts folder is the right answer and does not exist yet — pretending
-to save would be worse, since the user would go looking for it. There is also no
-HTML composition, and that is a decision rather than a gap: the reader shows
-text, so an HTML composer would be writing in a format the application cannot
-display.
+- **Drafts**, kept on this device. Closing the composer saves; discarding is a
+  separate button that says so.
+
+What does not work yet: **HTML composition**, and that is a decision rather than
+a gap — the reader shows text, so an HTML composer would be writing in a format
+the application cannot display. **Drafts do not sync**, and the reason is in the
+next section.
 
 Also not here, in the order they are likely to matter: JMAP, native Gmail and
 Graph APIs, OpenPGP and S/MIME, and ranked search over a tantivy index. All four
@@ -82,6 +83,20 @@ A `mailto:` link may set `to`, `cc`, `subject`, and `body`. It may **not** set
 `bcc`, or `from`, or any other header: a page that can make your mail client
 silently blind-copy a third party on a message you then write and send is an
 attack, and "the field is visible in the composer" is not a defence.
+
+## Drafts are local
+
+Saved drafts live on this machine, under `$XDG_DATA_HOME/mail/<account>/`, and
+are not uploaded to your server's Drafts folder. The sidebar says so.
+
+The reason is that saving to the server means `APPEND`, and without the UIDPLUS
+extension the client is never told what UID the message was given — so the next
+sync pulls the draft back down as a message it cannot recognise as the one it
+just uploaded, and every edit leaves another copy. Doing it properly needs
+UIDPLUS where it exists, a `Message-ID` match where it does not, and a
+reconciliation pass for the servers that mangle both. That is worth building,
+and it is not worth shipping half of: a duplicated draft is worse than a local
+one.
 
 ## Display security
 

@@ -56,28 +56,45 @@ pub fn view(composer: &Composer) -> Element<'_, Message> {
     })
     .class(cosmic::theme::Button::Suggested);
 
+    // Nothing is actionable while a send is in flight: the outcome still has to
+    // land somewhere the user can see it, and a composer that vanished mid-send
+    // would take an "it may have been delivered" with it.
+    let idle = !composer.sending;
+
     column
         .push(
-            widget::row::with_capacity(2)
+            widget::row::with_capacity(4)
                 .spacing(spacing.space_xs)
-                // No discard while a send is in flight: the outcome still has to
-                // land somewhere the user can see it, and a composer that
-                // vanished mid-send takes an "it may have been delivered" with
-                // it.
-                .push(if composer.sending {
-                    widget::button::text(fl!("discard"))
-                } else {
-                    widget::button::text(fl!("discard")).on_press(Message::ComposeCancel)
-                })
+                .push(destructive_button(fl!("discard"), idle, Message::ComposeDiscard))
+                .push(button(fl!("save-draft"), idle, Message::ComposeCancel))
+                .push(widget::Space::new().width(Length::Fill))
                 // Greyed for the same reasons the send would fail, rather than
                 // letting the user press it and find out.
-                .push(if composer.sending || composer.problem().is_some() {
-                    send
-                } else {
+                .push(if idle && composer.problem().is_none() {
                     send.on_press(Message::ComposeSend)
+                } else {
+                    send
                 }),
         )
         .into()
+}
+
+fn destructive_button(label: String, enabled: bool, message: Message) -> Element<'static, Message> {
+    let button = widget::button::text(label).class(cosmic::theme::Button::Destructive);
+    if enabled {
+        button.on_press(message).into()
+    } else {
+        button.into()
+    }
+}
+
+fn button(label: String, enabled: bool, message: Message) -> Element<'static, Message> {
+    let button = widget::button::text(label);
+    if enabled {
+        button.on_press(message).into()
+    } else {
+        button.into()
+    }
 }
 
 fn field(

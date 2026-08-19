@@ -19,6 +19,11 @@ pub struct Sidebar<'a> {
     pub folders: &'a [Folder],
     pub selected_folder: Option<usize>,
     pub unread: &'a std::collections::HashMap<String, usize>,
+    /// Local drafts. Listed above the server's folders and labelled, because
+    /// they are on this device and nowhere else — presenting them as just
+    /// another folder would imply they sync.
+    pub drafts: usize,
+    pub showing_drafts: bool,
 }
 
 impl<'a> Sidebar<'a> {
@@ -29,6 +34,7 @@ impl<'a> Sidebar<'a> {
         widget::column::with_capacity(3)
             .spacing(spacing.space_s)
             .push(self.account_picker())
+            .push(self.drafts_row())
             .push(self.folder_list())
             .push(widget::Space::new().height(Length::Fill))
             .padding(GUTTER)
@@ -67,6 +73,28 @@ impl<'a> Sidebar<'a> {
             );
         }
         column.into()
+    }
+
+    fn drafts_row(&self) -> Element<'a, Message> {
+        if self.drafts == 0 && !self.showing_drafts {
+            return widget::Space::new().height(Length::Fixed(0.0)).into();
+        }
+        let spacing = cosmic::theme::spacing();
+        let row = widget::row::with_capacity(2)
+            .align_y(cosmic::iced::Alignment::Center)
+            .spacing(spacing.space_xxs)
+            .push(widget::text::body(fl!("drafts")).width(Length::Fill))
+            .push(widget::text::caption(self.drafts.to_string()));
+
+        widget::button::custom(row)
+            .width(Length::Fill)
+            .class(if self.showing_drafts {
+                cosmic::theme::Button::Suggested
+            } else {
+                cosmic::theme::Button::Text
+            })
+            .on_press(Message::ShowDrafts)
+            .into()
     }
 
     fn folder_list(&self) -> Element<'a, Message> {

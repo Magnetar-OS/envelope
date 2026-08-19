@@ -331,3 +331,97 @@ fn the_index_is_a_cache_and_deleting_it_costs_only_a_rescan() {
     let after = mail::conversations(&connection, &inbox()).expect("read again");
     assert_eq!(after, before, "the mailbox did not survive losing its cache");
 }
+
+#[test]
+fn a_draft_survives_being_closed_and_reopened() {
+    // The whole reason drafts exist: closing the composer must not lose what
+    // was typed.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let connection = connection(dir.path());
+
+    let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
+        name: Some("Me".into()),
+        address: "me@example.com".into(),
+    });
+    draft.to.push(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "ada@example.com".into(),
+    });
+    draft.subject = "Half-written".into();
+    draft.body = "This is as far as I got.".into();
+
+    let id = mail::save_draft(&connection, None, &draft).expect("save");
+    let listed = mail::list_drafts(&connection).expect("list");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].subject, "Half-written");
+
+    let reopened = mail::load_draft(&connection, &id)
+        .expect("load")
+        .expect("the draft is still there");
+    assert_eq!(reopened.subject, "Half-written");
+    assert_eq!(reopened.body.trim(), "This is as far as I got.");
+    assert_eq!(reopened.to[0].address, "ada@example.com");
+}
+
+#[test]
+fn re_saving_a_draft_replaces_it_rather_than_leaving_a_trail() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let connection = connection(dir.path());
+
+    let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "me@example.com".into(),
+    });
+    draft.subject = "First".into();
+
+    let id = mail::save_draft(&connection, None, &draft).expect("save");
+    draft.subject = "Second".into();
+    let same = mail::save_draft(&connection, Some(&id), &draft).expect("re-save");
+
+    assert_eq!(same, id, "re-saving minted a new id");
+    let listed = mail::list_drafts(&connection).expect("list");
+    assert_eq!(listed.len(), 1, "every edit left a file: {listed:?}");
+    assert_eq!(listed[0].subject, "Second");
+}
+
+#[test]
+fn deleting_a_draft_removes_it_and_doing_so_twice_is_fine() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let connection = connection(dir.path());
+    let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "me@example.com".into(),
+    });
+    draft.subject = "Gone".into();
+
+    let id = mail::save_draft(&connection, None, &draft).expect("save");
+    mail::delete_draft(&connection, &id).expect("delete");
+    mail::delete_draft(&connection, &id).expect("a retried send must not fail here");
+    assert!(mail::list_drafts(&connection).expect("list").is_empty());
+}
+
+#[test]
+fn drafts_do_not_appear_as_a_mailbox_to_anything_reading_the_maildirs() {
+    // A sync engine that adopted them would try to give them UIDs.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let connection = connection(root);
+    let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "me@example.com".into(),
+    });
+    draft.subject = "Not a mailbox".into();
+    mail::save_draft(&connection, None, &draft).expect("save");
+
+    let account_root = root.join(ACCOUNT);
+    let visible: Vec<String> = std::fs::read_dir(&account_root)
+        .expect("read the account root")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with('.'))
+        .collect();
+    assert!(
+        !visible.iter().any(|name| name.contains("draft")),
+        "the draft store is visible as a mailbox: {visible:?}"
+    );
+}

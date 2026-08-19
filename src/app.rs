@@ -62,6 +62,9 @@ pub struct AppModel {
 
     mail_form: Option<MailForm>,
     composer: Option<Composer>,
+    /// Local drafts for the selected account, newest first.
+    drafts: Vec<cosmic_pim_mail::drafts::Saved>,
+    showing_drafts: bool,
 }
 
 /// How often the mailbox is checked.
@@ -89,6 +92,9 @@ pub struct Composer {
     /// The message being answered, so it can be marked as answered once the
     /// reply is actually away.
     pub answering: Option<(Folder, u32)>,
+    /// Set once this has been saved, so re-saving replaces rather than
+    /// accumulating a file per edit.
+    pub draft_id: Option<String>,
     pub sending: bool,
     pub error: Option<String>,
 }
@@ -101,9 +107,22 @@ impl Composer {
             bcc: join(&draft.bcc),
             draft,
             answering,
+            draft_id: None,
             sending: false,
             error: None,
         }
+    }
+
+    /// Is there anything here worth keeping?
+    ///
+    /// An empty composer opened and closed again must not leave a file behind
+    /// — a Drafts list full of blanks is how the feature stops being useful.
+    fn is_worth_saving(&self) -> bool {
+        !self.draft.subject.trim().is_empty()
+            || !self.draft.body.trim().is_empty()
+            || !self.to.trim().is_empty()
+            || !self.cc.trim().is_empty()
+            || !self.bcc.trim().is_empty()
     }
 
     /// The draft with the address fields as currently typed.
@@ -267,7 +286,14 @@ pub enum Message {
     ComposeBccChanged(String),
     ComposeSubjectChanged(String),
     ComposeBodyChanged(String),
+    /// Close and keep what was typed.
     ComposeCancel,
+    /// Close and throw it away — the explicit choice, not the default.
+    ComposeDiscard,
+    DraftsLoaded(Vec<cosmic_pim_mail::drafts::Saved>),
+    ShowDrafts,
+    DraftOpened(String),
+    DraftDeleted(String),
     ComposeSend,
     ComposeSent(Box<crate::mail::Sent>),
 }
@@ -345,6 +371,8 @@ impl cosmic::Application for AppModel {
             reader_error: None,
             mail_form: None,
             composer: None,
+            drafts: Vec::new(),
+            showing_drafts: false,
         };
         model.rebuild_connection();
 
@@ -359,8 +387,9 @@ impl cosmic::Application for AppModel {
         // afterwards, in that order: the mailbox is already there, so there is
         // no reason for the first frame to wait on a network round trip.
         let cached = model.load_cached_folders();
+        let drafts = model.reload_drafts();
         let first_sync = model.sync_now();
-        (model, Task::batch([cached, first_sync]))
+        (model, Task::batch([cached, drafts, first_sync]))
     }
 
     fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
@@ -398,6 +427,8 @@ impl cosmic::Application for AppModel {
             folders: &self.folders,
             selected_folder: self.selected_folder,
             unread: &self.unread,
+            drafts: self.drafts.len(),
+            showing_drafts: self.showing_drafts,
         }
         .view();
         Some(sidebar.map(cosmic::Action::App))
@@ -434,13 +465,17 @@ impl cosmic::Application for AppModel {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        let list = crate::ui::list::List {
-            conversations: &self.conversations,
-            selected: self.selected_conversation,
-            loading: self.loading_conversations,
-            error: self.list_error.as_deref(),
-        }
-        .view();
+        let list = if self.showing_drafts {
+            crate::ui::list::drafts(&self.drafts)
+        } else {
+            crate::ui::list::List {
+                conversations: &self.conversations,
+                selected: self.selected_conversation,
+                loading: self.loading_conversations,
+                error: self.list_error.as_deref(),
+            }
+            .view()
+        };
 
         // The composer takes the reader's half of the window rather than a
         // dialog or a second window. Writing a reply is reading the thread with
@@ -500,7 +535,7 @@ impl cosmic::Application for AppModel {
                 self.selected_account = Some(id);
                 self.clear_mailbox_state();
                 self.rebuild_connection();
-                self.load_cached_folders()
+                Task::batch([self.load_cached_folders(), self.reload_drafts()])
             }
 
             Message::SyncNow => self.sync_now(),
@@ -545,6 +580,7 @@ impl cosmic::Application for AppModel {
             }
 
             Message::FolderSelected(index) => {
+                self.showing_drafts = false;
                 if self.selected_folder == Some(index) {
                     return Task::none();
                 }
@@ -699,12 +735,29 @@ impl cosmic::Application for AppModel {
                 self.with_composer(|c| c.draft.subject = text)
             }
             Message::ComposeBodyChanged(text) => self.with_composer(|c| c.draft.body = text),
-            Message::ComposeCancel => {
-                // Discarded outright. A drafts folder is the right answer and
-                // it does not exist yet; pretending to save would be worse than
-                // this, because the user would go looking for it.
-                self.composer = None;
+            Message::ComposeCancel => self.close_composer(true),
+            Message::ComposeDiscard => self.close_composer(false),
+            Message::DraftsLoaded(drafts) => {
+                self.drafts = drafts;
                 Task::none()
+            }
+            Message::ShowDrafts => {
+                self.showing_drafts = !self.showing_drafts;
+                if self.showing_drafts {
+                    self.selected_conversation = None;
+                    self.opened = None;
+                    self.reader_error = None;
+                }
+                Task::none()
+            }
+            Message::DraftOpened(id) => self.open_draft(&id),
+            Message::DraftDeleted(id) => {
+                if let Some(connection) = self.connection.as_ref()
+                    && let Err(why) = mail::delete_draft(connection, &id)
+                {
+                    self.status = Some(why);
+                }
+                self.reload_drafts()
             }
             Message::ComposeSend => self.send_draft(),
             Message::ComposeSent(sent) => {
@@ -970,6 +1023,84 @@ impl AppModel {
         Task::none()
     }
 
+    /// Closes the composer, keeping what was typed unless told not to.
+    ///
+    /// Keeping is the default because the cost of the two mistakes is not
+    /// symmetric: a stray draft is a line in a list, and a discarded one is
+    /// gone. Discarding is a separate button that says what it does.
+    fn close_composer(&mut self, keep: bool) -> Task<Message> {
+        let Some(composer) = self.composer.take() else {
+            return Task::none();
+        };
+        let Some(connection) = self.connection.as_ref() else {
+            return Task::none();
+        };
+
+        if !keep {
+            if let Some(id) = composer.draft_id.as_deref()
+                && let Err(why) = mail::delete_draft(connection, id)
+            {
+                self.status = Some(why);
+            }
+            return self.reload_drafts();
+        }
+
+        if !composer.is_worth_saving() {
+            return Task::none();
+        }
+        match mail::save_draft(
+            connection,
+            composer.draft_id.as_deref(),
+            &composer.resolved(),
+        ) {
+            Ok(_) => self.reload_drafts(),
+            Err(why) => {
+                // The composer is already closed, so this cannot be shown
+                // beside the text it lost. Saying so in the status line is the
+                // least bad thing available, and it is why saving is also
+                // possible before closing.
+                self.status = Some(fl!("draft-not-saved", reason = why));
+                Task::none()
+            }
+        }
+    }
+
+    fn reload_drafts(&mut self) -> Task<Message> {
+        let Some(connection) = self.connection.clone() else {
+            self.drafts.clear();
+            return Task::none();
+        };
+        cosmic::task::future(async move {
+            let drafts = tokio::task::spawn_blocking(move || mail::list_drafts(&connection))
+                .await
+                .unwrap_or_else(|why| Err(why.to_string()))
+                .unwrap_or_else(|why| {
+                    tracing::warn!(why, "could not list drafts");
+                    Vec::new()
+                });
+            Message::DraftsLoaded(drafts)
+        })
+    }
+
+    /// Reopens a saved draft in the composer.
+    fn open_draft(&mut self, id: &str) -> Task<Message> {
+        let Some(connection) = self.connection.as_ref() else {
+            return Task::none();
+        };
+        match mail::load_draft(connection, id) {
+            Ok(Some(draft)) => {
+                let mut composer = Composer::new(draft, None);
+                // Carried, so re-saving replaces this draft rather than
+                // leaving the old one beside a new one.
+                composer.draft_id = Some(id.to_owned());
+                self.composer = Some(composer);
+            }
+            Ok(None) => self.status = Some(fl!("draft-gone")),
+            Err(why) => self.status = Some(why),
+        }
+        Task::none()
+    }
+
     fn with_composer(&mut self, edit: impl FnOnce(&mut Composer)) -> Task<Message> {
         if let Some(composer) = self.composer.as_mut() {
             edit(composer);
@@ -997,10 +1128,11 @@ impl AppModel {
 
         let folders = self.folders.clone();
         let answering = composer.answering.clone();
+        let draft_id = composer.draft_id.clone();
 
         cosmic::task::future(async move {
             let sent = tokio::task::spawn_blocking(move || {
-                mail::send(&connection, &draft, &folders, answering)
+                mail::send(&connection, &draft, &folders, answering, draft_id.as_deref())
             })
             .await
             .unwrap_or_else(|why| mail::Sent::Uncertain(why.to_string()));

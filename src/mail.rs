@@ -15,6 +15,7 @@ use chrono::Utc;
 use cosmic_pim_accounts::{Account, AccountStore, Transport};
 use cosmic_pim_mail::folder::{Folder, SpecialUse};
 use cosmic_pim_mail::compose::Draft;
+use cosmic_pim_mail::drafts::{self, Drafts, Saved};
 use cosmic_pim_mail::imap::{self, Endpoint, Security, Session, SyncOptions};
 use cosmic_pim_mail::smtp::{self, Outcome, SmtpEndpoint};
 use cosmic_pim_mail::index::{self, Index};
@@ -218,6 +219,53 @@ pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
     Ok(report)
 }
 
+/// This account's local drafts.
+///
+/// Local, and Envelope says so in the sidebar. Saving to the server's Drafts
+/// folder means APPEND, and without UIDPLUS the next sync pulls the draft back
+/// down as a message the client cannot recognise as the one it just uploaded —
+/// so every edit leaves another copy. See `cosmic_pim_mail::drafts` for the
+/// whole argument; the short version is that a duplicated draft is worse than a
+/// local one.
+pub fn drafts(connection: &Connection) -> Result<Drafts, String> {
+    Drafts::open(connection.root.join(&connection.account_id)).map_err(|why| why.to_string())
+}
+
+/// Saves a draft, minting an id if it does not have one yet.
+pub fn save_draft(
+    connection: &Connection,
+    id: Option<&str>,
+    draft: &Draft,
+) -> Result<String, String> {
+    let store = drafts(connection)?;
+    let id = id
+        .filter(|id| drafts::is_valid_id(id))
+        .map_or_else(|| drafts::new_id(now_ms()), ToOwned::to_owned);
+    store
+        .save(&id, draft, now_ms())
+        .map_err(|why| why.to_string())?;
+    Ok(id)
+}
+
+/// Every saved draft, newest first.
+pub fn list_drafts(connection: &Connection) -> Result<Vec<Saved>, String> {
+    drafts(connection)?.list().map_err(|why| why.to_string())
+}
+
+/// Reopens one draft for editing.
+pub fn load_draft(connection: &Connection, id: &str) -> Result<Option<Draft>, String> {
+    let Some(identity) = connection.submission.as_ref().map(|s| s.identity.clone()) else {
+        return Err("this account has no From address".into());
+    };
+    drafts(connection)?
+        .load(id, identity)
+        .map_err(|why| why.to_string())
+}
+
+pub fn delete_draft(connection: &Connection, id: &str) -> Result<(), String> {
+    drafts(connection)?.delete(id).map_err(|why| why.to_string())
+}
+
 /// Drops one mailbox's index rows.
 fn forget_index(connection: &Connection, mailbox: &str) -> Result<(), String> {
     let mut index = Index::open(&connection.index_path).map_err(|why| why.to_string())?;
@@ -391,6 +439,7 @@ pub fn send(
     draft: &Draft,
     folders: &[Folder],
     answering: Option<(Folder, u32)>,
+    draft_id: Option<&str>,
 ) -> Sent {
     let Some(submission) = connection.submission.as_ref() else {
         return Sent::Failed("this account has no From address".into());
@@ -411,6 +460,14 @@ pub fn send(
         })
     {
         tracing::warn!(%why, "the message was sent but not marked as answered");
+    }
+
+    // Only once it is away. A draft deleted before the send would be lost by
+    // a failure, which is the one thing the draft was there to prevent.
+    if let Some(id) = draft_id
+        && let Err(why) = delete_draft(connection, id)
+    {
+        tracing::warn!(%why, "the message was sent but its draft was left behind");
     }
 
     let filed = file_to_sent(connection, folders, &filed_bytes);

@@ -121,3 +121,74 @@ impl<'a> List<'a> {
             .into()
     }
 }
+
+/// The saved-draft list, in the same column the conversations use.
+///
+/// A separate function rather than a mode on [`List`]: a draft has no sender,
+/// no flags, and no thread, so every field the conversation row shows would be
+/// empty or invented.
+pub fn drafts(saved: &[cosmic_pim_mail::drafts::Saved]) -> Element<'_, Message> {
+    let spacing = cosmic::theme::spacing();
+
+    if saved.is_empty() {
+        return widget::column::with_capacity(2)
+            .spacing(spacing.space_xxs)
+            .push(widget::text::body(fl!("no-drafts")))
+            .push(widget::text::caption(fl!("drafts-are-local")))
+            .apply(widget::container)
+            .padding(spacing.space_m)
+            .into();
+    }
+
+    let mut column = widget::column::with_capacity(saved.len() + 1)
+        .spacing(spacing.space_xxxs)
+        .push(
+            widget::text::caption(fl!("drafts-are-local"))
+                .apply(widget::container)
+                .padding(spacing.space_xxs),
+        );
+
+    for draft in saved {
+        let subject = if draft.subject.trim().is_empty() {
+            fl!("draft-no-subject")
+        } else {
+            draft.subject.clone()
+        };
+
+        let body = widget::column::with_capacity(2)
+            .spacing(spacing.space_xxxs)
+            .push(
+                widget::row::with_capacity(2)
+                    .align_y(Alignment::Center)
+                    .spacing(spacing.space_xxs)
+                    .push(widget::text::body(subject).width(Length::Fill))
+                    .push(widget::text::caption(crate::ui::relative_date_ms(
+                        draft.saved_ms,
+                    ))),
+            )
+            .push(widget::text::caption(draft.to.clone()));
+
+        column = column.push(
+            widget::row::with_capacity(2)
+                .align_y(Alignment::Center)
+                .spacing(spacing.space_xxs)
+                .push(
+                    widget::button::custom(body)
+                        .width(Length::Fill)
+                        .padding(spacing.space_xs)
+                        .class(cosmic::theme::Button::Text)
+                        .on_press(Message::DraftOpened(draft.id.clone())),
+                )
+                .push(
+                    widget::button::text(fl!("delete"))
+                        .class(cosmic::theme::Button::Destructive)
+                        .on_press(Message::DraftDeleted(draft.id.clone())),
+                ),
+        );
+    }
+
+    widget::scrollable(column.padding(spacing.space_xxs))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
