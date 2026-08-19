@@ -425,3 +425,93 @@ fn drafts_do_not_appear_as_a_mailbox_to_anything_reading_the_maildirs() {
         "the draft store is visible as a mailbox: {visible:?}"
     );
 }
+
+#[test]
+fn a_search_finds_messages_by_sender_and_subject_across_folders() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    deliver(
+        root,
+        &[
+            (
+                1,
+                &message("a@x", "", "Invoice 42 overdue", "Ada <ada@example.com>", "Mon, 3 Feb 2025 09:00:00 +0000", "Please pay."),
+                Flags::default(),
+            ),
+            (
+                2,
+                &message("b@x", "", "Release plan", "Bob <bob@example.net>", "Mon, 3 Feb 2025 10:00:00 +0000", "Draft attached."),
+                Flags { seen: true, ..Flags::default() },
+            ),
+        ],
+    );
+
+    let connection = connection(root);
+    // Reading the folder is what populates the index.
+    mail::conversations(&connection, &inbox()).expect("read");
+    let folders = [inbox()];
+
+    let hits = mail::search(&connection, &folders, "invoice", 50).expect("search");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].subject, "Invoice 42 overdue");
+    assert_eq!(hits[0].mailbox, "INBOX", "a hit must say where it is");
+
+    assert_eq!(
+        mail::search(&connection, &folders, "from:bob", 50).expect("search").len(),
+        1
+    );
+    assert!(
+        mail::search(&connection, &folders, "from:ada release", 50)
+            .expect("search")
+            .is_empty(),
+        "two terms behaved as OR"
+    );
+}
+
+#[test]
+fn flag_filters_are_applied_against_the_maildir_not_the_index() {
+    // Flags are not cached, so `is:unread` has to be answered from the store.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    deliver(
+        root,
+        &[
+            (1, &message("a@x", "", "Report one", "a@x", "Mon, 3 Feb 2025 09:00:00 +0000", "x"), Flags::default()),
+            (2, &message("b@x", "", "Report two", "b@x", "Mon, 3 Feb 2025 10:00:00 +0000", "x"), Flags { seen: true, ..Flags::default() }),
+        ],
+    );
+
+    let connection = connection(root);
+    mail::conversations(&connection, &inbox()).expect("read");
+    let folders = [inbox()];
+
+    assert_eq!(mail::search(&connection, &folders, "report", 50).expect("search").len(), 2);
+    let unread = mail::search(&connection, &folders, "report is:unread", 50).expect("search");
+    assert_eq!(unread.len(), 1);
+    assert_eq!(unread[0].subject, "Report one");
+
+    // And it tracks the store rather than a snapshot.
+    mail::set_flags(&connection, &inbox(), &[1], |flags| Flags { seen: true, ..flags })
+        .expect("mark read");
+    assert!(
+        mail::search(&connection, &folders, "report is:unread", 50)
+            .expect("search")
+            .is_empty(),
+        "the filter used a stale read mark"
+    );
+}
+
+#[test]
+fn an_empty_search_returns_nothing_rather_than_the_mailbox() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    deliver(
+        root,
+        &[(1, &message("a@x", "", "Anything", "a@x", "Mon, 3 Feb 2025 09:00:00 +0000", "x"), Flags::default())],
+    );
+    let connection = connection(root);
+    mail::conversations(&connection, &inbox()).expect("read");
+
+    assert!(mail::search(&connection, &[inbox()], "", 50).expect("search").is_empty());
+    assert!(mail::search(&connection, &[inbox()], "   ", 50).expect("search").is_empty());
+}

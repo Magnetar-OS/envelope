@@ -65,6 +65,11 @@ pub struct AppModel {
     /// Local drafts for the selected account, newest first.
     drafts: Vec<cosmic_pim_mail::drafts::Saved>,
     showing_drafts: bool,
+
+    /// What is in the search box. Empty means the box is closed.
+    search: String,
+    results: Vec<cosmic_pim_mail::Hit>,
+    searching: bool,
 }
 
 /// How often the mailbox is checked.
@@ -76,6 +81,12 @@ pub struct AppModel {
 /// a flag change made offline reaches the server on the next tick, not the next
 /// time somebody presses a button.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How many search results are shown.
+///
+/// A cap rather than paging: somebody who gets 500 hits needs a better query,
+/// not a second page, and the honest answer to "there are more" is to say so.
+const SEARCH_LIMIT: usize = 200;
 
 /// A message being written.
 ///
@@ -292,6 +303,11 @@ pub enum Message {
     ComposeDiscard,
     DraftsLoaded(Vec<cosmic_pim_mail::drafts::Saved>),
     ShowDrafts,
+    SearchChanged(String),
+    SearchFinished(Vec<cosmic_pim_mail::Hit>),
+    SearchCleared,
+    /// Open a search hit, which may be in a folder other than the current one.
+    HitOpened(usize),
     DraftOpened(String),
     DraftDeleted(String),
     ComposeSend,
@@ -373,6 +389,9 @@ impl cosmic::Application for AppModel {
             composer: None,
             drafts: Vec::new(),
             showing_drafts: false,
+            search: String::new(),
+            results: Vec::new(),
+            searching: false,
         };
         model.rebuild_connection();
 
@@ -390,6 +409,14 @@ impl cosmic::Application for AppModel {
         let drafts = model.reload_drafts();
         let first_sync = model.sync_now();
         (model, Task::batch([cached, drafts, first_sync]))
+    }
+
+    fn header_end(&self) -> Vec<Element<'_, Self::Message>> {
+        let search = widget::text_input(fl!("search"), &self.search)
+            .on_input(Message::SearchChanged)
+            .on_clear(Message::SearchCleared)
+            .width(Length::Fixed(260.0));
+        vec![search.into()]
     }
 
     fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
@@ -465,7 +492,9 @@ impl cosmic::Application for AppModel {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        let list = if self.showing_drafts {
+        let list = if self.is_searching() {
+            crate::ui::list::results(&self.results, &self.folders, self.searching, SEARCH_LIMIT)
+        } else if self.showing_drafts {
             crate::ui::list::drafts(&self.drafts)
         } else {
             crate::ui::list::List {
@@ -750,6 +779,22 @@ impl cosmic::Application for AppModel {
                 }
                 Task::none()
             }
+            Message::SearchChanged(text) => {
+                self.search = text;
+                self.run_search()
+            }
+            Message::SearchFinished(results) => {
+                self.searching = false;
+                self.results = results;
+                Task::none()
+            }
+            Message::SearchCleared => {
+                self.search.clear();
+                self.results.clear();
+                Task::none()
+            }
+            Message::HitOpened(index) => self.open_hit(index),
+
             Message::DraftOpened(id) => self.open_draft(&id),
             Message::DraftDeleted(id) => {
                 if let Some(connection) = self.connection.as_ref()
@@ -1063,6 +1108,77 @@ impl AppModel {
                 Task::none()
             }
         }
+    }
+
+    fn is_searching(&self) -> bool {
+        !self.search.trim().is_empty()
+    }
+
+    fn run_search(&mut self) -> Task<Message> {
+        let (Some(connection), true) = (self.connection.clone(), self.is_searching()) else {
+            self.results.clear();
+            self.searching = false;
+            return Task::none();
+        };
+        self.searching = true;
+        let folders = self.folders.clone();
+        let input = self.search.clone();
+
+        cosmic::task::future(async move {
+            let results = tokio::task::spawn_blocking(move || {
+                mail::search(&connection, &folders, &input, SEARCH_LIMIT)
+            })
+            .await
+            .unwrap_or_else(|why| Err(why.to_string()))
+            .unwrap_or_else(|why| {
+                tracing::warn!(why, "search failed");
+                Vec::new()
+            });
+            Message::SearchFinished(results)
+        })
+    }
+
+    /// Opens a search hit, switching folders if it is in another one.
+    ///
+    /// Switching is the point: a search that can only open what is already in
+    /// front of you is a filter, not a search.
+    fn open_hit(&mut self, index: usize) -> Task<Message> {
+        let Some(hit) = self.results.get(index).cloned() else {
+            return Task::none();
+        };
+        let Some(folder) = self
+            .folders
+            .iter()
+            .position(|folder| folder.wire_name == hit.mailbox)
+        else {
+            self.status = Some(fl!("hit-folder-gone"));
+            return Task::none();
+        };
+
+        self.showing_drafts = false;
+        self.selected_folder = Some(folder);
+        self.reader_error = None;
+
+        let (Some(connection), Some(folder)) =
+            (self.connection.clone(), self.current_folder().cloned())
+        else {
+            return Task::none();
+        };
+        let uid = hit.uid;
+
+        // The list behind the results is reloaded too, so leaving the search
+        // lands in the folder the message is in rather than the one that was
+        // showing when the search started.
+        Task::batch([
+            self.reload_conversations(),
+            cosmic::task::future(async move {
+                let result =
+                    tokio::task::spawn_blocking(move || mail::open(&connection, &folder, uid))
+                        .await
+                        .unwrap_or_else(|why| Err(why.to_string()));
+                Message::MessageOpened(Box::new(result))
+            }),
+        ])
     }
 
     fn reload_drafts(&mut self) -> Task<Message> {

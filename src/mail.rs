@@ -11,6 +11,8 @@
 
 use std::path::PathBuf;
 
+use std::collections::{BTreeMap, HashMap};
+
 use chrono::Utc;
 use cosmic_pim_accounts::{Account, AccountStore, Transport};
 use cosmic_pim_mail::folder::{Folder, SpecialUse};
@@ -18,7 +20,7 @@ use cosmic_pim_mail::compose::Draft;
 use cosmic_pim_mail::drafts::{self, Drafts, Saved};
 use cosmic_pim_mail::imap::{self, Endpoint, Security, Session, SyncOptions};
 use cosmic_pim_mail::smtp::{self, Outcome, SmtpEndpoint};
-use cosmic_pim_mail::index::{self, Index};
+use cosmic_pim_mail::index::{self, Hit, Index};
 use cosmic_pim_mail::maildir::{self, MaildirStore};
 use cosmic_pim_mail::model::{Flags, Mailbox, Message};
 use cosmic_pim_mail::push::{PushOp, PushQueue};
@@ -264,6 +266,61 @@ pub fn load_draft(connection: &Connection, id: &str) -> Result<Option<Draft>, St
 
 pub fn delete_draft(connection: &Connection, id: &str) -> Result<(), String> {
     drafts(connection)?.delete(id).map_err(|why| why.to_string())
+}
+
+/// Searches the account, applying the flag filters the index cannot.
+///
+/// The index answers the text half in SQL. Flags live in the store — they change
+/// constantly and a UID's bytes never do, so caching them would mean a cache
+/// write per read mark — which means `is:unread` and `is:starred` are applied
+/// here, against the maildirs the hits actually came from.
+pub fn search(
+    connection: &Connection,
+    folders: &[Folder],
+    input: &str,
+    limit: usize,
+) -> Result<Vec<Hit>, String> {
+    let query = cosmic_pim_mail::search::parse(input);
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let index = Index::open(&connection.index_path).map_err(|why| why.to_string())?;
+    let hits = index
+        .search(&connection.account_id, None, &query, limit)
+        .map_err(|why| why.to_string())?;
+
+    if !query.unread && !query.starred {
+        return Ok(hits);
+    }
+
+    // Only the mailboxes the hits are actually in get opened, and each one only
+    // once: a flag filter must not cost a walk of every folder on the server.
+    let mut flags: HashMap<String, BTreeMap<u32, Flags>> = HashMap::new();
+    let mut kept = Vec::with_capacity(hits.len());
+    for hit in hits {
+        let entry = match flags.get(&hit.mailbox) {
+            Some(entry) => entry,
+            None => {
+                let Some(folder) = folders.iter().find(|f| f.wire_name == hit.mailbox) else {
+                    // A mailbox the server no longer lists. The index will drop
+                    // it on the next sync; until then it cannot be filtered.
+                    continue;
+                };
+                let loaded = MaildirStore::open(connection.mailbox_path(folder))
+                    .and_then(|store| store.state())
+                    .map(|state| state.entries)
+                    .unwrap_or_default();
+                flags.entry(hit.mailbox.clone()).or_insert(loaded)
+            }
+        };
+        let hit_flags = entry.get(&hit.uid).copied().unwrap_or_default();
+        if (query.unread && hit_flags.seen) || (query.starred && !hit_flags.flagged) {
+            continue;
+        }
+        kept.push(hit);
+    }
+    Ok(kept)
 }
 
 /// Drops one mailbox's index rows.

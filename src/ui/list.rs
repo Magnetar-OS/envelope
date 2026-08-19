@@ -192,3 +192,90 @@ pub fn drafts(saved: &[cosmic_pim_mail::drafts::Saved]) -> Element<'_, Message> 
         .height(Length::Fill)
         .into()
 }
+
+/// The search results, in the same column the conversations use.
+///
+/// Flat, not threaded. A search result is "the message I am looking for", and
+/// grouping it back into its conversation buries the hit among its siblings —
+/// which is why every mail client that threads its inbox shows a flat list here.
+pub fn results<'a>(
+    hits: &'a [cosmic_pim_mail::Hit],
+    folders: &'a [cosmic_pim_mail::Folder],
+    searching: bool,
+    limit: usize,
+) -> Element<'a, Message> {
+    let spacing = cosmic::theme::spacing();
+
+    if hits.is_empty() {
+        let text = if searching {
+            fl!("searching")
+        } else {
+            fl!("no-results")
+        };
+        return widget::column::with_capacity(2)
+            .spacing(spacing.space_xxs)
+            .push(widget::text::body(text))
+            .push(
+                widget::text::caption(fl!("search-hint"))
+                    .wrapping(cosmic::iced::core::text::Wrapping::Word),
+            )
+            .apply(widget::container)
+            .padding(spacing.space_m)
+            .into();
+    }
+
+    let mut column = widget::column::with_capacity(hits.len() + 1).spacing(spacing.space_xxxs);
+
+    for (index, hit) in hits.iter().enumerate() {
+        // The folder is half of what the user wanted to know: a search that
+        // crosses folders has to say where it landed.
+        let folder = folders
+            .iter()
+            .find(|folder| folder.wire_name == hit.mailbox)
+            .map_or(hit.mailbox.as_str(), |folder| folder.leaf_name());
+
+        let mut heading = widget::row::with_capacity(3)
+            .align_y(Alignment::Center)
+            .spacing(spacing.space_xxs)
+            .push(widget::text::body(hit.from_display().to_owned()).width(Length::Fill));
+
+        if hit.has_attachments {
+            heading = heading.push(widget::icon::from_name("mail-attachment-symbolic").size(12));
+        }
+        heading = heading.push(widget::text::caption(crate::ui::relative_date_ms(hit.date_ms)));
+
+        let body = widget::column::with_capacity(3)
+            .spacing(spacing.space_xxxs)
+            .push(heading)
+            .push(widget::text::body(hit.subject.clone()))
+            .push(
+                widget::row::with_capacity(2)
+                    .spacing(spacing.space_xxs)
+                    .push(widget::text::caption(hit.snippet.clone()).width(Length::Fill))
+                    .push(widget::text::caption(fl!("in-folder", folder = folder.to_owned()))),
+            );
+
+        column = column.push(
+            widget::button::custom(body)
+                .width(Length::Fill)
+                .padding(spacing.space_xs)
+                .class(cosmic::theme::Button::Text)
+                .on_press(Message::HitOpened(index)),
+        );
+    }
+
+    // Said rather than paged: somebody with 200 hits needs a better query, not
+    // a second page, and silently truncating would read as "that is all there
+    // is".
+    if hits.len() >= limit {
+        column = column.push(
+            widget::text::caption(fl!("results-capped", count = limit))
+                .wrapping(cosmic::iced::core::text::Wrapping::Word),
+        );
+    }
+
+    widget::scrollable(column.padding(spacing.space_xxs))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
