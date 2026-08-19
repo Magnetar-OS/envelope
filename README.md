@@ -13,80 +13,80 @@ Envelope is one of three applications over a shared substrate,
 | **Circle** | [circle](https://github.com/entro314-labs/circle) | Contacts |
 | **Envelope** | you are here | Mail |
 
-**Accounts are already shared.** Envelope reads
+**Accounts are shared.** Envelope reads
 `$XDG_CONFIG_HOME/cosmic-pim/accounts.toml`, so an account added in Slate shows
-up here without being re-entered. That much works today — it is the only part
-that does.
+up here with its password already stored. The one thing it will not have is a
+mail server — a CalDAV URL says nothing about an IMAP host — so that is the
+single field Envelope's Accounts page asks for.
 
 [cosmic-pim/ARCHITECTURE.md](https://github.com/entro314-labs/cosmic-pim/blob/main/ARCHITECTURE.md)
-describes how the layers fit and where new code belongs. Read it before porting
-anything: the invariants there (verbatim storage, durable writeback, push before
-pull) apply to mail as much as to calendars.
+describes how the layers fit and where new code belongs, including the section
+on what the suite's invariants mean for mail. Read it before changing anything
+here: verbatim storage, durable writeback, and push-before-pull apply to a
+mailbox exactly as they apply to a calendar.
 
-## Status: scaffold
+## Status
 
-This is deliberately further behind Slate and Circle, and the reason is worth
-being precise about.
+Envelope reads, threads, and syncs a real mailbox. What works:
 
-Slate and Circle were fast because their engines already existed: the vdir
-store, the iCalendar/vCard layer, and the CalDAV/CardDAV client all live in
-`cosmic-pim`, so each app was a front end over a tested substrate. **There is no
-mail engine in `cosmic-pim` yet.** Envelope cannot be a thin front end until
-there is something for it to be thin over.
+- **IMAP sync** — folder discovery with RFC 6154 special use, incremental
+  fetch, CONDSTORE flag deltas, periodic full reconciliation, and durable
+  writeback for flag changes, moves, and deletions.
+- **Maildir on disk** — one maildir per mailbox under `$XDG_DATA_HOME/mail`.
+  `mbsync`, `notmuch`, `mu`, and `mutt` read the same files. Delete the app and
+  your mail is still there, in a format thirty years of tools understand.
+- **Conversations** — JWZ threading with deterministic thread ids, so a reply
+  finds its parent even when the parent was never downloaded.
+- **A reader** that shows what a human would actually see, and says what the
+  message tried to do.
 
-## What exists to port
+What does not work yet: **composing**. There is no SMTP, no composer, and no
+drafts. That is the next thing and it is deliberately last — a mail client that
+reads well and cannot send is useful; the reverse is not, and composer scope
+creep is the classic way a mail client never ships.
 
-The engine is in [Meltemi](https://github.com/entro314-labs/meltemi), running in
-production, at roughly these sizes:
+Also not here, in the order they are likely to matter: JMAP, native Gmail and
+Graph APIs, OpenPGP and S/MIME, and ranked search over a tantivy index. All four
+exist in the donor and are ports, not designs.
 
-| Module | Lines | What it is |
-|---|---:|---|
-| `mail_sync.rs` | 5983 | IMAP sync engine |
-| `jmap.rs` | 3685 | JMAP, including WebSocket push (RFC 8887) |
-| `graph.rs` | 3117 | Microsoft Graph |
-| `gmail.rs` | 2148 | Gmail API |
-| `tantivy_search.rs` | 1925 | Ranked search over a candidate set |
-| `search_query.rs` | 1640 | Query parsing |
-| `pgp_mail.rs` | 1586 | OpenPGP |
-| `folder_tree.rs` | 1108 | Folder hierarchy |
-| `smime.rs` | 887 | S/MIME (RFC 8551) |
-| `dsn.rs` | 896 | Bounce parsing |
-| `threading.rs` | 676 | JWZ threading, deterministic thread ids |
-| `auth_results.rs` | 515 | SPF/DKIM/DMARC |
-| `model_text.rs` | 506 | Safe text extraction via a real html5ever DOM |
+## Display security
 
-`threading.rs`, `auth_results.rs`, `dsn.rs`, and `model_text.rs` have **zero**
-`crate::` references and port essentially as-is — the same property that made
-the CalDAV port cheap.
+Envelope renders **text**, not HTML. That is the position, not a limitation
+waiting to be lifted:
 
-## Suggested order
+- **Remote content cannot load.** A tracking pixel has nothing to fire from,
+  so "block remote images" is not a setting that can be got wrong. The reader
+  says when a message *wanted* to phone home.
+- **There is no parser differential.** Every sanitising-renderer bug in history
+  is a renderer disagreeing with a sanitiser about what some bytes mean. There
+  is one html5ever tree here and nothing downstream re-parses it.
+- **Hidden text is counted and reported.** `display:none`, white-on-white,
+  1px fonts, zero-width splices, and prose smuggled into HTML comments are all
+  dropped from what you read — and the reader tells you how much was dropped.
+- **Authentication failures are shown; passes are not.** A green tick on the
+  99% of mail that authenticates correctly trains people to ignore the
+  indicator, which is exactly how it stops working on the message where it
+  mattered.
+- **Attachments are listed, never opened.**
 
-1. **`cosmic-pim-mail`** in the substrate repo: the message model, a maildir or
-   SQLite store, and the parser boundary (`mail-parser`).
-2. **`threading.rs`** — pure, tested, and the thing that makes a mailbox read as
-   conversations rather than a list.
-3. **IMAP** via `mail_sync.rs`, behind a store trait, mirroring how
-   `cosmic-pim-caldav` was done.
-4. **Envelope's UI** — only once 1–3 exist.
+## Where the engine came from
 
-The precedent to copy is `cosmic-pim-caldav`. Its protocol layer ported almost
-verbatim because it had no dependency on its donor's storage; the reconciler was
-already a pure function over `(listing, href→etag)`; and everything
-storage-shaped went behind a four-method trait with an in-memory implementation
-for tests. Mail is bigger but the same shape, and the same three moves apply.
+The substrate's `cosmic-pim-mail` crate is a port from
+[Meltemi](https://github.com/entro314-labs/meltemi), rearranged rather than
+copied: the donor's protocol code issued SQL inline, and here everything
+storage-shaped sits behind a `MailStore` trait with an in-memory implementation
+for tests — the same three moves that made the CalDAV port cheap.
 
-Two things that will be reused rather than rewritten: `cosmic-pim-accounts`
-(credentials, already working here) and — once the substrate has a mail
-model — `cosmic-pim-core::model::Contact`, so that a sender resolves to a real
-person from the same address book Circle shows.
+Ported essentially as-is (they had no dependency on the donor's storage):
+threading, `Authentication-Results` parsing, and the HTML text extractor.
 
-## Two things settled before starting
+Still in the donor, still to port: `jmap.rs`, `graph.rs`, `gmail.rs`,
+`tantivy_search.rs`, `search_query.rs`, `pgp_mail.rs`, `smime.rs`, `dsn.rs`.
 
-- **Transport.** `ureq` 3 cannot be used: it enforces a hardcoded HTTP-method
-  allowlist. That bit the CalDAV port and would bite JMAP too. `reqwest` with
-  the blocking client is what the substrate uses.
-- **Licence.** The Meltemi repository carries no licence declaration. That has
-  to be fixed before more of it is lifted — see `LICENSING.md` in `cosmic-pim`.
+**Licence.** The Meltemi repository carries no licence declaration. It has a
+single author, so this is a one-commit fix, but until it exists neither
+`cosmic-pim-mail` nor `cosmic-pim-caldav` can be published — see `LICENSING.md`
+in `cosmic-pim`.
 
 ## Building
 

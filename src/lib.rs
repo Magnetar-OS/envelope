@@ -2,13 +2,19 @@
 
 //! Envelope — mail for the COSMIC desktop.
 //!
-//! A scaffold. See the README: the IMAP and JMAP engines have not been ported
-//! into `cosmic-pim` yet, and until they are there is nothing for this front
-//! end to be a front end over. What is here is the shell, the account list read
-//! from the shared account store, and a screen that says so honestly rather
-//! than showing an empty inbox that looks broken.
+//! A front end over `cosmic-pim-mail`, the way Slate is one over
+//! `cosmic-pim-caldav`. Everything that decides what a message *is*, where it
+//! is stored, and how it reaches a server lives in the substrate; what is here
+//! is the window, the state machine, and the decisions about what to show.
+//!
+//! - [`mail`] — the join: connections, conversations, and the blocking calls
+//!   the app runs on a worker thread.
+//! - [`app`] — the state machine.
+//! - [`ui`] — the views, each a function of the model.
 
 pub mod app;
+pub mod mail;
+pub mod ui;
 pub mod i18n;
 
 /// Runs the application.

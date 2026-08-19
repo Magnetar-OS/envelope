@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+//! The sidebar: which account, and which folder.
+
+use cosmic::iced::Length;
+use cosmic::widget;
+use cosmic::{Apply as _, Element};
+use cosmic_pim_mail::folder::Folder;
+
+use crate::app::Message;
+use crate::fl;
+
+/// Padding either side of the sidebar's contents.
+const GUTTER: u16 = 8;
+
+pub struct Sidebar<'a> {
+    pub accounts: &'a [cosmic_pim_accounts::Account],
+    pub selected_account: Option<&'a str>,
+    pub folders: &'a [Folder],
+    pub selected_folder: Option<usize>,
+    pub unread: &'a std::collections::HashMap<String, usize>,
+}
+
+impl<'a> Sidebar<'a> {
+    #[must_use]
+    pub fn view(&self) -> Element<'a, Message> {
+        let spacing = cosmic::theme::spacing();
+
+        widget::column::with_capacity(3)
+            .spacing(spacing.space_s)
+            .push(self.account_picker())
+            .push(self.folder_list())
+            .push(widget::Space::new().height(Length::Fill))
+            .padding(GUTTER)
+            .apply(widget::container)
+            // Wears the desktop's own nav-bar surface, so it matches the
+            // sidebar in cosmic-files and cosmic-settings rather than
+            // approximating it.
+            .class(cosmic::theme::Container::custom(
+                widget::nav_bar::nav_bar_style,
+            ))
+            .height(Length::Fill)
+            .into()
+    }
+
+    /// Only shown when there is a choice to make.
+    ///
+    /// One account is the overwhelmingly common case, and a picker with one
+    /// entry is a control that can only ever do nothing.
+    fn account_picker(&self) -> Element<'a, Message> {
+        if self.accounts.len() < 2 {
+            return widget::Space::new().height(Length::Fixed(0.0)).into();
+        }
+        let mut column = widget::column::with_capacity(self.accounts.len())
+            .spacing(cosmic::theme::spacing().space_xxxs);
+        for account in self.accounts {
+            let selected = self.selected_account == Some(account.id.as_str());
+            column = column.push(
+                widget::button::text(account.display_name.clone())
+                    .width(Length::Fill)
+                    .class(if selected {
+                        cosmic::theme::Button::Suggested
+                    } else {
+                        cosmic::theme::Button::Text
+                    })
+                    .on_press(Message::AccountSelected(account.id.clone())),
+            );
+        }
+        column.into()
+    }
+
+    fn folder_list(&self) -> Element<'a, Message> {
+        if self.folders.is_empty() {
+            return widget::text::caption(fl!("no-folders"))
+                .wrapping(cosmic::iced::core::text::Wrapping::Word)
+                .into();
+        }
+
+        let spacing = cosmic::theme::spacing();
+        let mut column =
+            widget::column::with_capacity(self.folders.len()).spacing(spacing.space_xxxs);
+
+        for (index, folder) in self.folders.iter().enumerate() {
+            let selected = self.selected_folder == Some(index);
+            let unread = self.unread.get(&folder.wire_name).copied().unwrap_or(0);
+
+            // Nesting is shown by indentation rather than by a collapsible
+            // tree: a mail folder tree is browsed far more often than it is
+            // restructured, and every expander is a click between the user and
+            // a folder they can already see.
+            let indent = f32::from(u16::try_from(folder.depth().min(4)).unwrap_or(0)) * 12.0;
+
+            let mut row = widget::row::with_capacity(3)
+                .align_y(cosmic::iced::Alignment::Center)
+                .spacing(spacing.space_xxs)
+                .push(widget::Space::new().width(Length::Fixed(indent)))
+                .push(widget::text::body(folder.leaf_name().to_owned()).width(Length::Fill));
+
+            if unread > 0 {
+                row = row.push(widget::text::caption(unread.to_string()));
+            }
+
+            column = column.push(
+                widget::button::custom(row)
+                    .width(Length::Fill)
+                    .class(if selected {
+                        cosmic::theme::Button::Suggested
+                    } else {
+                        cosmic::theme::Button::Text
+                    })
+                    .on_press(Message::FolderSelected(index)),
+            );
+        }
+
+        column.into()
+    }
+}

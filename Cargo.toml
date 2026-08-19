@@ -9,10 +9,11 @@ rust-version = "1.97.1"
 
 [dependencies]
 # --- the shared PIM substrate (MPL-2.0) ---
-# Paths until cosmic-pim is pushed; then git tags. Envelope uses the accounts
-# and credential layers today; the mail engine itself is not in cosmic-pim yet
-# (see README).
+# Paths until cosmic-pim is pushed; then git tags. `accounts` is shared with
+# Slate and Circle — one account, one password, one file. `mail` is the engine:
+# the message model, the maildir store, threading, and IMAP.
 cosmic-pim-accounts = { path = "../cosmic-pim/crates/cosmic-pim-accounts" }
+cosmic-pim-mail = { path = "../cosmic-pim/crates/cosmic-pim-mail" }
 
 i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
 i18n-embed-fl = "0.10"
@@ -41,3 +42,6 @@ strip = true
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
+
+[dev-dependencies]
+tempfile = "3"
