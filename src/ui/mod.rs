@@ -3,6 +3,7 @@
 //! The views. Each one is a function of the model, with no state of its own.
 
 pub mod accounts;
+pub mod composer;
 pub mod list;
 pub mod reader;
 pub mod sidebar;

@@ -29,6 +29,10 @@ use crate::mail::Opened;
 pub struct Reader<'a> {
     pub opened: Option<&'a Opened>,
     pub error: Option<&'a str>,
+    /// False when the account has no From address. The reply buttons are shown
+    /// greyed rather than hidden: a missing button reads as a missing feature,
+    /// and the fix is one page away.
+    pub can_send: bool,
 }
 
 impl<'a> Reader<'a> {
@@ -123,7 +127,26 @@ impl<'a> Reader<'a> {
 
     fn actions(&self, opened: &'a Opened) -> Element<'a, Message> {
         let spacing = cosmic::theme::spacing();
-        widget::row::with_capacity(4)
+
+        let reply = |label: String, message: Message| {
+            let button = widget::button::text(label);
+            if self.can_send {
+                button.on_press(message)
+            } else {
+                button
+            }
+        };
+
+        let answering = widget::row::with_capacity(3)
+            .spacing(spacing.space_xxs)
+            .push(
+                reply(fl!("reply"), Message::Reply { all: false })
+                    .class(cosmic::theme::Button::Suggested),
+            )
+            .push(reply(fl!("reply-all"), Message::Reply { all: true }))
+            .push(reply(fl!("forward"), Message::Forward));
+
+        let filing = widget::row::with_capacity(4)
             .spacing(spacing.space_xxs)
             .push(widget::button::text(if opened.flags.seen {
                 fl!("mark-unread")
@@ -144,7 +167,12 @@ impl<'a> Reader<'a> {
                 widget::button::text(fl!("delete"))
                     .class(cosmic::theme::Button::Destructive)
                     .on_press(Message::Delete),
-            )
+            );
+
+        widget::column::with_capacity(2)
+            .spacing(spacing.space_xxs)
+            .push(answering)
+            .push(filing)
             .into()
     }
 

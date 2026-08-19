@@ -60,6 +60,91 @@ pub struct AppModel {
     reader_error: Option<String>,
 
     mail_form: Option<MailForm>,
+    composer: Option<Composer>,
+}
+
+/// A message being written.
+///
+/// The addresses are held as **text**, not as parsed mailboxes, and that is on
+/// purpose: a half-typed address is not a mailbox, and a composer that reparses
+/// on every keystroke either rejects what the user is in the middle of typing or
+/// silently drops it. Parsing happens once, on send, where a failure can be
+/// explained.
+pub struct Composer {
+    pub draft: cosmic_pim_mail::Draft,
+    pub to: String,
+    pub cc: String,
+    pub bcc: String,
+    /// The message being answered, so it can be marked as answered once the
+    /// reply is actually away.
+    pub answering: Option<(Folder, u32)>,
+    pub sending: bool,
+    pub error: Option<String>,
+}
+
+impl Composer {
+    fn new(draft: cosmic_pim_mail::Draft, answering: Option<(Folder, u32)>) -> Self {
+        Self {
+            to: join(&draft.to),
+            cc: join(&draft.cc),
+            bcc: join(&draft.bcc),
+            draft,
+            answering,
+            sending: false,
+            error: None,
+        }
+    }
+
+    /// The draft with the address fields as currently typed.
+    fn resolved(&self) -> cosmic_pim_mail::Draft {
+        let mut draft = self.draft.clone();
+        draft.to = parse_addresses(&self.to);
+        draft.cc = parse_addresses(&self.cc);
+        draft.bcc = parse_addresses(&self.bcc);
+        draft
+    }
+
+    /// Why this cannot be sent yet, if it cannot.
+    #[must_use]
+    pub fn problem(&self) -> Option<&'static str> {
+        self.resolved().problem()
+    }
+}
+
+fn join(mailboxes: &[cosmic_pim_mail::Mailbox]) -> String {
+    mailboxes
+        .iter()
+        .map(|m| match &m.name {
+            Some(name) => format!("{name} <{}>", m.address),
+            None => m.address.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Splits a comma-separated address field, accepting both `a@b` and
+/// `Name <a@b>`.
+///
+/// Commas inside a quoted display name would break this, and are left broken:
+/// the alternative is an RFC 5322 address-list parser in the UI layer, and a
+/// user whose contact has a comma in their name can drop the quotes. The
+/// substrate validates what comes out.
+fn parse_addresses(field: &str) -> Vec<cosmic_pim_mail::Mailbox> {
+    field
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| match entry.rsplit_once('<') {
+            Some((name, rest)) => cosmic_pim_mail::Mailbox {
+                name: Some(name.trim().trim_matches('"').to_owned()).filter(|n| !n.is_empty()),
+                address: rest.trim_end_matches('>').trim().to_ascii_lowercase(),
+            },
+            None => cosmic_pim_mail::Mailbox {
+                name: None,
+                address: entry.to_ascii_lowercase(),
+            },
+        })
+        .collect()
 }
 
 /// The mail-endpoint form, while it is open.
@@ -73,6 +158,14 @@ pub struct MailForm {
     pub port: String,
     pub transport: Transport,
     pub username: String,
+    /// Empty means "the same host as IMAP", which is right for nearly every
+    /// provider.
+    pub smtp_host: String,
+    pub smtp_port: String,
+    pub smtp_transport: Transport,
+    /// Empty means "the login, if it is an address".
+    pub from_address: String,
+    pub from_name: String,
     pub error: Option<String>,
 }
 
@@ -88,17 +181,31 @@ impl MailForm {
             username: mail
                 .and_then(|m| m.imap_username.clone())
                 .unwrap_or_default(),
+            smtp_host: mail.map(|m| m.smtp_host.clone()).unwrap_or_default(),
+            smtp_port: mail.map_or_else(|| "465".to_string(), |m| m.smtp_port.to_string()),
+            smtp_transport: mail.map(|m| m.smtp_transport).unwrap_or_default(),
+            from_address: mail.map(|m| m.from_address.clone()).unwrap_or_default(),
+            from_name: mail.map(|m| m.from_name.clone()).unwrap_or_default(),
             error: None,
         }
     }
 
     #[must_use]
     pub fn transport_index(&self) -> usize {
-        crate::ui::accounts::TRANSPORTS
-            .iter()
-            .position(|t| *t == self.transport)
-            .unwrap_or(0)
+        transport_index(self.transport)
     }
+
+    #[must_use]
+    pub fn smtp_transport_index(&self) -> usize {
+        transport_index(self.smtp_transport)
+    }
+}
+
+fn transport_index(transport: Transport) -> usize {
+    crate::ui::accounts::TRANSPORTS
+        .iter()
+        .position(|t| *t == transport)
+        .unwrap_or(0)
 }
 
 #[derive(Clone, Debug)]
@@ -130,8 +237,25 @@ pub enum Message {
     MailFormPortChanged(String),
     MailFormTransportChanged(Transport),
     MailFormUsernameChanged(String),
+    MailFormSmtpHostChanged(String),
+    MailFormSmtpPortChanged(String),
+    MailFormSmtpTransportChanged(Transport),
+    MailFormFromAddressChanged(String),
+    MailFormFromNameChanged(String),
     MailFormCancel,
     MailFormSave,
+
+    Compose,
+    Reply { all: bool },
+    Forward,
+    ComposeToChanged(String),
+    ComposeCcChanged(String),
+    ComposeBccChanged(String),
+    ComposeSubjectChanged(String),
+    ComposeBodyChanged(String),
+    ComposeCancel,
+    ComposeSend,
+    ComposeSent(Box<crate::mail::Sent>),
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -145,6 +269,7 @@ pub enum ContextPage {
 pub enum MenuAction {
     About,
     Accounts,
+    Compose,
 }
 
 impl menu::action::MenuAction for MenuAction {
@@ -154,13 +279,15 @@ impl menu::action::MenuAction for MenuAction {
         match self {
             Self::About => Message::ToggleContextPage(ContextPage::About),
             Self::Accounts => Message::ToggleContextPage(ContextPage::Accounts),
+            Self::Compose => Message::Compose,
         }
     }
 }
 
 impl cosmic::Application for AppModel {
     type Executor = cosmic::executor::Default;
-    type Flags = ();
+    /// A `mailto:` URL the desktop launched us with, if any.
+    type Flags = Option<String>;
     type Message = Message;
     const APP_ID: &'static str = APP_ID;
 
@@ -172,7 +299,7 @@ impl cosmic::Application for AppModel {
         &mut self.core
     }
 
-    fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Self::Message>) {
+    fn init(core: Core, mailto: Self::Flags) -> (Self, Task<Self::Message>) {
         let about = About::default()
             .name(fl!("app-title"))
             .version(env!("CARGO_PKG_VERSION"))
@@ -203,8 +330,16 @@ impl cosmic::Application for AppModel {
             list_error: None,
             reader_error: None,
             mail_form: None,
+            composer: None,
         };
         model.rebuild_connection();
+
+        // A link the desktop handed us opens straight into the composer. Done
+        // before the folder load so the user sees what they clicked on rather
+        // than an inbox that turns into a composer a moment later.
+        if let Some(url) = mailto {
+            model.open_mailto(&url);
+        }
 
         // Nothing is fetched at startup. The folders and messages are already
         // on disk, so the window fills immediately; syncing is something the
@@ -221,8 +356,9 @@ impl cosmic::Application for AppModel {
                 menu::items(
                     &self.key_binds,
                     vec![
-                        menu::Item::Button(fl!("accounts"), None, MenuAction::Accounts),
+                        menu::Item::Button(fl!("compose"), None, MenuAction::Compose),
                         menu::Item::Divider,
+                        menu::Item::Button(fl!("accounts"), None, MenuAction::Accounts),
                         menu::Item::Button(fl!("about"), None, MenuAction::About),
                     ],
                 ),
@@ -285,11 +421,22 @@ impl cosmic::Application for AppModel {
         }
         .view();
 
-        let reader = crate::ui::reader::Reader {
-            opened: self.opened.as_ref(),
-            error: self.reader_error.as_deref(),
-        }
-        .view();
+        // The composer takes the reader's half of the window rather than a
+        // dialog or a second window. Writing a reply is reading the thread with
+        // extra steps: the list stays where it was, so the message being
+        // answered is still one click away.
+        let right = match self.composer.as_ref() {
+            Some(composer) => crate::ui::composer::view(composer),
+            None => crate::ui::reader::Reader {
+                opened: self.opened.as_ref(),
+                error: self.reader_error.as_deref(),
+                can_send: self
+                    .connection
+                    .as_ref()
+                    .is_some_and(|c| c.submission.is_some()),
+            }
+            .view(),
+        };
 
         widget::row::with_capacity(3)
             .push(
@@ -302,7 +449,7 @@ impl cosmic::Application for AppModel {
                     .height(Length::Fill),
             )
             .push(widget::divider::vertical::default())
-            .push(widget::container(reader).width(Length::Fill).height(Length::Fill))
+            .push(widget::container(right).width(Length::Fill).height(Length::Fill))
             .into()
     }
 
@@ -397,6 +544,10 @@ impl cosmic::Application for AppModel {
 
             Message::ConversationSelected(index) => {
                 self.selected_conversation = Some(index);
+                // The draft stays. Clicking another conversation to check
+                // something while writing a reply is normal, and losing what
+                // was typed for it would be indefensible — the composer is
+                // restored the moment the reader is not showing.
                 self.reader_error = None;
                 self.open_selected()
             }
@@ -468,11 +619,60 @@ impl cosmic::Application for AppModel {
             Message::MailFormUsernameChanged(username) => {
                 self.with_form(|form| form.username = username)
             }
+            Message::MailFormSmtpHostChanged(host) => self.with_form(|form| form.smtp_host = host),
+            Message::MailFormSmtpPortChanged(port) => self.with_form(|form| form.smtp_port = port),
+            Message::MailFormSmtpTransportChanged(transport) => self.with_form(|form| {
+                if form.smtp_port == "465" || form.smtp_port == "587" {
+                    form.smtp_port = match transport {
+                        Transport::Tls => "465".to_string(),
+                        // 587 is the submission port for STARTTLS. Never 25 —
+                        // a client has no business talking to a relay port.
+                        Transport::StartTls | Transport::Plaintext => "587".to_string(),
+                    };
+                }
+                form.smtp_transport = transport;
+            }),
+            Message::MailFormFromAddressChanged(address) => {
+                self.with_form(|form| form.from_address = address)
+            }
+            Message::MailFormFromNameChanged(name) => self.with_form(|form| form.from_name = name),
             Message::MailFormCancel => {
                 self.mail_form = None;
                 Task::none()
             }
             Message::MailFormSave => self.save_form(),
+
+            Message::Compose => self.compose(|_, from| cosmic_pim_mail::Draft::new(from)),
+            Message::Reply { all } => {
+                self.compose(move |opened, from| match opened {
+                    Some(opened) => cosmic_pim_mail::Draft::reply(&opened.message, from, all),
+                    None => cosmic_pim_mail::Draft::new(from),
+                })
+            }
+            Message::Forward => self.compose(|opened, from| match opened {
+                Some(opened) => cosmic_pim_mail::Draft::forward(&opened.message, from),
+                None => cosmic_pim_mail::Draft::new(from),
+            }),
+
+            Message::ComposeToChanged(text) => self.with_composer(|c| c.to = text),
+            Message::ComposeCcChanged(text) => self.with_composer(|c| c.cc = text),
+            Message::ComposeBccChanged(text) => self.with_composer(|c| c.bcc = text),
+            Message::ComposeSubjectChanged(text) => {
+                self.with_composer(|c| c.draft.subject = text)
+            }
+            Message::ComposeBodyChanged(text) => self.with_composer(|c| c.draft.body = text),
+            Message::ComposeCancel => {
+                // Discarded outright. A drafts folder is the right answer and
+                // it does not exist yet; pretending to save would be worse than
+                // this, because the user would go looking for it.
+                self.composer = None;
+                Task::none()
+            }
+            Message::ComposeSend => self.send_draft(),
+            Message::ComposeSent(sent) => {
+                self.composer_finished(*sent);
+                Task::none()
+            }
         }
     }
 }
@@ -683,6 +883,122 @@ impl AppModel {
         })
     }
 
+    /// Opens the composer on a `mailto:` link.
+    fn open_mailto(&mut self, url: &str) {
+        let Some(identity) = self
+            .connection
+            .as_ref()
+            .and_then(|c| c.submission.as_ref())
+            .map(|s| s.identity.clone())
+        else {
+            self.status = Some(fl!("no-from-address"));
+            self.context_page = ContextPage::Accounts;
+            self.core.window.show_context = true;
+            return;
+        };
+        if let Some(draft) = crate::mailto::prefill(url, identity) {
+            self.composer = Some(Composer::new(draft, None));
+        }
+    }
+
+    /// Opens the composer with a draft built from the current state.
+    fn compose(
+        &mut self,
+        build: impl FnOnce(Option<&Opened>, cosmic_pim_mail::Mailbox) -> cosmic_pim_mail::Draft,
+    ) -> Task<Message> {
+        let Some(identity) = self
+            .connection
+            .as_ref()
+            .and_then(|c| c.submission.as_ref())
+            .map(|s| s.identity.clone())
+        else {
+            // Not a silent no-op: without a From address there is nothing to
+            // send as, and the user needs to be told where to fix it.
+            self.status = Some(fl!("no-from-address"));
+            self.context_page = ContextPage::Accounts;
+            self.core.window.show_context = true;
+            return Task::none();
+        };
+
+        // A reply marks the message it answers — but only once it is actually
+        // away, so a cancelled reply leaves no trace.
+        let answering = self
+            .current_folder()
+            .cloned()
+            .zip(self.opened.as_ref().map(|o| o.uid));
+
+        let draft = build(self.opened.as_ref(), identity);
+        self.composer = Some(Composer::new(draft, answering));
+        Task::none()
+    }
+
+    fn with_composer(&mut self, edit: impl FnOnce(&mut Composer)) -> Task<Message> {
+        if let Some(composer) = self.composer.as_mut() {
+            edit(composer);
+            composer.error = None;
+        }
+        Task::none()
+    }
+
+    fn send_draft(&mut self) -> Task<Message> {
+        let (Some(composer), Some(connection)) =
+            (self.composer.as_mut(), self.connection.clone())
+        else {
+            return Task::none();
+        };
+        if composer.sending {
+            return Task::none();
+        }
+        let draft = composer.resolved();
+        if let Some(problem) = draft.problem() {
+            composer.error = Some(problem.to_owned());
+            return Task::none();
+        }
+        composer.sending = true;
+        composer.error = None;
+
+        let folders = self.folders.clone();
+        let answering = composer.answering.clone();
+
+        cosmic::task::future(async move {
+            let sent = tokio::task::spawn_blocking(move || {
+                mail::send(&connection, &draft, &folders, answering)
+            })
+            .await
+            .unwrap_or_else(|why| mail::Sent::Uncertain(why.to_string()));
+            Message::ComposeSent(Box::new(sent))
+        })
+    }
+
+    fn composer_finished(&mut self, sent: mail::Sent) {
+        let Some(composer) = self.composer.as_mut() else {
+            return;
+        };
+        composer.sending = false;
+        match sent {
+            mail::Sent::Ok { filed } => {
+                // Closed only on success. A failed send that discarded what the
+                // user wrote would be unforgivable, and is the whole reason the
+                // composer stays open below.
+                self.composer = None;
+                self.status = Some(if filed {
+                    fl!("sent")
+                } else {
+                    fl!("sent-not-filed")
+                });
+            }
+            mail::Sent::Failed(why) => {
+                composer.error = Some(fl!("send-failed", reason = why));
+            }
+            mail::Sent::Uncertain(why) => {
+                // Deliberately different words. "Try again" would be wrong
+                // advice here: the message may already have arrived, and the
+                // client must not be the thing that sends it twice.
+                composer.error = Some(fl!("send-uncertain", reason = why));
+            }
+        }
+    }
+
     fn with_form(&mut self, edit: impl FnOnce(&mut MailForm)) -> Task<Message> {
         if let Some(form) = self.mail_form.as_mut() {
             edit(form);
@@ -700,11 +1016,20 @@ impl AppModel {
             return self.with_form(|form| form.error = Some(fl!("bad-port")));
         };
 
+        let Ok(smtp_port) = form.smtp_port.trim().parse::<u16>() else {
+            return self.with_form(|form| form.error = Some(fl!("bad-port")));
+        };
+
         let endpoint = MailEndpoint {
             imap_host: form.host.trim().to_owned(),
             imap_port: port,
             imap_transport: form.transport,
             imap_username: Some(form.username.trim().to_owned()).filter(|u| !u.is_empty()),
+            smtp_host: form.smtp_host.trim().to_owned(),
+            smtp_port,
+            smtp_transport: form.smtp_transport,
+            from_address: form.from_address.trim().to_owned(),
+            from_name: form.from_name.trim().to_owned(),
         };
         let account_id = form.account_id.clone();
 
@@ -799,6 +1124,79 @@ mod tests {
     }
 
     #[test]
+    fn address_fields_accept_both_shapes_people_actually_type() {
+        let parsed = parse_addresses("ada@example.com, Bob Smith <Bob@Example.NET> ,, cleo@x.org");
+        assert_eq!(parsed.len(), 3, "{parsed:?}");
+        assert_eq!(parsed[0].address, "ada@example.com");
+        assert_eq!(parsed[0].name, None);
+        assert_eq!(parsed[1].name.as_deref(), Some("Bob Smith"));
+        assert_eq!(
+            parsed[1].address, "bob@example.net",
+            "the address was not folded, so it will not match an address book"
+        );
+        assert_eq!(parsed[2].address, "cleo@x.org");
+    }
+
+    #[test]
+    fn an_empty_address_field_yields_no_recipients_rather_than_a_blank_one() {
+        // A blank Cc must not become an unsendable draft.
+        assert!(parse_addresses("").is_empty());
+        assert!(parse_addresses("  ,  , ").is_empty());
+    }
+
+    #[test]
+    fn address_fields_round_trip_through_the_composer() {
+        // What is shown in the field has to parse back to what it came from,
+        // or opening a reply and pressing send changes the recipients.
+        let original = parse_addresses("Ada <ada@example.com>, bob@example.net");
+        assert_eq!(parse_addresses(&join(&original)), original);
+    }
+
+    #[test]
+    fn a_composer_reports_the_same_problem_the_send_would_fail_with() {
+        let me = cosmic_pim_mail::Mailbox {
+            name: Some("Me".into()),
+            address: "me@example.com".into(),
+        };
+        let mut composer = Composer::new(cosmic_pim_mail::Draft::new(me), None);
+        assert_eq!(composer.problem(), Some("this draft has no recipients"));
+
+        composer.to = "not-an-address".into();
+        assert_eq!(
+            composer.problem(),
+            Some("one of the addresses is not an address")
+        );
+
+        composer.to = "ada@example.com".into();
+        assert!(composer.problem().is_none());
+        assert!(composer.resolved().build(false).is_ok());
+    }
+
+    #[test]
+    fn a_composer_opened_as_a_reply_carries_the_threading_and_the_recipients() {
+        let me = cosmic_pim_mail::Mailbox {
+            name: Some("Me".into()),
+            address: "me@example.com".into(),
+        };
+        let original = cosmic_pim_mail::Message::parse(
+            b"Message-ID: <parent@x>\r\nFrom: Ada <ada@example.com>\r\nTo: me@example.com\r\nSubject: Plan\r\n\r\nbody\r\n",
+        )
+        .expect("parse");
+
+        let composer = Composer::new(
+            cosmic_pim_mail::Draft::reply(&original, me, false),
+            None,
+        );
+        assert_eq!(composer.to, "Ada <ada@example.com>");
+        assert_eq!(composer.draft.subject, "Re: Plan");
+        // The field text is what gets sent, not the draft's original list.
+        assert_eq!(
+            composer.resolved().to[0].address,
+            "ada@example.com"
+        );
+    }
+
+        #[test]
     fn a_malformed_directory_name_is_skipped_rather_than_guessed_at() {
         assert!(unescape_local_name("%ZZ").is_none());
         assert!(unescape_local_name("truncated%").is_none());

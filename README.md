@@ -27,7 +27,7 @@ mailbox exactly as they apply to a calendar.
 
 ## Status
 
-Envelope reads, threads, and syncs a real mailbox. What works:
+Envelope reads, threads, syncs, and sends. What works:
 
 - **IMAP sync** — folder discovery with RFC 6154 special use, incremental
   fetch, CONDSTORE flag deltas, periodic full reconciliation, and durable
@@ -39,15 +39,45 @@ Envelope reads, threads, and syncs a real mailbox. What works:
   finds its parent even when the parent was never downloaded.
 - **A reader** that shows what a human would actually see, and says what the
   message tried to do.
+- **Sending** — plain-text compose, reply, reply-all, and forward, over SMTP,
+  with the sent copy filed to Sent and the message it answers marked.
+- **`mailto:` links**, so Circle's "send a message" and Slate's attendee
+  addresses land here.
 
-What does not work yet: **composing**. There is no SMTP, no composer, and no
-drafts. That is the next thing and it is deliberately last — a mail client that
-reads well and cannot send is useful; the reverse is not, and composer scope
-creep is the classic way a mail client never ships.
+What does not work yet: **drafts**. A composer that is closed is discarded,
+because a Drafts folder is the right answer and does not exist yet — pretending
+to save would be worse, since the user would go looking for it. There is also no
+HTML composition, and that is a decision rather than a gap: the reader shows
+text, so an HTML composer would be writing in a format the application cannot
+display.
 
 Also not here, in the order they are likely to matter: JMAP, native Gmail and
 Graph APIs, OpenPGP and S/MIME, and ranked search over a tantivy index. All four
 exist in the donor and are ports, not designs.
+
+## Sending
+
+Two things are worth knowing about how sending behaves, because both are
+deliberate and both differ from what a mail client usually does.
+
+**A failed send is never retried automatically.** Failures split in two: the
+server definitely did not accept the message (refused connection, TLS failure,
+an explicit 4xx), or it may have. A timeout in the middle of `DATA` is
+indistinguishable from a timeout during the greeting, and the message may be in
+the recipient's inbox already. Envelope says so in different words for the two
+cases and leaves the second to you. A duplicate you chose is a nuisance; a
+duplicate the client chose is a client that cannot be trusted with a
+resignation letter.
+
+**`Bcc` never reaches the recipients.** It rides the SMTP envelope and is
+stripped from the message bytes — and it is kept in the copy filed to Sent, so
+you can still see what you did. Both halves are asserted against the actual
+bytes on the wire.
+
+A `mailto:` link may set `to`, `cc`, `subject`, and `body`. It may **not** set
+`bcc`, or `from`, or any other header: a page that can make your mail client
+silently blind-copy a third party on a message you then write and send is an
+attack, and "the field is visible in the composer" is not a defence.
 
 ## Display security
 

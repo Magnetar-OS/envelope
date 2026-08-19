@@ -15,9 +15,11 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use cosmic_pim_accounts::{Account, AccountStore, Transport};
 use cosmic_pim_mail::folder::{Folder, SpecialUse};
+use cosmic_pim_mail::compose::Draft;
 use cosmic_pim_mail::imap::{self, Endpoint, Security, Session, SyncOptions};
+use cosmic_pim_mail::smtp::{self, Outcome, SmtpEndpoint};
 use cosmic_pim_mail::maildir::{self, MaildirStore};
-use cosmic_pim_mail::model::{Flags, Message};
+use cosmic_pim_mail::model::{Flags, Mailbox, Message};
 use cosmic_pim_mail::push::{PushOp, PushQueue};
 use cosmic_pim_mail::store::MailStore;
 
@@ -80,8 +82,22 @@ pub struct SyncReport {
 pub struct Connection {
     pub account_id: String,
     pub endpoint: Endpoint,
+    /// Where to submit outgoing mail. `None` when the account has no usable
+    /// From identity — a composer that cannot say who a message is from is a
+    /// composer that cannot send, and offering one anyway wastes what the user
+    /// typed.
+    pub submission: Option<Submission>,
     pub password: String,
     pub root: PathBuf,
+}
+
+/// Everything needed to send, as opposed to read.
+#[derive(Debug, Clone)]
+pub struct Submission {
+    pub endpoint: SmtpEndpoint,
+    /// Who mail is from. One password serves both directions — SMTP AUTH uses
+    /// the account's credentials whatever address is on the From line.
+    pub identity: Mailbox,
 }
 
 impl Connection {
@@ -102,16 +118,26 @@ impl Connection {
             .map_err(|why| format!("could not read the stored password: {why}"))?
             .ok_or_else(|| "no password is stored for this account".to_string())?;
 
+        let submission = account.from_identity().map(|(name, address)| Submission {
+            endpoint: SmtpEndpoint {
+                host: mail.submission_host().to_owned(),
+                port: mail.smtp_port,
+                security: transport(mail.smtp_transport),
+                username: account.mail_username().to_owned(),
+            },
+            identity: Mailbox {
+                name: Some(name).filter(|n| !n.trim().is_empty()),
+                address,
+            },
+        });
+
         Ok(Some(Self {
             account_id: account.id.clone(),
+            submission,
             endpoint: Endpoint {
                 host: mail.imap_host.clone(),
                 port: mail.imap_port,
-                security: match mail.imap_transport {
-                    Transport::Tls => Security::Tls,
-                    Transport::StartTls => Security::StartTls,
-                    Transport::Plaintext => Security::Plaintext,
-                },
+                security: transport(mail.imap_transport),
                 username: account.mail_username().to_owned(),
             },
             password,
@@ -364,6 +390,100 @@ pub fn move_to(
 #[must_use]
 pub fn special(folders: &[Folder], role: SpecialUse) -> Option<&Folder> {
     folders.iter().find(|f| f.special_use == Some(role))
+}
+
+/// The same three choices, spelled in `accounts` and in `mail` because
+/// `accounts` sits below every protocol crate. This is the boundary where they
+/// meet, and it is the only place either spelling appears twice.
+fn transport(transport: Transport) -> Security {
+    match transport {
+        Transport::Tls => Security::Tls,
+        Transport::StartTls => Security::StartTls,
+        Transport::Plaintext => Security::Plaintext,
+    }
+}
+
+/// What happened to a send, as the composer needs to hear it.
+#[derive(Debug, Clone)]
+pub enum Sent {
+    /// Delivered, and filed to Sent if there was somewhere to file it.
+    Ok { filed: bool },
+    /// Definitely not delivered. The draft is intact and may be sent again.
+    Failed(String),
+    /// It may or may not have been delivered.
+    ///
+    /// Carried separately from [`Self::Failed`] all the way to the user,
+    /// because the two need different words: one says "try again", the other
+    /// says "check before you do".
+    Uncertain(String),
+}
+
+/// Sends a draft, files the Sent copy, and marks the message it answers.
+///
+/// Blocking, for a worker thread. Everything after the send itself is
+/// best-effort: a message that reached its recipients has succeeded, and
+/// reporting failure because the Sent copy could not be filed would be telling
+/// the user something untrue about the part they care about.
+pub fn send(
+    connection: &Connection,
+    draft: &Draft,
+    folders: &[Folder],
+    answering: Option<(Folder, u32)>,
+) -> Sent {
+    let Some(submission) = connection.submission.as_ref() else {
+        return Sent::Failed("this account has no From address".into());
+    };
+
+    let filed_bytes = match smtp::send(&submission.endpoint, &connection.password, draft) {
+        Outcome::Sent(bytes) => bytes,
+        Outcome::NotSent(why) => return Sent::Failed(why.to_string()),
+        Outcome::Ambiguous(why) => return Sent::Uncertain(why.to_string()),
+    };
+
+    // Marking the original answered is local and queued, so it works offline
+    // and survives a restart — the same path every other flag change takes.
+    if let Some((folder, uid)) = answering
+        && let Err(why) = set_flags(connection, &folder, &[uid], |flags| Flags {
+            answered: true,
+            ..flags
+        })
+    {
+        tracing::warn!(%why, "the message was sent but not marked as answered");
+    }
+
+    let filed = file_to_sent(connection, folders, &filed_bytes);
+    Sent::Ok { filed }
+}
+
+/// Puts the sent copy in the Sent folder, on the server and on disk.
+///
+/// Returns whether it landed. Most servers do not file SMTP-submitted mail
+/// themselves, so without this a sent message simply never appears anywhere the
+/// user can see it.
+fn file_to_sent(connection: &Connection, folders: &[Folder], raw: &[u8]) -> bool {
+    let Some(sent) = special(folders, SpecialUse::Sent) else {
+        tracing::info!("the server has no Sent folder; the copy was not filed");
+        return false;
+    };
+
+    match Session::connect(&connection.endpoint, &connection.password)
+        .and_then(|mut session| {
+            let result = session.append(&sent.wire_name, raw, Flags {
+                seen: true,
+                ..Flags::default()
+            });
+            let _ = session.logout();
+            result
+        }) {
+        Ok(()) => true,
+        Err(why) => {
+            // Not fatal: the message was delivered, which is the part that
+            // cannot be undone. The next sync of Sent will not find it, and
+            // that is a visible gap rather than a silent one.
+            tracing::warn!(%why, "the message was sent but the Sent copy was not filed");
+            false
+        }
+    }
 }
 
 fn now_ms() -> i64 {

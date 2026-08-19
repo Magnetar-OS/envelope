@@ -116,15 +116,67 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                 ),
         );
 
-    let mut column = widget::column::with_capacity(3)
+    let sending = widget::settings::section()
+        .title(fl!("sending-section"))
+        .add(
+            widget::settings::item::builder(fl!("from-address"))
+                .description(fl!("from-address-hint"))
+                .control(
+                    widget::text_input("you@example.com", &form.from_address)
+                        .on_input(Message::MailFormFromAddressChanged)
+                        .width(Length::Fixed(220.0)),
+                ),
+        )
+        .add(
+            widget::settings::item::builder(fl!("from-name")).control(
+                widget::text_input(String::new(), &form.from_name)
+                    .on_input(Message::MailFormFromNameChanged)
+                    .width(Length::Fixed(220.0)),
+            ),
+        )
+        .add(
+            widget::settings::item::builder(fl!("smtp-host"))
+                .description(fl!("smtp-host-hint"))
+                .control(
+                    widget::text_input(form.host.clone(), &form.smtp_host)
+                        .on_input(Message::MailFormSmtpHostChanged)
+                        .width(Length::Fixed(220.0)),
+                ),
+        )
+        .add(
+            widget::settings::item::builder(fl!("smtp-port")).control(
+                widget::text_input("465", &form.smtp_port)
+                    .on_input(Message::MailFormSmtpPortChanged)
+                    .width(Length::Fixed(220.0)),
+            ),
+        )
+        .add(
+            widget::settings::item::builder(fl!("smtp-encryption")).control(
+                widget::dropdown(
+                    TRANSPORT_LABELS,
+                    Some(form.smtp_transport_index()),
+                    |index| Message::MailFormSmtpTransportChanged(TRANSPORTS[index]),
+                )
+                .width(Length::Fixed(220.0)),
+            ),
+        );
+
+    let mut column = widget::column::with_capacity(4)
         .spacing(spacing.space_s)
-        .push(section);
+        .push(section)
+        .push(sending);
 
     if let Some(error) = &form.error {
         column = column.push(crate::ui::destructive(error.clone()));
     }
 
-    let can_save = !form.host.trim().is_empty() && form.port.trim().parse::<u16>().is_ok();
+    // An incoming server and two valid ports are the minimum that could work.
+    // The From address is deliberately not required: an account that can only
+    // read mail is a useful account, and demanding a field to save the ones
+    // that matter would be the wrong trade.
+    let can_save = !form.host.trim().is_empty()
+        && form.port.trim().parse::<u16>().is_ok()
+        && form.smtp_port.trim().parse::<u16>().is_ok();
 
     column
         .push(

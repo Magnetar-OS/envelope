@@ -12,6 +12,7 @@
 
 use cosmic_pim_mail::folder::{self, Folder};
 use cosmic_pim_mail::imap::{Endpoint, Security};
+use cosmic_pim_mail::smtp::SmtpEndpoint;
 use cosmic_pim_mail::maildir::{self, MaildirStore};
 use cosmic_pim_mail::model::Flags;
 use cosmic_pim_mail::push::PushQueue;
@@ -37,6 +38,18 @@ fn connection(root: &std::path::Path) -> Connection {
             security: Security::Tls,
             username: "me".into(),
         },
+        submission: Some(envelope::mail::Submission {
+            endpoint: SmtpEndpoint {
+                host: "unused.invalid".into(),
+                port: 465,
+                security: Security::Tls,
+                username: "me".into(),
+            },
+            identity: cosmic_pim_mail::Mailbox {
+                name: Some("Me".into()),
+                address: "me@example.com".into(),
+            },
+        }),
         password: String::new(),
         root: root.to_path_buf(),
     }

@@ -14,6 +14,7 @@
 
 pub mod app;
 pub mod mail;
+pub mod mailto;
 pub mod ui;
 pub mod i18n;
 
@@ -32,5 +33,14 @@ pub fn run() -> cosmic::iced::Result {
     let settings = cosmic::app::Settings::default()
         .size(cosmic::iced::Size::new(1200.0, 800.0));
 
-    cosmic::app::run::<app::AppModel>(settings, ())
+    // A `mailto:` URL on the command line is how the desktop hands us a link
+    // someone clicked — in a browser, in Circle, in Slate's attendee list. It
+    // is passed as a flag rather than parsed here because turning it into a
+    // draft needs an account's From identity, which only the model has.
+    let mailto = std::env::args().find(|arg| {
+        let lower = arg.to_ascii_lowercase();
+        lower.starts_with("mailto:")
+    });
+
+    cosmic::app::run::<app::AppModel>(settings, mailto)
 }
