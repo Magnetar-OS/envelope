@@ -1,0 +1,43 @@
+[package]
+name = "envelope"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Envelope — mail for the COSMIC desktop"
+repository = "https://github.com/entro314-labs/envelope"
+rust-version = "1.97.1"
+
+[dependencies]
+# --- the shared PIM substrate (MPL-2.0) ---
+# Paths until cosmic-pim is pushed; then git tags. Envelope uses the accounts
+# and credential layers today; the mail engine itself is not in cosmic-pim yet
+# (see README).
+cosmic-pim-accounts = { path = "../cosmic-pim/crates/cosmic-pim-accounts" }
+
+i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
+i18n-embed-fl = "0.10"
+rust-embed = "8.12"
+open = "5.4"
+tokio = { version = "1.53", features = ["full"] }
+
+chrono = { version = "0.4.45", features = ["clock", "serde"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic.git"
+features = ["about", "single-instance", "wgpu", "xdg-portal"]
+
+[[bin]]
+name = "envelope"
+path = "src/main.rs"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
