@@ -73,11 +73,12 @@ never the message (`tests/live_send.rs`).
    substrate. The cycle itself — cursor, windowed discovery, CONDSTORE deltas,
    held-back MODSEQ, periodic reconcile — is perhaps 400 lines and ported
    cleanly.
-4. Search: **not done.** `tantivy_search.rs` + `search_query.rs`. The
-   structured half of what search needs now exists — `mail::index` holds
-   senders, subjects, dates, and thread ids — so the port is the full-text
-   ranking, not the plumbing.
-5. UI: **done**, including composition.
+4. Search: **done for headers.** `mail::search` is a pure parser and
+   `Index::search` executes it. `search_query.rs` did not need porting — the
+   donor's language was larger than what a mail client's search box is used
+   for, and the ~150 lines here cover it. `tantivy_search.rs` remains, for
+   bodies.
+5. UI: **done**, including composition, drafts, and search.
 
 ## Sizes in the donor, corrected
 
@@ -89,9 +90,9 @@ The figures in the older version of this file and in the README were stale.
 | `jmap.rs` | 3685 | — | deferred |
 | `graph.rs` | 3117 | — | deferred |
 | `gmail.rs` | 2148 | — | deferred |
-| `tantivy_search.rs` | 2008 | 6 | next |
+| `tantivy_search.rs` | 2008 | 6 | next — body ranking only |
 | `folder_tree.rs` | 1774 | 30 | not portable as-is |
-| `search_query.rs` | 1640 | 2 | next |
+| `search_query.rs` | 1640 | 2 | superseded by `mail::search` |
 | `pgp_mail.rs` | 1586 | — | deferred |
 | `dsn.rs` | 896 | 5 | deferred, see below |
 | `smime.rs` | 887 | — | deferred |
@@ -126,19 +127,33 @@ also of little use without a send path, so it belongs after SMTP, not before.
   can set `bcc` on a message the user then writes and sends is an attack, and
   "the field is visible" is not a defence.
 
+## Drafts and search, as taken
+
+- **Drafts are a `Draft` record, not RFC 5322, and local.** Both follow from a
+  draft being unfinished: `lettre` will not build a message with no destination
+  (correctly — such a thing cannot be sent), and no message format can represent
+  an address somebody stopped halfway through typing. Local because APPEND
+  without UIDPLUS means the next sync cannot recognise the draft it just
+  uploaded, so every edit leaves another copy.
+- **Search is headers plus the list snippet**, over the index, with a pure
+  parser sitting in front of it. Bodies need the tantivy port; the split means
+  that lands behind the same `Query`.
+- **Results are messages, not conversations.** Grouping a hit back into its
+  thread buries it among its siblings.
+
 ## Next, in order
 
-1. **Drafts.** The composer is discarded on cancel, because a Drafts folder is
-   the right answer and does not exist. It needs `APPEND` to Drafts with the
-   `\Draft` flag — the mechanism is already there (`Session::append`) — plus
-   the UI for reopening one.
-2. **Search.** `tantivy_search.rs` + `search_query.rs`. The structured half is
-   done; this is the ranking.
+1. **Body search.** `tantivy_search.rs` — the ranking. `search_query.rs` is
+   superseded: `mail::search` is the query language, considerably smaller, and
+   already the shape the ranking plugs into.
+2. **Server-side drafts.** UIDPLUS where it exists, `Message-ID` matching where
+   it does not, and a reconciliation pass for servers that mangle both. Worth
+   building; not worth shipping half of.
 3. **IDLE**, so the mailbox updates without waiting up to two minutes.
-4. **An outbox.** A `Sent::Failed` currently keeps the composer open and leaves
-   the retry to the user. A queued outbox with the same durability the flag
-   queue has is the right shape — but only for the retryable class, and the
-   distinction is already typed.
+4. **An outbox.** A `Sent::Failed` keeps the composer open and leaves the retry
+   to the user. A queued outbox with the flag queue's durability is the right
+   shape — but only for the retryable class, and that distinction is already
+   typed.
 5. **A server quirks table**, shared in shape with the CalDAV one (01) — the
    IMAP zoo is the same problem, larger.
 
