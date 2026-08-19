@@ -21,6 +21,7 @@ rust-embed = "8.12"
 open = "5.4"
 tokio = { version = "1.53", features = ["full"] }
 
+dirs = "6"
 chrono = { version = "0.4.45", features = ["clock", "serde"] }
 thiserror = "2"
 tracing = "0.1"

@@ -45,6 +45,8 @@ pub fn view(composer: &Composer) -> Element<'_, Message> {
                 .width(Length::Fill),
         );
 
+    column = column.push(attachments(composer));
+
     if let Some(error) = &composer.error {
         column = column.push(crate::ui::destructive(error.clone()));
     }
@@ -96,6 +98,54 @@ fn button(label: String, enabled: bool, message: Message) -> Element<'static, Me
         button.into()
     }
 }
+
+/// The attach button, and whatever is already attached.
+fn attachments(composer: &Composer) -> Element<'_, Message> {
+    let spacing = cosmic::theme::spacing();
+    let attached = &composer.draft.attachments;
+
+    let mut column = widget::column::with_capacity(attached.len() + 1)
+        .spacing(spacing.space_xxxs)
+        .push(
+            widget::row::with_capacity(2)
+                .align_y(Alignment::Center)
+                .spacing(spacing.space_xxs)
+                .push(button(fl!("attach"), !composer.sending, Message::AttachFile))
+                .push(if attached.is_empty() {
+                    widget::text::caption(String::new())
+                } else {
+                    widget::text::caption(fl!(
+                        "attachments-total",
+                        count = attached.len(),
+                        size = crate::ui::size(composer.draft.attachment_bytes())
+                    ))
+                }),
+        );
+
+    for (index, attachment) in attached.iter().enumerate() {
+        column = column.push(
+            widget::row::with_capacity(2)
+                .align_y(Alignment::Center)
+                .spacing(spacing.space_xxs)
+                .push(
+                    widget::text::caption(format!(
+                        "{} · {}",
+                        attachment.name,
+                        crate::ui::size(attachment.size())
+                    ))
+                    .width(Length::Fill),
+                )
+                .push(button(
+                    fl!("remove"),
+                    !composer.sending,
+                    Message::AttachmentRemoved(index),
+                )),
+        );
+    }
+
+    column.into()
+}
+
 
 fn field(
     label: String,

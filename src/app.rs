@@ -308,6 +308,13 @@ pub enum Message {
     SearchCleared,
     /// Open a search hit, which may be in a folder other than the current one.
     HitOpened(usize),
+
+    SaveAttachment(usize),
+    AttachmentSaved(Result<std::path::PathBuf, String>),
+    /// Attach a file the user picked.
+    AttachFile,
+    FilePicked(Option<Vec<std::path::PathBuf>>),
+    AttachmentRemoved(usize),
     DraftOpened(String),
     DraftDeleted(String),
     ComposeSend,
@@ -795,6 +802,57 @@ impl cosmic::Application for AppModel {
             }
             Message::HitOpened(index) => self.open_hit(index),
 
+            Message::SaveAttachment(index) => self.save_attachment(index),
+            Message::AttachmentSaved(result) => {
+                self.status = Some(match result {
+                    // Where it *landed*: the name is sanitised and a collision
+                    // gets a counter, so naming the folder would be unhelpful
+                    // if the file is actually `report (3).pdf`.
+                    Ok(path) => fl!("attachment-saved", path = path.display().to_string()),
+                    Err(why) => fl!("attachment-not-saved", reason = why),
+                });
+                Task::none()
+            }
+            Message::AttachFile => cosmic::task::future(async move {
+                let picked = cosmic::dialog::file_chooser::open::Dialog::new()
+                    .open_files()
+                    .await
+                    .ok()
+                    .map(|response| {
+                        response
+                            .urls()
+                            .iter()
+                            .filter_map(|url| url.to_file_path().ok())
+                            .collect()
+                    });
+                Message::FilePicked(picked)
+            }),
+            Message::FilePicked(paths) => {
+                let Some(paths) = paths else {
+                    return Task::none();
+                };
+                for path in paths {
+                    match cosmic_pim_mail::compose::Attachment::from_path(&path) {
+                        Ok(attachment) => {
+                            if let Some(composer) = self.composer.as_mut() {
+                                composer.draft.attachments.push(attachment);
+                            }
+                        }
+                        Err(why) => {
+                            if let Some(composer) = self.composer.as_mut() {
+                                composer.error = Some(why.to_string());
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::AttachmentRemoved(index) => self.with_composer(|composer| {
+                if index < composer.draft.attachments.len() {
+                    composer.draft.attachments.remove(index);
+                }
+            }),
+
             Message::DraftOpened(id) => self.open_draft(&id),
             Message::DraftDeleted(id) => {
                 if let Some(connection) = self.connection.as_ref()
@@ -1108,6 +1166,25 @@ impl AppModel {
                 Task::none()
             }
         }
+    }
+
+    /// Saves one attachment of the open message.
+    fn save_attachment(&mut self, index: usize) -> Task<Message> {
+        let (Some(connection), Some(folder), Some(uid)) = (
+            self.connection.clone(),
+            self.current_folder().cloned(),
+            self.opened.as_ref().map(|opened| opened.uid),
+        ) else {
+            return Task::none();
+        };
+        cosmic::task::future(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                mail::save_attachment(&connection, &folder, uid, index)
+            })
+            .await
+            .unwrap_or_else(|why| Err(why.to_string()));
+            Message::AttachmentSaved(result)
+        })
     }
 
     fn is_searching(&self) -> bool {

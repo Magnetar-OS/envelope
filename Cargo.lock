@@ -1707,6 +1707,7 @@ dependencies = [
  "chrono",
  "cosmic-pim-accounts",
  "cosmic-pim-mail",
+ "dirs",
  "i18n-embed",
  "i18n-embed-fl",
  "libcosmic",

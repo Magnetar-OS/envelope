@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, HashMap};
 use chrono::Utc;
 use cosmic_pim_accounts::{Account, AccountStore, Transport};
 use cosmic_pim_mail::folder::{Folder, SpecialUse};
+use cosmic_pim_mail::attachment;
 use cosmic_pim_mail::compose::Draft;
 use cosmic_pim_mail::drafts::{self, Drafts, Saved};
 use cosmic_pim_mail::imap::{self, Endpoint, Security, Session, SyncOptions};
@@ -321,6 +322,45 @@ pub fn search(
         kept.push(hit);
     }
     Ok(kept)
+}
+
+/// Where a saved attachment goes.
+///
+/// `$XDG_DOWNLOAD_DIR`, the same place a browser puts one, so the user does not
+/// have to learn a second answer to "where did it go". A file picker is the
+/// better long-term answer and needs the desktop portal.
+#[must_use]
+pub fn downloads() -> PathBuf {
+    dirs::download_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
+}
+
+/// Saves one of an open message's attachments, returning where it landed.
+///
+/// Where it *landed*, not where it was asked to go: the name is sanitised and a
+/// collision gets a counter, so "saved to Downloads" would be unhelpful if the
+/// file is actually `report (3).pdf`.
+pub fn save_attachment(
+    connection: &Connection,
+    folder: &Folder,
+    uid: u32,
+    index: usize,
+) -> Result<PathBuf, String> {
+    let store =
+        MaildirStore::open(connection.mailbox_path(folder)).map_err(|why| why.to_string())?;
+    let raw = store
+        .raw(uid)
+        .map_err(|why| why.to_string())?
+        .ok_or_else(|| "that message is no longer in this mailbox".to_string())?;
+
+    let message = Message::parse(&raw).ok_or_else(|| "that message could not be read".to_string())?;
+    let attachment = message
+        .attachments
+        .get(index)
+        .ok_or_else(|| "that attachment is not in the message".to_string())?;
+
+    let bytes = attachment::bytes_of(&raw, index).map_err(|why| why.to_string())?;
+    attachment::save_into(&downloads(), &attachment.name, &bytes)
+        .map_err(|why| why.to_string())
 }
 
 /// Drops one mailbox's index rows.

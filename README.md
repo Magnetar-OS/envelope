@@ -52,6 +52,8 @@ Envelope reads, threads, syncs, and sends. What works:
   separate button that says so.
 - **Search** across folders, by sender, subject, and the first line, with
   `from:`, `subject:`, `is:unread`, `is:starred`, and `has:attachment`.
+- **Attachments** — received ones save to Downloads, and files can be attached
+  to what you send. Nothing is ever opened for you.
 
 What does not work yet: **HTML composition**, and that is a decision rather than
 a gap — the reader shows text, so an HTML composer would be writing in a format

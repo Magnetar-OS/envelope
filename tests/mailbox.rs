@@ -515,3 +515,112 @@ fn an_empty_search_returns_nothing_rather_than_the_mailbox() {
     assert!(mail::search(&connection, &[inbox()], "", 50).expect("search").is_empty());
     assert!(mail::search(&connection, &[inbox()], "   ", 50).expect("search").is_empty());
 }
+
+const WITH_ATTACHMENT: &str = "Message-ID: <att@x>\r\n\
+From: Ada <ada@example.com>\r\n\
+Subject: Here it is\r\n\
+Date: Mon, 3 Feb 2025 09:00:00 +0000\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: multipart/mixed; boundary=\"b\"\r\n\
+\r\n\
+--b\r\n\
+Content-Type: text/plain\r\n\
+\r\n\
+See attached.\r\n\
+--b\r\n\
+Content-Type: text/csv; name=\"report.csv\"\r\n\
+Content-Disposition: attachment; filename=\"../../evil.csv\"\r\n\
+\r\n\
+a,b\r\n1,2\r\n\
+--b--\r\n";
+
+#[test]
+fn an_attachment_can_be_saved_and_a_hostile_filename_cannot_escape() {
+    // The filename is a string a stranger chose, about to be joined to a path.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    deliver(root, &[(1, WITH_ATTACHMENT, Flags::default())]);
+
+    let connection = connection(root);
+    let opened = mail::open(&connection, &inbox(), 1).expect("open");
+    assert_eq!(opened.message.attachments.len(), 1);
+
+    let into = root.join("downloads");
+    let bytes = cosmic_pim_mail::attachment::bytes_of(
+        &{
+            let store = MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox()))
+                .expect("open");
+            store.raw(1).expect("read").expect("uid 1")
+        },
+        0,
+    )
+    .expect("extract");
+    let saved = cosmic_pim_mail::attachment::save_into(
+        &into,
+        &opened.message.attachments[0].name,
+        &bytes,
+    )
+    .expect("save");
+
+    assert_eq!(
+        saved.parent().expect("a parent"),
+        into,
+        "the file landed outside the folder it was saved into"
+    );
+    assert_eq!(std::fs::read(&saved).expect("read back"), b"a,b\r\n1,2");
+}
+
+#[test]
+fn a_composed_message_carries_its_attachment_and_the_recipient_can_read_it() {
+    let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
+        name: Some("Me".into()),
+        address: "me@example.com".into(),
+    });
+    draft.to.push(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "ada@example.com".into(),
+    });
+    draft.subject = "Report".into();
+    draft.body = "Attached.".into();
+    draft.attachments.push(cosmic_pim_mail::compose::Attachment {
+        name: "report.csv".into(),
+        mime_type: "text/csv".into(),
+        bytes: b"a,b\n1,2\n".to_vec(),
+    });
+
+    let wire = draft.build(false).expect("build").formatted();
+    let received = cosmic_pim_mail::Message::parse(&wire).expect("the recipient can parse it");
+    assert_eq!(received.attachments.len(), 1);
+    assert_eq!(received.attachments[0].name, "report.csv");
+    assert_eq!(
+        cosmic_pim_mail::attachment::bytes_of(&wire, 0).expect("extract"),
+        b"a,b\n1,2\n"
+    );
+    assert!(received.body.text.contains("Attached."), "the body was lost");
+}
+
+#[test]
+fn an_attachment_survives_a_draft_being_saved_and_reopened() {
+    // Bytes rather than a path, precisely so a draft saved on Monday and sent
+    // on Thursday still has the file.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let connection = connection(dir.path());
+
+    let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "me@example.com".into(),
+    });
+    draft.subject = "With a file".into();
+    draft.attachments.push(cosmic_pim_mail::compose::Attachment {
+        name: "photo.png".into(),
+        mime_type: "image/png".into(),
+        bytes: vec![0x89, b'P', b'N', b'G'],
+    });
+
+    let id = mail::save_draft(&connection, None, &draft).expect("save");
+    let reopened = mail::load_draft(&connection, &id)
+        .expect("load")
+        .expect("still there");
+    assert_eq!(reopened.attachments.len(), 1);
+    assert_eq!(reopened.attachments[0].bytes, vec![0x89, b'P', b'N', b'G']);
+}

@@ -49,6 +49,28 @@ pub fn relative_date(date: Option<DateTime<Utc>>) -> String {
     }
 }
 
+/// A byte count as a person reads one.
+///
+/// One rule for the whole application: the reader and the composer are showing
+/// the same fact about the same file, and two formatters would eventually
+/// disagree about it in front of the user.
+#[must_use]
+pub fn size(bytes: usize) -> String {
+    const UNITS: [&str; 4] = ["B", "kB", "MB", "GB"];
+    #[allow(clippy::cast_precision_loss)]
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 /// Text in the theme's destructive colour, for the things that need it.
 pub fn destructive<Message: 'static>(text: String) -> cosmic::Element<'static, Message> {
     use cosmic::widget;

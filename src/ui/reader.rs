@@ -228,32 +228,36 @@ impl<'a> Reader<'a> {
             .spacing(spacing.space_xxxs)
             .push(widget::text::heading(fl!("attachments")));
 
-        for attachment in attachments {
-            // Listed, never opened for the user, and never fetched on their
-            // behalf. An attachment that opens itself is the oldest delivery
-            // mechanism there is.
-            column = column.push(widget::text::caption(format!(
-                "{} · {} · {}",
-                attachment.name,
-                attachment.mime_type,
-                size(attachment.size)
-            )));
+        for (index, attachment) in opened
+            .message
+            .attachments
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| !a.inline)
+        {
+            // Saved on request, never opened for the user. An attachment that
+            // opens itself is the oldest delivery mechanism there is, and the
+            // one step between "saved" and "ran" is the whole defence.
+            column = column.push(
+                widget::row::with_capacity(2)
+                    .align_y(Alignment::Center)
+                    .spacing(spacing.space_xxs)
+                    .push(
+                        widget::text::caption(format!(
+                            "{} · {} · {}",
+                            attachment.name,
+                            attachment.mime_type,
+                            crate::ui::size(attachment.size)
+                        ))
+                        .width(Length::Fill),
+                    )
+                    .push(
+                        widget::button::text(fl!("save"))
+                            .on_press(Message::SaveAttachment(index)),
+                    ),
+            );
         }
         column.into()
     }
 }
 
-fn size(bytes: usize) -> String {
-    const UNITS: [&str; 4] = ["B", "kB", "MB", "GB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
-}

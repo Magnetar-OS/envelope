@@ -18,6 +18,65 @@ asserted about the wire and are: the fetch uses `BODY.PEEK[]` and the STORE goes
 out before the FETCH (`tests/live_sync.rs`), and `Bcc` reaches the envelope but
 never the message (`tests/live_send.rs`).
 
+## Parity with Meltemi
+
+The honest measurement, because "ported from Meltemi" invites the wrong
+expectation. Meltemi is ~81 600 lines of Rust plus 347 TypeScript files.
+`cosmic-pim-mail` plus Envelope is ~12 400 lines including tests.
+
+That ratio is not a shortfall to be closed. Most of what Meltemi is, Envelope is
+deliberately not: a five-engine client with an AI layer, an energy-pacing
+system, and eight inbox view modes is a different product. What follows
+separates "not done yet" from "not doing".
+
+### The core client
+
+| | Meltemi | Envelope |
+|---|---|---|
+| IMAP sync | CONDSTORE + QRESYNC, poison-message skip-list, snooze keywords | CONDSTORE, no QRESYNC, no skip-list |
+| Store | SQLCipher-encrypted SQLite | maildir + rebuildable index |
+| Threading | JWZ, server thread ids where offered | JWZ |
+| Folder tree | full, drag-reorder | full, read-only |
+| Read | sandboxed iframe + DOMPurify + CSP | text only, no renderer |
+| Auth results | badges + explainer | failures shown, passes not |
+| Compose | TipTap rich text, 3 window modes | plain text, one pane |
+| Attachments | send, receive, drag-drop, inline CID | send, receive, save |
+| Drafts | server-synced | local |
+| Send | typed pre-acceptance errors, outbox, undo send, scheduled | typed pre-acceptance errors |
+| Search | FTS5 + tantivy + semantic, saved queries | headers and snippet, over the index |
+| Accounts | discovery cascade, OAuth PKCE | host and password, entered |
+
+### Not done yet
+
+In rough order of how much they are missed: **body search** (tantivy), **an
+outbox**, **IDLE**, **account discovery** and **OAuth**, **QRESYNC**,
+**server-side drafts**, **unified inbox**, **keyboard shortcuts and an action
+registry**, **undo**, **rules**, **labels**, **snooze**, **one-click
+unsubscribe**, **import/export**, **OpenPGP and S/MIME**, and the other four
+engines (**JMAP**, **Gmail**, **Graph**, **POP3**).
+
+### Not doing, and why
+
+- **Rich-text compose.** The reader shows text; an HTML composer would write in
+  a format this application cannot display.
+- **An HTML renderer.** Text-only is the stronger display-security position, not
+  a lesser one — there is no sanitiser for a renderer to disagree with, and no
+  remote content can load because nothing loads.
+- **An encrypted store.** Files-as-truth is the suite's promise. Encryption at
+  rest is the disk's job on a Linux desktop.
+- **The AI layer, the energy system, message typing, and the alternative inbox
+  views.** These are Meltemi's product, not the mail client underneath it. If
+  any of them belong in the suite they arrive as their own thing, not as a
+  reason this crate grows an inference budget.
+
+### The shape of the difference
+
+Envelope has roughly a fifth of Meltemi's feature surface and most of what makes
+a mail client usable daily. What it is missing that genuinely bites: **one
+protocol** (IMAP only, so no Gmail or Outlook without an app password), **no
+account discovery** (the user types a hostname), and **no keyboard-first
+triage** — which for a keyboard-first client's users is the largest single gap.
+
 ## Gates
 
 1. **Meltemi licence declaration** (00). Still outstanding, now *verified* to be
