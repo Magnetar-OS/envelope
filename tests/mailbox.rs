@@ -52,6 +52,9 @@ fn connection(root: &std::path::Path) -> Connection {
         }),
         password: String::new(),
         root: root.to_path_buf(),
+        // Per-test, so tests neither collide on one file nor see each other's
+        // threads. The app's default is the shared cache path.
+        index_path: root.join("index.sqlite"),
     }
 }
 
@@ -135,7 +138,7 @@ fn a_mailbox_reads_back_as_conversations_newest_first() {
     let thread = &conversations[1];
     assert_eq!(thread.subject, "Release plan", "the thread kept a Re: prefix");
     assert_eq!(thread.uids, vec![1, 2]);
-    assert_eq!(thread.participants, "Ada, Bob");
+    assert_eq!(thread.participants, ["Ada", "Bob"]);
     assert!(thread.unread, "a thread with one unread reply must read as unread");
     assert_eq!(thread.snippet, "Looks good to me.");
     assert_eq!(thread.newest_uid(), Some(2));
@@ -304,4 +307,27 @@ fn a_message_with_no_date_sorts_last_rather_than_first() {
     assert_eq!(conversations.len(), 2);
     assert_eq!(conversations[0].subject, "Dated");
     assert_eq!(conversations[1].subject, "Undated");
+}
+
+#[test]
+fn the_index_is_a_cache_and_deleting_it_costs_only_a_rescan() {
+    // The suite's promise made operational: the maildir is the truth, and
+    // everything derived from it can be thrown away.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    deliver(
+        root,
+        &[
+            (1, &message("a@x", "", "Plan", "a@x", "Mon, 3 Feb 2025 09:00:00 +0000", "one"), Flags::default()),
+            (2, &message("b@x", "<a@x>", "Re: Plan", "b@x", "Mon, 3 Feb 2025 10:00:00 +0000", "two"), Flags::default()),
+        ],
+    );
+
+    let connection = connection(root);
+    let before = mail::conversations(&connection, &inbox()).expect("read");
+    assert_eq!(before.len(), 1);
+
+    std::fs::remove_file(&connection.index_path).expect("delete the cache");
+    let after = mail::conversations(&connection, &inbox()).expect("read again");
+    assert_eq!(after, before, "the mailbox did not survive losing its cache");
 }

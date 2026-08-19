@@ -36,7 +36,11 @@ Envelope reads, threads, syncs, and sends. What works:
   `mbsync`, `notmuch`, `mu`, and `mutt` read the same files. Delete the app and
   your mail is still there, in a format thirty years of tools understand.
 - **Conversations** — JWZ threading with deterministic thread ids, so a reply
-  finds its parent even when the parent was never downloaded.
+  finds its parent even when the parent was never downloaded. Backed by a
+  rebuildable index, so opening a folder costs a query rather than a walk of
+  every message in it.
+- **Checks for mail on its own**, every two minutes, which also drains any
+  writes made while offline.
 - **A reader** that shows what a human would actually see, and says what the
   message tried to do.
 - **Sending** — plain-text compose, reply, reply-all, and forward, over SMTP,

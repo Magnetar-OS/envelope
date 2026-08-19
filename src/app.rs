@@ -17,6 +17,7 @@
 use std::collections::HashMap;
 
 use cosmic::app::{Core, Task, context_drawer};
+use cosmic::iced::Subscription;
 use cosmic::iced::Length;
 use cosmic::widget::{self, about::About, menu};
 use cosmic::{Apply as _, Element};
@@ -62,6 +63,16 @@ pub struct AppModel {
     mail_form: Option<MailForm>,
     composer: Option<Composer>,
 }
+
+/// How often the mailbox is checked.
+///
+/// A poll, not IDLE. IDLE is the right answer and needs a connection held open
+/// on its own thread; until that exists, two minutes is the interval that keeps
+/// a mail client feeling live without being the reason a laptop's radio never
+/// sleeps. It is also short enough that the writeback queue drains promptly —
+/// a flag change made offline reaches the server on the next tick, not the next
+/// time somebody presses a button.
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// A message being written.
 ///
@@ -215,6 +226,9 @@ pub enum Message {
 
     AccountSelected(String),
     SyncNow,
+    /// The periodic check. Distinct from [`Self::SyncNow`] because it must be
+    /// silent about doing nothing.
+    Poll,
     /// Boxed, like the other loaded-a-lot-of-data variants below: an enum is
     /// sized to its largest variant, and a `LaunchUrl` should not carry a
     /// folder list's worth of padding around with it.
@@ -341,12 +355,12 @@ impl cosmic::Application for AppModel {
             model.open_mailto(&url);
         }
 
-        // Nothing is fetched at startup. The folders and messages are already
-        // on disk, so the window fills immediately; syncing is something the
-        // user asks for or a timer does, not a thing that makes the first
-        // frame wait for a server.
-        let task = model.load_cached_folders();
-        (model, task)
+        // The window is filled from disk first and the server is asked
+        // afterwards, in that order: the mailbox is already there, so there is
+        // no reason for the first frame to wait on a network round trip.
+        let cached = model.load_cached_folders();
+        let first_sync = model.sync_now();
+        (model, Task::batch([cached, first_sync]))
     }
 
     fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
@@ -387,6 +401,13 @@ impl cosmic::Application for AppModel {
         }
         .view();
         Some(sidebar.map(cosmic::Action::App))
+    }
+
+    fn subscription(&self) -> Subscription<Self::Message> {
+        // Unconditional. Gating it on "is an account configured" would mean the
+        // timer does not exist yet when one is added, and the first check would
+        // wait for a restart.
+        cosmic::iced::time::every(POLL_INTERVAL).map(|_| Message::Poll)
     }
 
     fn context_drawer(&self) -> Option<context_drawer::ContextDrawer<'_, Self::Message>> {
@@ -484,11 +505,28 @@ impl cosmic::Application for AppModel {
 
             Message::SyncNow => self.sync_now(),
 
+            Message::Poll => {
+                // A poll is not a command. If a pass is already running, or
+                // there is nothing to sync, it does nothing at all — and it
+                // never clears a status line the user is in the middle of
+                // reading, which is what makes an automatic check different
+                // from the button.
+                if self.syncing || self.connection.is_none() {
+                    return Task::none();
+                }
+                self.sync_now()
+            }
+
             Message::SyncFinished(result) => {
                 self.syncing = false;
                 match *result {
                     Ok(report) => {
-                        self.status = Some(summarise(&report));
+                        // A pass that found nothing says nothing. An automatic
+                        // check that overwrites the status line every two
+                        // minutes with "0 new" trains the user to ignore it.
+                        if report.is_worth_reporting() {
+                            self.status = Some(summarise(&report));
+                        }
                         // Folders come from the server, so this is also how a
                         // newly created mailbox appears.
                         if !report.folders.is_empty() {

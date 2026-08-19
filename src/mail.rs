@@ -9,15 +9,15 @@
 //! Circle's equivalents live for their formats, and duplicating any of them
 //! here would be the start of a second implementation.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use cosmic_pim_accounts::{Account, AccountStore, Transport};
 use cosmic_pim_mail::folder::{Folder, SpecialUse};
 use cosmic_pim_mail::compose::Draft;
 use cosmic_pim_mail::imap::{self, Endpoint, Security, Session, SyncOptions};
 use cosmic_pim_mail::smtp::{self, Outcome, SmtpEndpoint};
+use cosmic_pim_mail::index::{self, Index};
 use cosmic_pim_mail::maildir::{self, MaildirStore};
 use cosmic_pim_mail::model::{Flags, Mailbox, Message};
 use cosmic_pim_mail::push::{PushOp, PushQueue};
@@ -30,28 +30,12 @@ use cosmic_pim_mail::store::MailStore;
 /// it cheap while still bounding how long a stale message can linger.
 const RECONCILE_EVERY: u64 = 10;
 
-/// One conversation, summarised for the list.
-#[derive(Debug, Clone)]
-pub struct Conversation {
-    pub thread_id: String,
-    pub subject: String,
-    /// Who is in it, in the order they appear, deduplicated.
-    pub participants: String,
-    pub date: Option<DateTime<Utc>>,
-    pub snippet: String,
-    /// UIDs, oldest first.
-    pub uids: Vec<u32>,
-    pub unread: bool,
-    pub flagged: bool,
-    pub has_attachments: bool,
-}
-
-impl Conversation {
-    #[must_use]
-    pub fn newest_uid(&self) -> Option<u32> {
-        self.uids.last().copied()
-    }
-}
+/// One conversation, as the list shows it.
+///
+/// Re-exported from the substrate rather than redefined: the index already
+/// assembles exactly this, and a second shape here would be a mapping layer
+/// whose only job is to be kept in step.
+pub use cosmic_pim_mail::index::Conversation;
 
 /// A message opened in the reader.
 #[derive(Debug, Clone)]
@@ -89,6 +73,12 @@ pub struct Connection {
     pub submission: Option<Submission>,
     pub password: String,
     pub root: PathBuf,
+    /// Where the conversation index lives.
+    ///
+    /// Carried on the connection rather than looked up at the point of use so
+    /// that a root pointed somewhere else — a test, a second profile — cannot
+    /// end up sharing a cache that describes a different mailbox.
+    pub index_path: PathBuf,
 }
 
 /// Everything needed to send, as opposed to read.
@@ -98,6 +88,17 @@ pub struct Submission {
     /// Who mail is from. One password serves both directions — SMTP AUTH uses
     /// the account's credentials whatever address is on the From line.
     pub identity: Mailbox,
+}
+
+impl SyncReport {
+    /// Is there anything here a person needs to see?
+    ///
+    /// A quiet pass is the normal case, several times an hour. Saying "0 new"
+    /// each time is how a status line stops being read.
+    #[must_use]
+    pub fn is_worth_reporting(&self) -> bool {
+        self.fetched > 0 || self.pushed > 0 || !self.failures.is_empty() || self.stuck > 0
+    }
 }
 
 impl Connection {
@@ -142,6 +143,7 @@ impl Connection {
             },
             password,
             root: maildir::default_root(),
+            index_path: index::default_path(),
         }))
     }
 
@@ -193,6 +195,18 @@ pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
                 report.fetched += outcome.fetched;
                 report.pushed += outcome.pushed.succeeded;
                 report.stuck += outcome.pushed.needs_reconcile + outcome.pushed.needs_user;
+
+                // A renumbering does not make the index stale, it makes it
+                // wrong: every UID in it now names a different message or
+                // none. Dropping the rows is the only correct response, and
+                // the next read rebuilds them from the refetched maildir.
+                if outcome.renumbered
+                    && let Err(why) = forget_index(connection, &folder.wire_name)
+                {
+                    report
+                        .failures
+                        .push((folder.display_name.clone(), why));
+                }
             }
             Err(why) => report
                 .failures
@@ -202,6 +216,14 @@ pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
 
     let _ = session.logout();
     Ok(report)
+}
+
+/// Drops one mailbox's index rows.
+fn forget_index(connection: &Connection, mailbox: &str) -> Result<(), String> {
+    let mut index = Index::open(&connection.index_path).map_err(|why| why.to_string())?;
+    index
+        .forget(&connection.account_id, mailbox)
+        .map_err(|why| why.to_string())
 }
 
 /// Every folder we have a maildir for, without touching the network.
@@ -218,6 +240,11 @@ pub fn cached_folders(connection: &Connection, folders: &[Folder]) -> Vec<Folder
 }
 
 /// Reads one mailbox off disk and groups it into conversations, newest first.
+///
+/// The expensive half — parsing — happens in the index and only for messages it
+/// has not seen. A folder that has not changed since the last look costs a
+/// query, which is what makes clicking between folders feel like navigation
+/// rather than loading.
 pub fn conversations(connection: &Connection, folder: &Folder) -> Result<Vec<Conversation>, String> {
     let path = connection.mailbox_path(folder);
     if !path.join("cur").is_dir() {
@@ -226,78 +253,13 @@ pub fn conversations(connection: &Connection, folder: &Folder) -> Result<Vec<Con
     let store = MaildirStore::open(&path).map_err(|why| why.to_string())?;
     let flags = store.state().map_err(|why| why.to_string())?.entries;
 
-    let threads = imap::thread_mailbox(&store, &connection.account_id, &folder.wire_name)
+    let mut index = Index::open(&connection.index_path).map_err(|why| why.to_string())?;
+    index
+        .sync_mailbox(&connection.account_id, &folder.wire_name, &store)
         .map_err(|why| why.to_string())?;
-
-    let mut conversations: Vec<Conversation> = threads
-        .into_iter()
-        .filter_map(|(thread_id, uids)| {
-            summarise(&store, &flags, thread_id, uids)
-        })
-        .collect();
-
-    // Newest first, and undated messages last rather than first: a message with
-    // no parseable Date is a curiosity, not the most important thing the user
-    // owns.
-    conversations.sort_by_key(|c| std::cmp::Reverse(c.date));
-    Ok(conversations)
-}
-
-fn summarise(
-    store: &MaildirStore,
-    flags: &BTreeMap<u32, Flags>,
-    thread_id: String,
-    uids: Vec<u32>,
-) -> Option<Conversation> {
-    let mut participants: Vec<String> = Vec::new();
-    let mut subject = String::new();
-    let mut snippet = String::new();
-    let mut date = None;
-    let mut has_attachments = false;
-
-    for uid in &uids {
-        let Ok(Some(raw)) = store.raw(*uid) else {
-            continue;
-        };
-        let Some(message) = Message::parse(&raw) else {
-            continue;
-        };
-        if let Some(sender) = message.sender() {
-            let name = sender.display().to_owned();
-            if !participants.contains(&name) {
-                participants.push(name);
-            }
-        }
-        has_attachments |= message.attachments.iter().any(|a| !a.inline);
-        // The thread's title is its oldest message's subject with the Re:
-        // prefixes off, so a long conversation does not rename itself every
-        // time somebody's client spells the prefix differently.
-        if subject.is_empty() && !message.subject_norm.is_empty() {
-            subject = message.subject_norm.clone();
-        }
-        // The snippet and date come from the newest, which is what the user is
-        // deciding whether to read.
-        if message.date >= date || date.is_none() {
-            date = message.date.or(date);
-            snippet = message.body.text.lines().next().unwrap_or("").to_owned();
-        }
-    }
-
-    if subject.is_empty() {
-        subject = "(no subject)".to_owned();
-    }
-
-    Some(Conversation {
-        unread: uids.iter().any(|uid| !flags.get(uid).is_some_and(|f| f.seen)),
-        flagged: uids.iter().any(|uid| flags.get(uid).is_some_and(|f| f.flagged)),
-        participants: participants.join(", "),
-        thread_id,
-        subject,
-        date,
-        snippet,
-        uids,
-        has_attachments,
-    })
+    index
+        .conversations(&connection.account_id, &folder.wire_name, &flags)
+        .map_err(|why| why.to_string())
 }
 
 /// Opens one message for the reader.

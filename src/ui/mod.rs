@@ -10,6 +10,17 @@ pub mod sidebar;
 
 use chrono::{DateTime, Datelike as _, Local, Utc};
 
+/// [`relative_date`] for an epoch-milliseconds timestamp, as the index stores
+/// them. Zero means "this message had no parseable Date", which shows as
+/// nothing rather than as 1970.
+#[must_use]
+pub fn relative_date_ms(ms: i64) -> String {
+    if ms == 0 {
+        return String::new();
+    }
+    relative_date(DateTime::from_timestamp_millis(ms))
+}
+
 /// A timestamp as a mail list shows one: a time for today, a weekday for this
 /// week, a date otherwise.
 ///

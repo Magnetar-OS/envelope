@@ -72,10 +72,11 @@ impl<'a> List<'a> {
         // Unread is carried by weight rather than by a dot: it is the property
         // the eye needs to pick up while scrolling, and a bold row reads at a
         // glance where a marker has to be looked for.
+        let participants = conversation.participants.join(", ");
         heading = heading.push(if conversation.unread {
-            widget::text::heading(conversation.participants.clone()).width(Length::Fill)
+            widget::text::heading(participants).width(Length::Fill)
         } else {
-            widget::text::body(conversation.participants.clone()).width(Length::Fill)
+            widget::text::body(participants).width(Length::Fill)
         });
 
         if conversation.flagged {
@@ -84,8 +85,8 @@ impl<'a> List<'a> {
         if conversation.has_attachments {
             heading = heading.push(widget::icon::from_name("mail-attachment-symbolic").size(12));
         }
-        heading = heading.push(widget::text::caption(crate::ui::relative_date(
-            conversation.date,
+        heading = heading.push(widget::text::caption(crate::ui::relative_date_ms(
+            conversation.date_ms,
         )));
 
         let mut subject_line = widget::row::with_capacity(2)
