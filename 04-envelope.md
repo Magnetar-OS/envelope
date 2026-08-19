@@ -2,20 +2,21 @@
 
 ## As built
 
-Reads, threads, and syncs a real mailbox. The substrate crate the earlier
-version of this document was waiting on now exists: `cosmic-pim-mail`, standing
-beside `cosmic-pim-caldav` rather than on it, with the message model over
-verbatim RFC 5322 bytes, a maildir store, JWZ threading, HTML-to-visible-text
-extraction, RFC 8601 parsing, and IMAP with durable writeback. ~100 unit tests
-plus a scripted-server end-to-end suite in the `live_sync.rs` style.
+Reads, threads, syncs, and sends. The substrate crate the earlier version of
+this document was waiting on now exists: `cosmic-pim-mail`, standing beside
+`cosmic-pim-caldav` rather than on it, with the message model over verbatim RFC
+5322 bytes, a maildir store, JWZ threading, HTML-to-visible-text extraction, RFC
+8601 parsing, IMAP with durable writeback, SMTP, and a rebuildable conversation
+index. ~135 tests, including two scripted-server end-to-end suites.
 
-Envelope itself is the front end: sidebar, conversation list, reader, and an
-Accounts page whose only job is to attach a mail server to an account the suite
-already has.
+Envelope itself is the front end: sidebar, conversation list, reader, composer,
+`mailto:` handling, a two-minute poll, and an Accounts page whose only job is to
+attach a mail server to an account the suite already has.
 
-The invariants are pinned where they can be pinned. Two of them can only be
-asserted about the wire and are, in `mail/tests/live_sync.rs`: the fetch uses
-`BODY.PEEK[]`, and the STORE goes out before the FETCH.
+The invariants are pinned where they can be pinned. Three of them can only be
+asserted about the wire and are: the fetch uses `BODY.PEEK[]` and the STORE goes
+out before the FETCH (`tests/live_sync.rs`), and `Bcc` reaches the envelope but
+never the message (`tests/live_send.rs`).
 
 ## Gates
 
@@ -72,8 +73,11 @@ asserted about the wire and are, in `mail/tests/live_sync.rs`: the fetch uses
    substrate. The cycle itself — cursor, windowed discovery, CONDSTORE deltas,
    held-back MODSEQ, periodic reconcile — is perhaps 400 lines and ported
    cleanly.
-4. Search: **not done.** `tantivy_search.rs` + `search_query.rs`.
-5. UI: **done** except composition.
+4. Search: **not done.** `tantivy_search.rs` + `search_query.rs`. The
+   structured half of what search needs now exists — `mail::index` holds
+   senders, subjects, dates, and thread ids — so the port is the full-text
+   ranking, not the plumbing.
+5. UI: **done**, including composition.
 
 ## Sizes in the donor, corrected
 
@@ -99,15 +103,43 @@ The figures in the older version of this file and in the README were stale.
 portable; its ingestion is built on `campaigns`, `verify`, and rusqlite. It is
 also of little use without a send path, so it belongs after SMTP, not before.
 
+## Send path, as taken
+
+- **`Draft` is a structure, not bytes.** `build()` produces RFC 5322 once, at
+  send time. Quoting, recipient edits, and validation operate on fields — the
+  same reasoning that keeps a stored message from being re-serialised, arrived
+  at from the other direction.
+- **Plain text only**, and this is a decision rather than a stage. The reader
+  shows text, so an HTML composer would be writing in a format the application
+  cannot display. When HTML composition arrives it is a second body on the same
+  draft, with the text part still generated.
+- **The send outcome is a three-way type, not a `Result`.** Pre-acceptance
+  failures (refused connection, TLS, an explicit 4xx) are safe to retry;
+  anything from a mid-`DATA` timeout onwards may have been delivered and is
+  terminal. Timeouts count as ambiguous even though they usually are not: the
+  two directions of being wrong are not symmetric.
+- **`Bcc` splits.** The wire copy has no `Bcc` header, the Sent copy does. Built
+  twice rather than built once and edited, because editing RFC 5322 bytes is the
+  thing this crate does not do.
+- **`mailto:` honours `to`, `cc`, `subject`, `body` and nothing else.** RFC 6068
+  permits arbitrary headers and its security consideration is real: a link that
+  can set `bcc` on a message the user then writes and sends is an attack, and
+  "the field is visible" is not a defence.
+
 ## Next, in order
 
-1. **SMTP and a composer.** Plain text, reply and forward with quoting, before
-   HTML composition is discussed at all. `lettre` in the donor; the send path is
-   substrate (`cosmic-pim-mail`), the composer is Envelope.
-2. **Search.** `tantivy_search.rs` + `search_query.rs` as the rebuildable index,
-   same standing as the calendar's SQLite cache.
-3. **IDLE**, so the mailbox updates without a timer.
-4. **A server quirks table**, shared in shape with the CalDAV one (01) — the
+1. **Drafts.** The composer is discarded on cancel, because a Drafts folder is
+   the right answer and does not exist. It needs `APPEND` to Drafts with the
+   `\Draft` flag — the mechanism is already there (`Session::append`) — plus
+   the UI for reopening one.
+2. **Search.** `tantivy_search.rs` + `search_query.rs`. The structured half is
+   done; this is the ranking.
+3. **IDLE**, so the mailbox updates without waiting up to two minutes.
+4. **An outbox.** A `Sent::Failed` currently keeps the composer open and leaves
+   the retry to the user. A queued outbox with the same durability the flag
+   queue has is the right shape — but only for the retryable class, and the
+   distinction is already typed.
+5. **A server quirks table**, shared in shape with the CalDAV one (01) — the
    IMAP zoo is the same problem, larger.
 
 ## Integration contracts, still outstanding
@@ -134,7 +166,10 @@ also of little use without a send path, so it belongs after SMTP, not before.
   the cheap next step, as Radicale was for CalDAV.
 - **Composer scope creep** — unchanged, and now the immediate risk rather than a
   future one.
-- **Threading cost.** `thread_mailbox` parses every message in a folder on every
-  load. Fine for thousands, not for a 200k-message archive. The fix is the
-  disposable index, which is item 2 — worth doing before it becomes the reason
-  someone reaches for a message table.
+- **Threading cost: resolved.** `mail::index` holds what a list shows and parses
+  only messages it has not seen, so a folder that has not changed costs a query.
+  It is a cache in the same sense the calendar's is — delete it and it rebuilds,
+  and a test asserts exactly that.
+- **Send has no outbox.** A failed send keeps the composer open, which is
+  correct but manual. See item 4 above; the classification that makes an
+  automatic retry safe already exists, the queue does not.
