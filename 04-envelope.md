@@ -42,18 +42,17 @@ separates "not done yet" from "not doing".
 | Compose | TipTap rich text, 3 window modes | plain text, one pane |
 | Attachments | send, receive, drag-drop, inline CID | send, receive, save |
 | Drafts | server-synced | local |
-| Send | typed pre-acceptance errors, outbox, undo send, scheduled | typed pre-acceptance errors |
+| Send | + outbox, undo send, scheduled | typed pre-acceptance errors, outbox |
 | Search | FTS5 + tantivy + semantic, saved queries | headers and snippet, over the index |
-| Accounts | discovery cascade, OAuth PKCE | host and password, entered |
+| Accounts | six-stage discovery, OAuth PKCE | three-stage discovery, password |
 
 ### Not done yet
 
-In rough order of how much they are missed: **body search** (tantivy), **an
-outbox**, **IDLE**, **account discovery** and **OAuth**, **QRESYNC**,
-**server-side drafts**, **unified inbox**, **keyboard shortcuts and an action
-registry**, **undo**, **rules**, **labels**, **snooze**, **one-click
-unsubscribe**, **import/export**, **OpenPGP and S/MIME**, and the other four
-engines (**JMAP**, **Gmail**, **Graph**, **POP3**).
+In rough order of how much they are missed: **keyboard shortcuts and an action
+registry**, **body search** (tantivy), **IDLE**, **OAuth**, **QRESYNC**,
+**server-side drafts**, **unified inbox**, **undo**, **rules**, **labels**,
+**snooze**, **one-click unsubscribe**, **import/export**, **OpenPGP and
+S/MIME**, and the other four engines (**JMAP**, **Gmail**, **Graph**, **POP3**).
 
 ### Not doing, and why
 
@@ -73,9 +72,9 @@ engines (**JMAP**, **Gmail**, **Graph**, **POP3**).
 
 Envelope has roughly a fifth of Meltemi's feature surface and most of what makes
 a mail client usable daily. What it is missing that genuinely bites: **one
-protocol** (IMAP only, so no Gmail or Outlook without an app password), **no
-account discovery** (the user types a hostname), and **no keyboard-first
-triage** — which for a keyboard-first client's users is the largest single gap.
+protocol and one auth method** — IMAP with a password, so Gmail and Outlook need
+an app password rather than OAuth — and **no keyboard-first triage**, which for
+a keyboard-first client's users is the largest single gap.
 
 ## Gates
 
@@ -209,10 +208,8 @@ also of little use without a send path, so it belongs after SMTP, not before.
    it does not, and a reconciliation pass for servers that mangle both. Worth
    building; not worth shipping half of.
 3. **IDLE**, so the mailbox updates without waiting up to two minutes.
-4. **An outbox.** A `Sent::Failed` keeps the composer open and leaves the retry
-   to the user. A queued outbox with the flag queue's durability is the right
-   shape — but only for the retryable class, and that distinction is already
-   typed.
+4. **Keyboard shortcuts.** The largest gap for the people this suite is for, and
+   the one that does not need any protocol work.
 5. **A server quirks table**, shared in shape with the CalDAV one (01) — the
    IMAP zoo is the same problem, larger.
 

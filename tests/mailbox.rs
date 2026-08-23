@@ -624,3 +624,126 @@ fn an_attachment_survives_a_draft_being_saved_and_reopened() {
     assert_eq!(reopened.attachments.len(), 1);
     assert_eq!(reopened.attachments[0].bytes, vec![0x89, b'P', b'N', b'G']);
 }
+
+#[test]
+fn a_send_that_never_reached_the_server_lands_in_the_outbox() {
+    // Written offline. It must be queued, durable, and out of the composer's
+    // hands — not lost, and not the user's problem to remember.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let mut connection = connection(root);
+    // Port 1 refuses instantly, which is a definite non-acceptance.
+    if let Some(submission) = connection.submission.as_mut() {
+        submission.endpoint.host = "127.0.0.1".into();
+        submission.endpoint.port = 1;
+        submission.endpoint.security = Security::Plaintext;
+    }
+
+    let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "me@example.com".into(),
+    });
+    draft.to.push(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "ada@example.com".into(),
+    });
+    draft.subject = "On a train".into();
+    draft.body = "Written offline.".into();
+
+    let sent = mail::send(&connection, &draft, &[], None, None);
+    assert!(
+        matches!(sent, mail::Sent::Queued),
+        "an offline send was not queued: {sent:?}"
+    );
+
+    let queued = mail::list_outbox(&connection).expect("list");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].draft.subject, "On a train");
+    assert!(queued[0].is_live(), "it will never be retried");
+}
+
+#[test]
+fn queueing_a_send_takes_its_draft_with_it() {
+    // Leaving both would show the message twice and send it once.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let mut connection = connection(root);
+    if let Some(submission) = connection.submission.as_mut() {
+        submission.endpoint.host = "127.0.0.1".into();
+        submission.endpoint.port = 1;
+        submission.endpoint.security = Security::Plaintext;
+    }
+
+    let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "me@example.com".into(),
+    });
+    draft.to.push(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "ada@example.com".into(),
+    });
+    draft.subject = "Saved then sent".into();
+
+    let id = mail::save_draft(&connection, None, &draft).expect("save");
+    assert_eq!(mail::list_drafts(&connection).expect("list").len(), 1);
+
+    let sent = mail::send(&connection, &draft, &[], None, Some(&id));
+    assert!(matches!(sent, mail::Sent::Queued), "{sent:?}");
+
+    assert!(
+        mail::list_drafts(&connection).expect("list").is_empty(),
+        "the message is now in the outbox and in drafts"
+    );
+    assert_eq!(mail::list_outbox(&connection).expect("list").len(), 1);
+}
+
+#[test]
+fn a_queued_message_can_be_retried_or_discarded() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let mut connection = connection(root);
+    if let Some(submission) = connection.submission.as_mut() {
+        submission.endpoint.host = "127.0.0.1".into();
+        submission.endpoint.port = 1;
+        submission.endpoint.security = Security::Plaintext;
+    }
+
+    let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "me@example.com".into(),
+    });
+    draft.to.push(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "ada@example.com".into(),
+    });
+    draft.subject = "Waiting".into();
+    mail::send(&connection, &draft, &[], None, None);
+
+    let id = mail::list_outbox(&connection).expect("list")[0].id.clone();
+    mail::retry_queued(&connection, &id).expect("retry");
+    assert!(mail::list_outbox(&connection).expect("list")[0].is_live());
+
+    mail::discard_queued(&connection, &id).expect("discard");
+    assert!(mail::list_outbox(&connection).expect("list").is_empty());
+}
+
+#[test]
+fn discovery_answers_for_a_known_provider_without_touching_the_network() {
+    // On every keystroke, which is why it must not.
+    let found = mail::known_settings("someone@gmail.com").expect("gmail");
+    assert_eq!(found.imap_host, "imap.gmail.com");
+    assert_eq!(found.smtp_host, "smtp.gmail.com");
+    assert!(mail::known_settings("someone@example.invalid").is_none());
+}
+
+#[test]
+fn discovery_refuses_an_address_that_would_probe_a_private_network() {
+    // "Add an account" must not become a way to scan somebody's own network.
+    for address in ["evil@127.0.0.1", "evil@192.168.1.1", "evil@localhost"] {
+        assert!(
+            mail::discover(address).is_err(),
+            "{address} was accepted for probing"
+        );
+        assert!(mail::known_settings(address).is_none());
+    }
+}

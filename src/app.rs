@@ -65,6 +65,8 @@ pub struct AppModel {
     /// Local drafts for the selected account, newest first.
     drafts: Vec<cosmic_pim_mail::drafts::Saved>,
     showing_drafts: bool,
+    outbox: Vec<cosmic_pim_mail::outbox::Queued>,
+    showing_outbox: bool,
 
     /// What is in the search box. Empty means the box is closed.
     search: String,
@@ -207,6 +209,10 @@ pub struct MailForm {
     /// Empty means "the login, if it is an address".
     pub from_address: String,
     pub from_name: String,
+    /// The address discovery works from — usually the From address, which is
+    /// the only thing the user reliably knows.
+    pub discovering: bool,
+    pub discovered_from: Option<String>,
     pub error: Option<String>,
 }
 
@@ -227,8 +233,31 @@ impl MailForm {
             smtp_transport: mail.map(|m| m.smtp_transport).unwrap_or_default(),
             from_address: mail.map(|m| m.from_address.clone()).unwrap_or_default(),
             from_name: mail.map(|m| m.from_name.clone()).unwrap_or_default(),
+            discovering: false,
+            discovered_from: None,
             error: None,
         }
+    }
+
+    /// Fills the form in from what discovery found.
+    ///
+    /// The From address is left alone: discovery answers "where does this
+    /// domain's mail live", and the user may well be sending as an alias.
+    fn apply(&mut self, found: &cosmic_pim_mail::Discovered) {
+        self.host = found.imap_host.clone();
+        self.port = found.imap_port.to_string();
+        self.transport = transport_of(found.imap_security);
+        self.smtp_host = found.smtp_host.clone();
+        self.smtp_port = found.smtp_port.to_string();
+        self.smtp_transport = transport_of(found.smtp_security);
+        self.username = found.username.clone();
+        self.discovered_from = Some(match found.source {
+            cosmic_pim_mail::discovery::Source::Known => fl!("found-known"),
+            cosmic_pim_mail::discovery::Source::Autoconfig => fl!("found-autoconfig"),
+            // Said differently on purpose: a guess that a socket accepted is
+            // not the same confidence as a published setting.
+            cosmic_pim_mail::discovery::Source::Guessed => fl!("found-guessed"),
+        });
     }
 
     #[must_use]
@@ -239,6 +268,14 @@ impl MailForm {
     #[must_use]
     pub fn smtp_transport_index(&self) -> usize {
         transport_index(self.smtp_transport)
+    }
+}
+
+fn transport_of(security: cosmic_pim_mail::imap::Security) -> Transport {
+    match security {
+        cosmic_pim_mail::imap::Security::Tls => Transport::Tls,
+        cosmic_pim_mail::imap::Security::StartTls => Transport::StartTls,
+        cosmic_pim_mail::imap::Security::Plaintext => Transport::Plaintext,
     }
 }
 
@@ -288,6 +325,8 @@ pub enum Message {
     MailFormFromNameChanged(String),
     MailFormCancel,
     MailFormSave,
+    MailFormDiscover,
+    MailFormDiscovered(Box<Result<cosmic_pim_mail::Discovered, String>>),
 
     Compose,
     Reply { all: bool },
@@ -303,6 +342,10 @@ pub enum Message {
     ComposeDiscard,
     DraftsLoaded(Vec<cosmic_pim_mail::drafts::Saved>),
     ShowDrafts,
+    ShowOutbox,
+    OutboxLoaded(Vec<cosmic_pim_mail::outbox::Queued>),
+    QueuedRetried(String),
+    QueuedDiscarded(String),
     SearchChanged(String),
     SearchFinished(Vec<cosmic_pim_mail::Hit>),
     SearchCleared,
@@ -396,6 +439,8 @@ impl cosmic::Application for AppModel {
             composer: None,
             drafts: Vec::new(),
             showing_drafts: false,
+            outbox: Vec::new(),
+            showing_outbox: false,
             search: String::new(),
             results: Vec::new(),
             searching: false,
@@ -414,8 +459,9 @@ impl cosmic::Application for AppModel {
         // no reason for the first frame to wait on a network round trip.
         let cached = model.load_cached_folders();
         let drafts = model.reload_drafts();
+        let outbox = model.reload_outbox();
         let first_sync = model.sync_now();
-        (model, Task::batch([cached, drafts, first_sync]))
+        (model, Task::batch([cached, drafts, outbox, first_sync]))
     }
 
     fn header_end(&self) -> Vec<Element<'_, Self::Message>> {
@@ -463,6 +509,8 @@ impl cosmic::Application for AppModel {
             unread: &self.unread,
             drafts: self.drafts.len(),
             showing_drafts: self.showing_drafts,
+            outbox: self.outbox.len(),
+            showing_outbox: self.showing_outbox,
         }
         .view();
         Some(sidebar.map(cosmic::Action::App))
@@ -501,6 +549,8 @@ impl cosmic::Application for AppModel {
     fn view(&self) -> Element<'_, Self::Message> {
         let list = if self.is_searching() {
             crate::ui::list::results(&self.results, &self.folders, self.searching, SEARCH_LIMIT)
+        } else if self.showing_outbox {
+            crate::ui::list::outbox(&self.outbox)
         } else if self.showing_drafts {
             crate::ui::list::drafts(&self.drafts)
         } else {
@@ -571,7 +621,11 @@ impl cosmic::Application for AppModel {
                 self.selected_account = Some(id);
                 self.clear_mailbox_state();
                 self.rebuild_connection();
-                Task::batch([self.load_cached_folders(), self.reload_drafts()])
+                Task::batch([
+                    self.load_cached_folders(),
+                    self.reload_drafts(),
+                    self.reload_outbox(),
+                ])
             }
 
             Message::SyncNow => self.sync_now(),
@@ -606,7 +660,7 @@ impl cosmic::Application for AppModel {
                                 self.selected_folder = self.default_folder();
                             }
                         }
-                        self.reload_conversations()
+                        Task::batch([self.reload_conversations(), self.reload_outbox()])
                     }
                     Err(why) => {
                         self.status = Some(fl!("sync-failed", reason = why));
@@ -743,9 +797,31 @@ impl cosmic::Application for AppModel {
                 form.smtp_transport = transport;
             }),
             Message::MailFormFromAddressChanged(address) => {
-                self.with_form(|form| form.from_address = address)
+                // The table half of discovery runs on every keystroke: it needs
+                // no network, and a recognised provider should fill the form in
+                // as soon as the domain is typed rather than after a button.
+                let known = mail::known_settings(&address);
+                self.with_form(|form| {
+                    form.from_address = address;
+                    if form.host.trim().is_empty()
+                        && let Some(found) = known
+                    {
+                        form.apply(&found);
+                    }
+                })
             }
             Message::MailFormFromNameChanged(name) => self.with_form(|form| form.from_name = name),
+            Message::MailFormDiscover => self.discover_settings(),
+            Message::MailFormDiscovered(result) => {
+                if let Some(form) = self.mail_form.as_mut() {
+                    form.discovering = false;
+                    match *result {
+                        Ok(found) => form.apply(&found),
+                        Err(why) => form.error = Some(why),
+                    }
+                }
+                Task::none()
+            }
             Message::MailFormCancel => {
                 self.mail_form = None;
                 Task::none()
@@ -777,9 +853,42 @@ impl cosmic::Application for AppModel {
                 self.drafts = drafts;
                 Task::none()
             }
+            Message::ShowOutbox => {
+                self.showing_outbox = !self.showing_outbox;
+                if self.showing_outbox {
+                    self.showing_drafts = false;
+                    self.selected_conversation = None;
+                    self.opened = None;
+                    self.reader_error = None;
+                }
+                self.reload_outbox()
+            }
+            Message::OutboxLoaded(queued) => {
+                self.outbox = queued;
+                Task::none()
+            }
+            Message::QueuedRetried(id) => {
+                if let Some(connection) = self.connection.as_ref()
+                    && let Err(why) = mail::retry_queued(connection, &id)
+                {
+                    self.status = Some(why);
+                }
+                // Due now, so the next check takes it rather than waiting out a
+                // backoff the user has just overridden.
+                Task::batch([self.reload_outbox(), self.sync_now()])
+            }
+            Message::QueuedDiscarded(id) => {
+                if let Some(connection) = self.connection.as_ref()
+                    && let Err(why) = mail::discard_queued(connection, &id)
+                {
+                    self.status = Some(why);
+                }
+                self.reload_outbox()
+            }
             Message::ShowDrafts => {
                 self.showing_drafts = !self.showing_drafts;
                 if self.showing_drafts {
+                    self.showing_outbox = false;
                     self.selected_conversation = None;
                     self.opened = None;
                     self.reader_error = None;
@@ -863,10 +972,7 @@ impl cosmic::Application for AppModel {
                 self.reload_drafts()
             }
             Message::ComposeSend => self.send_draft(),
-            Message::ComposeSent(sent) => {
-                self.composer_finished(*sent);
-                Task::none()
-            }
+            Message::ComposeSent(sent) => self.composer_finished(*sent),
         }
     }
 }
@@ -1187,6 +1293,32 @@ impl AppModel {
         })
     }
 
+    /// Looks up the account's servers from its address.
+    fn discover_settings(&mut self) -> Task<Message> {
+        let Some(form) = self.mail_form.as_mut() else {
+            return Task::none();
+        };
+        // The From address if it has one, else the account's username — which
+        // for an account Slate created is often the address anyway.
+        let email = if form.from_address.trim().is_empty() {
+            form.account_username.clone()
+        } else {
+            form.from_address.trim().to_owned()
+        };
+        if form.discovering {
+            return Task::none();
+        }
+        form.discovering = true;
+        form.error = None;
+
+        cosmic::task::future(async move {
+            let found = tokio::task::spawn_blocking(move || mail::discover(&email))
+                .await
+                .unwrap_or_else(|why| Err(why.to_string()));
+            Message::MailFormDiscovered(Box::new(found))
+        })
+    }
+
     fn is_searching(&self) -> bool {
         !self.search.trim().is_empty()
     }
@@ -1256,6 +1388,23 @@ impl AppModel {
                 Message::MessageOpened(Box::new(result))
             }),
         ])
+    }
+
+    fn reload_outbox(&mut self) -> Task<Message> {
+        let Some(connection) = self.connection.clone() else {
+            self.outbox.clear();
+            return Task::none();
+        };
+        cosmic::task::future(async move {
+            let queued = tokio::task::spawn_blocking(move || mail::list_outbox(&connection))
+                .await
+                .unwrap_or_else(|why| Err(why.to_string()))
+                .unwrap_or_else(|why| {
+                    tracing::warn!(why, "could not list the outbox");
+                    Vec::new()
+                });
+            Message::OutboxLoaded(queued)
+        })
     }
 
     fn reload_drafts(&mut self) -> Task<Message> {
@@ -1333,9 +1482,9 @@ impl AppModel {
         })
     }
 
-    fn composer_finished(&mut self, sent: mail::Sent) {
+    fn composer_finished(&mut self, sent: mail::Sent) -> Task<Message> {
         let Some(composer) = self.composer.as_mut() else {
-            return;
+            return Task::none();
         };
         composer.sending = false;
         match sent {
@@ -1349,6 +1498,14 @@ impl AppModel {
                 } else {
                     fl!("sent-not-filed")
                 });
+                return self.reload_drafts();
+            }
+            mail::Sent::Queued => {
+                // Closed, because the message is no longer the user's problem:
+                // it is queued, durable, and will go out on the next check.
+                self.composer = None;
+                self.status = Some(fl!("send-queued"));
+                return self.reload_outbox();
             }
             mail::Sent::Failed(why) => {
                 composer.error = Some(fl!("send-failed", reason = why));
@@ -1360,6 +1517,7 @@ impl AppModel {
                 composer.error = Some(fl!("send-uncertain", reason = why));
             }
         }
+        Task::none()
     }
 
     fn with_form(&mut self, edit: impl FnOnce(&mut MailForm)) -> Task<Message> {
@@ -1431,6 +1589,9 @@ fn summarise(report: &SyncReport) -> String {
         fetched = report.fetched,
         pushed = report.pushed
     )];
+    if report.sent > 0 {
+        parts.push(fl!("sync-sent", count = report.sent));
+    }
     if !report.failures.is_empty() {
         parts.push(fl!("sync-partial", count = report.failures.len()));
         for (folder, why) in &report.failures {

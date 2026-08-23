@@ -18,7 +18,9 @@ use cosmic_pim_accounts::{Account, AccountStore, Transport};
 use cosmic_pim_mail::folder::{Folder, SpecialUse};
 use cosmic_pim_mail::attachment;
 use cosmic_pim_mail::compose::Draft;
+use cosmic_pim_mail::discovery::{self, Discovered};
 use cosmic_pim_mail::drafts::{self, Drafts, Saved};
+use cosmic_pim_mail::outbox::{Outbox, Queued};
 use cosmic_pim_mail::imap::{self, Endpoint, Security, Session, SyncOptions};
 use cosmic_pim_mail::smtp::{self, Outcome, SmtpEndpoint};
 use cosmic_pim_mail::index::{self, Hit, Index};
@@ -58,6 +60,8 @@ pub struct SyncReport {
     pub folders: Vec<Folder>,
     pub fetched: usize,
     pub pushed: usize,
+    /// Messages that left the outbox on this pass.
+    pub sent: usize,
     /// Mailboxes that could not be synced, with the server's reason.
     pub failures: Vec<(String, String)>,
     /// Writes that will not move on their own — bad credentials, no permission,
@@ -101,7 +105,11 @@ impl SyncReport {
     /// each time is how a status line stops being read.
     #[must_use]
     pub fn is_worth_reporting(&self) -> bool {
-        self.fetched > 0 || self.pushed > 0 || !self.failures.is_empty() || self.stuck > 0
+        self.fetched > 0
+            || self.pushed > 0
+            || self.sent > 0
+            || !self.failures.is_empty()
+            || self.stuck > 0
     }
 }
 
@@ -219,7 +227,68 @@ pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
     }
 
     let _ = session.logout();
+
+    // After the folder pass, so a message that just went out is filed into the
+    // Sent copy this cycle already refreshed.
+    match drain_outbox(connection, &folders) {
+        Ok(sent) => report.sent = sent,
+        Err(why) => report.failures.push(("outbox".to_string(), why)),
+    }
+
     Ok(report)
+}
+
+/// Works out an account's servers from its address.
+///
+/// Blocking — it fetches and it probes — so it belongs on a worker thread. The
+/// no-network half is [`known_settings`], which is cheap enough to call while
+/// somebody is still typing.
+pub fn discover(email: &str) -> Result<Discovered, String> {
+    discovery::discover(email).map_err(|why| why.to_string())
+}
+
+/// The built-in table only: no network, no waiting.
+#[must_use]
+pub fn known_settings(email: &str) -> Option<Discovered> {
+    discovery::known(email)
+}
+
+/// This account's outbox.
+pub fn outbox(connection: &Connection) -> Result<Outbox, String> {
+    Outbox::open(connection.root.join(&connection.account_id)).map_err(|why| why.to_string())
+}
+
+pub fn list_outbox(connection: &Connection) -> Result<Vec<Queued>, String> {
+    outbox(connection)?.list().map_err(|why| why.to_string())
+}
+
+pub fn retry_queued(connection: &Connection, id: &str) -> Result<(), String> {
+    outbox(connection)?.retry(id).map_err(|why| why.to_string())
+}
+
+pub fn discard_queued(connection: &Connection, id: &str) -> Result<(), String> {
+    outbox(connection)?.remove(id).map_err(|why| why.to_string())
+}
+
+/// Attempts everything in the outbox that is due, filing what goes out.
+///
+/// Called from the sync pass, so a message written offline leaves as soon as
+/// the next check finds the network — without anybody remembering to press
+/// anything, which is the whole reason the queue exists.
+fn drain_outbox(connection: &Connection, folders: &[Folder]) -> Result<usize, String> {
+    let Some(submission) = connection.submission.as_ref() else {
+        return Ok(0);
+    };
+    let outbox = outbox(connection)?;
+    let outcome = outbox
+        .drain(&submission.endpoint, &connection.password, now_ms())
+        .map_err(|why| why.to_string())?;
+
+    for (id, filed) in &outcome.sent {
+        tracing::info!(id, "a queued message was sent");
+        file_to_sent(connection, folders, filed);
+    }
+    Ok(outcome.sent.len())
 }
 
 /// This account's local drafts.
@@ -515,6 +584,9 @@ fn transport(transport: Transport) -> Security {
 pub enum Sent {
     /// Delivered, and filed to Sent if there was somewhere to file it.
     Ok { filed: bool },
+    /// Not delivered, but definitely not delivered — so it is in the outbox and
+    /// will go out on its own.
+    Queued,
     /// Definitely not delivered. The draft is intact and may be sent again.
     Failed(String),
     /// It may or may not have been delivered.
@@ -544,7 +616,32 @@ pub fn send(
 
     let filed_bytes = match smtp::send(&submission.endpoint, &connection.password, draft) {
         Outcome::Sent(bytes) => bytes,
-        Outcome::NotSent(why) => return Sent::Failed(why.to_string()),
+        // Definitely not delivered, so it can wait for the network rather than
+        // for the user. An ambiguous failure is not queued — it may already
+        // have arrived, and the queue would send it twice.
+        outcome @ Outcome::NotSent(_) => {
+            let id = draft_id
+                .filter(|id| cosmic_pim_mail::drafts::is_valid_id(id))
+                .map_or_else(|| drafts::new_id(now_ms()), ToOwned::to_owned);
+            return match outbox(connection)
+                .and_then(|outbox| {
+                    outbox
+                        .queue(&id, draft, &outcome, now_ms())
+                        .map_err(|why| why.to_string())
+                }) {
+                // The draft becomes the queued message; leaving both would show
+                // it twice and send it once.
+                Ok(()) => {
+                    if let Some(previous) = draft_id
+                        && let Err(why) = delete_draft(connection, previous)
+                    {
+                        tracing::warn!(%why, "a queued message left its draft behind");
+                    }
+                    Sent::Queued
+                }
+                Err(why) => Sent::Failed(why),
+            };
+        }
         Outcome::Ambiguous(why) => return Sent::Uncertain(why.to_string()),
     };
 

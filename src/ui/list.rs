@@ -279,3 +279,60 @@ pub fn results<'a>(
         .height(Length::Fill)
         .into()
 }
+
+/// The outbox, in the same column the conversations use.
+pub fn outbox(queued: &[cosmic_pim_mail::outbox::Queued]) -> Element<'_, Message> {
+    let spacing = cosmic::theme::spacing();
+
+    if queued.is_empty() {
+        return widget::text::body(fl!("outbox-empty"))
+            .apply(widget::container)
+            .padding(spacing.space_m)
+            .into();
+    }
+
+    let mut column = widget::column::with_capacity(queued.len()).spacing(spacing.space_xxxs);
+
+    for message in queued {
+        let mut body = widget::column::with_capacity(3)
+            .spacing(spacing.space_xxxs)
+            .push(widget::text::body(message.describe()));
+
+        // A stopped message says so, in the theme's alarming colour: one
+        // sitting in a queue the user thinks is working is the worst thing an
+        // outbox can do.
+        if message.given_up {
+            body = body.push(crate::ui::destructive(fl!("outbox-stopped")));
+        }
+        if let Some(error) = &message.last_error {
+            body = body.push(
+                widget::text::caption(error.clone())
+                    .wrapping(cosmic::iced::core::text::Wrapping::Word),
+            );
+        }
+
+        let mut row = widget::row::with_capacity(3)
+            .align_y(Alignment::Center)
+            .spacing(spacing.space_xxs)
+            .push(widget::container(body).width(Length::Fill));
+
+        if message.given_up {
+            row = row.push(
+                widget::button::text(fl!("try-again"))
+                    .on_press(Message::QueuedRetried(message.id.clone())),
+            );
+        }
+        row = row.push(
+            widget::button::text(fl!("discard"))
+                .class(cosmic::theme::Button::Destructive)
+                .on_press(Message::QueuedDiscarded(message.id.clone())),
+        );
+
+        column = column.push(widget::container(row).padding(spacing.space_xs));
+    }
+
+    widget::scrollable(column.padding(spacing.space_xxs))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}

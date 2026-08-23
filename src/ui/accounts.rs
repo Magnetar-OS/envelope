@@ -161,8 +161,26 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
             ),
         );
 
-    let mut column = widget::column::with_capacity(4)
+    // Above the fields, because filling them in by hand is the thing it is
+    // there to avoid.
+    let mut discovery = widget::row::with_capacity(2)
+        .align_y(cosmic::iced::Alignment::Center)
+        .spacing(spacing.space_xxs);
+    discovery = discovery.push(if form.discovering {
+        widget::button::text(fl!("finding-settings"))
+    } else {
+        widget::button::text(fl!("find-settings")).on_press(Message::MailFormDiscover)
+    });
+    if let Some(found) = &form.discovered_from {
+        discovery = discovery.push(
+            widget::text::caption(found.clone())
+                .wrapping(cosmic::iced::core::text::Wrapping::Word),
+        );
+    }
+
+    let mut column = widget::column::with_capacity(5)
         .spacing(spacing.space_s)
+        .push(discovery)
         .push(section)
         .push(sending);
 

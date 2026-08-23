@@ -16,8 +16,10 @@ Envelope is one of three applications over a shared substrate,
 **Accounts are shared.** Envelope reads
 `$XDG_CONFIG_HOME/cosmic-pim/accounts.toml`, so an account added in Slate shows
 up here with its password already stored. The one thing it will not have is a
-mail server — a CalDAV URL says nothing about an IMAP host — so that is the
-single field Envelope's Accounts page asks for.
+mail server — a CalDAV URL says nothing about an IMAP host — and Envelope works
+that out from the address rather than asking: a built-in table for the common
+providers, Mozilla autoconfig for everyone else, and a probed guess as a last
+resort.
 
 [cosmic-pim/ARCHITECTURE.md](https://github.com/entro314-labs/cosmic-pim/blob/main/ARCHITECTURE.md)
 describes how the layers fit and where new code belongs, including the section
@@ -54,6 +56,8 @@ Envelope reads, threads, syncs, and sends. What works:
   `from:`, `subject:`, `is:unread`, `is:starred`, and `has:attachment`.
 - **Attachments** — received ones save to Downloads, and files can be attached
   to what you send. Nothing is ever opened for you.
+- **An outbox.** A send that could not reach the server waits there and goes out
+  on the next check, with its attachments.
 
 What does not work yet: **HTML composition**, and that is a decision rather than
 a gap — the reader shows text, so an HTML composer would be writing in a format
@@ -73,14 +77,15 @@ not designs.
 Two things are worth knowing about how sending behaves, because both are
 deliberate and both differ from what a mail client usually does.
 
-**A failed send is never retried automatically.** Failures split in two: the
-server definitely did not accept the message (refused connection, TLS failure,
-an explicit 4xx), or it may have. A timeout in the middle of `DATA` is
-indistinguishable from a timeout during the greeting, and the message may be in
-the recipient's inbox already. Envelope says so in different words for the two
-cases and leaves the second to you. A duplicate you chose is a nuisance; a
-duplicate the client chose is a client that cannot be trusted with a
-resignation letter.
+**Only one kind of failed send is retried.** Failures split in two: the server
+definitely did not accept the message (refused connection, TLS failure, an
+explicit 4xx), or it may have. The first kind goes to the outbox and is retried
+on its own — that is what makes writing mail on a train work. The second kind
+never is: a timeout in the middle of `DATA` is indistinguishable from a timeout
+during the greeting, and the message may be in the recipient's inbox already.
+Envelope says so in different words and leaves that one to you. A duplicate you
+chose is a nuisance; a duplicate the client chose is a client that cannot be
+trusted with a resignation letter.
 
 **`Bcc` never reaches the recipients.** It rides the SMTP envelope and is
 stripped from the message bytes — and it is kept in the copy filed to Sent, so
