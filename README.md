@@ -58,6 +58,9 @@ Envelope reads, threads, syncs, and sends. What works:
   to what you send. Nothing is ever opened for you.
 - **An outbox.** A send that could not reach the server waits there and goes out
   on the next check, with its attachments.
+- **Keyboard shortcuts** — Gmail's single letters (`c`, `r`, `a`, `f`, `j`, `k`,
+  `e`, `s`, `u`, `/`, `g i`), plus modifier combinations that work while you are
+  typing. `?` shows the list, generated from the bindings themselves.
 
 What does not work yet: **HTML composition**, and that is a decision rather than
 a gap — the reader shows text, so an HTML composer would be writing in a format
@@ -96,6 +99,25 @@ A `mailto:` link may set `to`, `cc`, `subject`, and `body`. It may **not** set
 `bcc`, or `from`, or any other header: a page that can make your mail client
 silently blind-copy a third party on a message you then write and send is an
 attack, and "the field is visible in the composer" is not a defence.
+
+## Keyboard
+
+Single letters are Gmail's, because that is the vocabulary anybody who drives a
+mail client from the keyboard already has; inventing a second one would be
+asking people to learn something for no reason. They fire only when nothing is
+expecting text — pressing `c` in the composer types a `c` — and every text field
+in the application reports its focus so that rule is exact rather than a guess.
+
+The modifier forms (`Ctrl+N`, `Ctrl+R`, `Ctrl+Shift+R`, `Ctrl+F`, `Escape`, `F5`)
+work regardless, which is the reason for having both.
+
+Bindings match on the **physical key** when the logical one does not, so `j` and
+`k` still navigate on a Greek or Cyrillic layout. A mail client whose navigation
+stops working when you switch layout to write an email is not keyboard-first.
+
+The shortcuts, the menu entries, and the `?` sheet all read one registry, so the
+sheet cannot be out of date — it is generated from the bindings the keyboard
+handler actually matches against.
 
 ## Drafts are local
 

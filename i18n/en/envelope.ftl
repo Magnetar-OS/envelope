@@ -109,3 +109,22 @@ outbox-empty = Nothing waiting to go.
 outbox-stopped = Stopped after too many tries.
 try-again = Try again
 sync-sent = { $count } sent.
+
+# Actions and shortcuts
+next-message = Next
+previous-message = Previous
+toggle-read = Mark read or unread
+toggle-starred = Star or unstar
+close = Close
+go-inbox = Inbox
+go-drafts = Drafts
+go-outbox = Outbox
+go-sent = Sent
+go-archive = Archive
+shortcuts = Keyboard shortcuts
+group-reading = Reading
+group-writing = Writing
+group-going = Going to
+group-application = The application
+shortcuts-hint = Single keys work whenever you are not typing. The combinations always work.
+no-such-folder = This server has no folder of that kind.

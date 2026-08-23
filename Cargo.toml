@@ -5,7 +5,7 @@ edition = "2024"
 license = "GPL-3.0-only"
 description = "Envelope — mail for the COSMIC desktop"
 repository = "https://github.com/entro314-labs/envelope"
-rust-version = "1.97.1"
+rust-version = "1.98.0"
 
 [dependencies]
 # --- the shared PIM substrate (MPL-2.0) ---

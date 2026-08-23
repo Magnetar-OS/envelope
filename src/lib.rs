@@ -12,6 +12,7 @@
 //! - [`app`] — the state machine.
 //! - [`ui`] — the views, each a function of the model.
 
+pub mod actions;
 pub mod app;
 pub mod mail;
 pub mod mailto;

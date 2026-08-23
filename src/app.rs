@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 
+use cosmic::Application as _;
 use cosmic::app::{Core, Task, context_drawer};
 use cosmic::iced::Subscription;
 use cosmic::iced::Length;
@@ -25,6 +26,7 @@ use cosmic_pim_accounts::{Account, AccountStore, MailEndpoint, Transport};
 use cosmic_pim_mail::folder::{Folder, SpecialUse};
 use cosmic_pim_mail::model::Flags;
 
+use crate::actions::{self, Action, Resolved};
 use crate::fl;
 use crate::mail::{self, Connection, Conversation, Opened, SyncReport};
 
@@ -68,6 +70,16 @@ pub struct AppModel {
     outbox: Vec<cosmic_pim_mail::outbox::Queued>,
     showing_outbox: bool,
 
+    /// How many text inputs currently have focus.
+    ///
+    /// A counter rather than a flag: focus moves *between* inputs, and the
+    /// unfocus of the one being left can arrive after the focus of the one
+    /// being entered. A flag would flicker to false and let a keystroke meant
+    /// for a text field fire a shortcut.
+    text_focus: usize,
+    /// The first key of a chord, waiting for its second.
+    pending_chord: Option<char>,
+
     /// What is in the search box. Empty means the box is closed.
     search: String,
     results: Vec<cosmic_pim_mail::Hit>,
@@ -89,6 +101,10 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(120);
 /// A cap rather than paging: somebody who gets 500 hits needs a better query,
 /// not a second page, and the honest answer to "there are more" is to say so.
 const SEARCH_LIMIT: usize = 200;
+
+/// The search box, so a keystroke can put the cursor in it.
+static SEARCH_ID: std::sync::LazyLock<cosmic::widget::Id> =
+    std::sync::LazyLock::new(|| cosmic::widget::Id::new("search"));
 
 /// A message being written.
 ///
@@ -342,6 +358,12 @@ pub enum Message {
     ComposeDiscard,
     DraftsLoaded(Vec<cosmic_pim_mail::drafts::Saved>),
     ShowDrafts,
+    /// One of the registry's actions, however it was invoked.
+    Act(Action),
+    KeyPressed(cosmic::iced::keyboard::Modifiers, cosmic::iced::keyboard::Key,
+        Option<cosmic::iced::keyboard::key::Physical>),
+    TextFocused,
+    TextUnfocused,
     ShowOutbox,
     OutboxLoaded(Vec<cosmic_pim_mail::outbox::Queued>),
     QueuedRetried(String),
@@ -369,24 +391,19 @@ pub enum ContextPage {
     #[default]
     About,
     Accounts,
+    Shortcuts,
 }
 
+/// The menu's entries are registry actions, so a menu item and the keystroke
+/// beside it cannot mean different things.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MenuAction {
-    About,
-    Accounts,
-    Compose,
-}
+pub struct MenuAction(pub Action);
 
 impl menu::action::MenuAction for MenuAction {
     type Message = Message;
 
     fn message(&self) -> Self::Message {
-        match self {
-            Self::About => Message::ToggleContextPage(ContextPage::About),
-            Self::Accounts => Message::ToggleContextPage(ContextPage::Accounts),
-            Self::Compose => Message::Compose,
-        }
+        Message::Act(self.0)
     }
 }
 
@@ -419,7 +436,17 @@ impl cosmic::Application for AppModel {
             core,
             about,
             context_page: ContextPage::default(),
-            key_binds: HashMap::new(),
+            // The map libcosmic reads to draw an accelerator beside a menu
+            // entry. Built from the registry rather than written out, so the
+            // menu shows the shortcut the keyboard handler actually matches.
+            key_binds: actions::bindings()
+                .into_iter()
+                .filter_map(|binding| {
+                    binding
+                        .combination
+                        .map(|combination| (combination, MenuAction(binding.action)))
+                })
+                .collect(),
             accounts,
             selected_account,
             connection: None,
@@ -441,6 +468,8 @@ impl cosmic::Application for AppModel {
             showing_drafts: false,
             outbox: Vec::new(),
             showing_outbox: false,
+            text_focus: 0,
+            pending_chord: None,
             search: String::new(),
             results: Vec::new(),
             searching: false,
@@ -466,8 +495,13 @@ impl cosmic::Application for AppModel {
 
     fn header_end(&self) -> Vec<Element<'_, Self::Message>> {
         let search = widget::text_input(fl!("search"), &self.search)
+            .id(SEARCH_ID.clone())
             .on_input(Message::SearchChanged)
             .on_clear(Message::SearchCleared)
+            // Every text field reports focus, so single-letter shortcuts know
+            // to stay out of the way.
+            .on_focus(Message::TextFocused)
+            .on_unfocus(Message::TextUnfocused)
             .width(Length::Fixed(260.0));
         vec![search.into()]
     }
@@ -479,10 +513,14 @@ impl cosmic::Application for AppModel {
                 menu::items(
                     &self.key_binds,
                     vec![
-                        menu::Item::Button(fl!("compose"), None, MenuAction::Compose),
+                        item(Action::Compose),
                         menu::Item::Divider,
-                        menu::Item::Button(fl!("accounts"), None, MenuAction::Accounts),
-                        menu::Item::Button(fl!("about"), None, MenuAction::About),
+                        item(Action::Search),
+                        item(Action::Sync),
+                        menu::Item::Divider,
+                        item(Action::Shortcuts),
+                        item(Action::Accounts),
+                        item(Action::About),
                     ],
                 ),
             )])
@@ -517,10 +555,31 @@ impl cosmic::Application for AppModel {
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
-        // Unconditional. Gating it on "is an account configured" would mean the
-        // timer does not exist yet when one is added, and the first check would
-        // wait for a restart.
-        cosmic::iced::time::every(POLL_INTERVAL).map(|_| Message::Poll)
+        Subscription::batch([
+            // Unconditional. Gating it on "is an account configured" would mean
+            // the timer does not exist yet when one is added, and the first
+            // check would wait for a restart.
+            cosmic::iced::time::every(POLL_INTERVAL).map(|_| Message::Poll),
+            // Every key press, decided in `update` — the decision needs the
+            // model (is a text field focused, is a chord half-typed) and a
+            // subscription does not have it.
+            cosmic::iced::event::listen_with(|event, status, _| {
+                use cosmic::iced::keyboard::Event;
+                match event {
+                    cosmic::iced::Event::Keyboard(Event::KeyPressed {
+                        key,
+                        modifiers,
+                        physical_key,
+                        ..
+                    // A key a widget has already handled — a character going
+                    // into a text field, a scroll — is not ours to reinterpret.
+                    }) if status == cosmic::iced::event::Status::Ignored => {
+                        Some(Message::KeyPressed(modifiers, key, Some(physical_key)))
+                    }
+                    _ => None,
+                }
+            }),
+        ])
     }
 
     fn context_drawer(&self) -> Option<context_drawer::ContextDrawer<'_, Self::Message>> {
@@ -543,6 +602,11 @@ impl cosmic::Application for AppModel {
                 Message::ToggleContextPage(ContextPage::Accounts),
             )
             .title(fl!("accounts")),
+            ContextPage::Shortcuts => context_drawer::context_drawer(
+                crate::ui::shortcuts::view(),
+                Message::ToggleContextPage(ContextPage::Shortcuts),
+            )
+            .title(fl!("shortcuts")),
         })
     }
 
@@ -885,6 +949,17 @@ impl cosmic::Application for AppModel {
                 }
                 self.reload_outbox()
             }
+            Message::TextFocused => {
+                self.text_focus = self.text_focus.saturating_add(1);
+                Task::none()
+            }
+            Message::TextUnfocused => {
+                self.text_focus = self.text_focus.saturating_sub(1);
+                Task::none()
+            }
+            Message::KeyPressed(modifiers, key, physical) => self.key_pressed(&modifiers, &key, physical.as_ref()),
+            Message::Act(action) => self.act(action),
+
             Message::ShowDrafts => {
                 self.showing_drafts = !self.showing_drafts;
                 if self.showing_drafts {
@@ -1319,6 +1394,159 @@ impl AppModel {
         })
     }
 
+    /// Is something expecting characters?
+    ///
+    /// Single-letter shortcuts must not fire while a text field has focus —
+    /// pressing `c` in the composer has to type a `c`. Modifier combinations
+    /// are exempt, which is the whole reason they exist alongside the letters.
+    fn typing(&self) -> bool {
+        self.text_focus > 0
+    }
+
+    /// Decides what a key press meant.
+    fn key_pressed(
+        &mut self,
+        modifiers: &cosmic::iced::keyboard::Modifiers,
+        key: &cosmic::iced::keyboard::Key,
+        physical: Option<&cosmic::iced::keyboard::key::Physical>,
+    ) -> Task<Message> {
+        // Combinations first, and whatever has focus: that is what a modifier
+        // is for.
+        if let Some(action) = actions::for_combination(*modifiers, key, physical) {
+            self.pending_chord = None;
+            return self.act(action);
+        }
+
+        if self.typing() {
+            // A half-typed chord does not survive somebody clicking into a
+            // field and typing; it would fire on whatever they pressed after.
+            self.pending_chord = None;
+            return Task::none();
+        }
+
+        let cosmic::iced::keyboard::Key::Character(text) = key else {
+            self.pending_chord = None;
+            return Task::none();
+        };
+        let Some(character) = text.chars().next().filter(|_| text.chars().count() == 1) else {
+            self.pending_chord = None;
+            return Task::none();
+        };
+
+        match actions::for_bare(character, self.pending_chord.take()) {
+            Resolved::Act(action) => self.act(action),
+            Resolved::Pending(first) => {
+                self.pending_chord = Some(first);
+                Task::none()
+            }
+            Resolved::Nothing => Task::none(),
+        }
+    }
+
+    /// Performs one of the registry's actions.
+    ///
+    /// The single place an action becomes behaviour, so a keystroke, a menu
+    /// entry, and a button cannot drift apart about what it does.
+    fn act(&mut self, action: Action) -> Task<Message> {
+        match action {
+            Action::Compose => self.update(Message::Compose),
+            Action::Reply => self.update(Message::Reply { all: false }),
+            Action::ReplyAll => self.update(Message::Reply { all: true }),
+            Action::Forward => self.update(Message::Forward),
+            Action::Send => {
+                if self.composer.is_some() {
+                    self.update(Message::ComposeSend)
+                } else {
+                    Task::none()
+                }
+            }
+
+            Action::Next => self.step_selection(1),
+            Action::Previous => self.step_selection(-1),
+            Action::Archive => self.update(Message::Archive),
+            Action::Delete => self.update(Message::Delete),
+            Action::ToggleRead => self.update(Message::ToggleRead),
+            Action::ToggleFlagged => self.update(Message::ToggleFlagged),
+
+            Action::Search => {
+                // Focus rather than a mode: the box is always there, and this
+                // is the keystroke that puts the cursor in it.
+                self.showing_drafts = false;
+                self.showing_outbox = false;
+                cosmic::widget::text_input::focus(SEARCH_ID.clone())
+            }
+            Action::Sync => self.update(Message::SyncNow),
+            Action::Escape => self.escape(),
+
+            Action::GoInbox => self.go_to(SpecialUse::Inbox),
+            Action::GoSent => self.go_to(SpecialUse::Sent),
+            Action::GoArchive => self.go_to(SpecialUse::Archive),
+            Action::GoDrafts => {
+                if !self.showing_drafts {
+                    return self.update(Message::ShowDrafts);
+                }
+                Task::none()
+            }
+            Action::GoOutbox => {
+                if !self.showing_outbox {
+                    return self.update(Message::ShowOutbox);
+                }
+                Task::none()
+            }
+
+            Action::Shortcuts => self.update(Message::ToggleContextPage(ContextPage::Shortcuts)),
+            Action::Accounts => self.update(Message::ToggleContextPage(ContextPage::Accounts)),
+            Action::About => self.update(Message::ToggleContextPage(ContextPage::About)),
+        }
+    }
+
+    /// Moves the selection through the conversation list.
+    fn step_selection(&mut self, by: isize) -> Task<Message> {
+        match next_selection(self.selected_conversation, self.conversations.len(), by) {
+            Some(next) => self.update(Message::ConversationSelected(next)),
+            None => Task::none(),
+        }
+    }
+
+    /// Selects a folder by its role.
+    fn go_to(&mut self, role: SpecialUse) -> Task<Message> {
+        self.showing_drafts = false;
+        self.showing_outbox = false;
+        let Some(index) = self
+            .folders
+            .iter()
+            .position(|folder| folder.special_use == Some(role))
+        else {
+            self.status = Some(fl!("no-such-folder"));
+            return Task::none();
+        };
+        self.update(Message::FolderSelected(index))
+    }
+
+    /// Backs out of whatever is open, innermost first.
+    ///
+    /// The order is what makes one key enough: Escape in a composer closes the
+    /// composer, not the window, and Escape with nothing open clears the
+    /// search.
+    fn escape(&mut self) -> Task<Message> {
+        if self.composer.is_some() {
+            return self.update(Message::ComposeCancel);
+        }
+        if self.core.window.show_context {
+            self.core.window.show_context = false;
+            return Task::none();
+        }
+        if self.is_searching() {
+            return self.update(Message::SearchCleared);
+        }
+        if self.showing_drafts || self.showing_outbox {
+            self.showing_drafts = false;
+            self.showing_outbox = false;
+            return Task::none();
+        }
+        Task::none()
+    }
+
     fn is_searching(&self) -> bool {
         !self.search.trim().is_empty()
     }
@@ -1573,6 +1801,33 @@ impl AppModel {
     }
 }
 
+/// Where `j` or `k` moves the selection, or `None` when it does not move.
+///
+/// Clamped rather than wrapped. Wrapping from the end of a hundred-message list
+/// back to its start is never what somebody holding `j` meant, and it is
+/// disorienting in a way a stop at the end is not.
+fn next_selection(current: Option<usize>, len: usize, by: isize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let last = len - 1;
+    let next = match current {
+        // A fresh list selects its newest message rather than doing nothing:
+        // pressing `j` should visibly do something the first time.
+        None => 0,
+        Some(current) => {
+            let moved = isize::try_from(current).unwrap_or(0).saturating_add(by);
+            usize::try_from(moved.clamp(0, isize::try_from(last).unwrap_or(0))).unwrap_or(0)
+        }
+    };
+    (Some(next) != current).then_some(next)
+}
+
+/// One menu entry for a registry action.
+fn item(action: Action) -> menu::Item<MenuAction, String> {
+    menu::Item::Button(action.label(), None, MenuAction(action))
+}
+
 fn load_accounts() -> Vec<Account> {
     match AccountStore::open_default() {
         Ok(store) => store.accounts().to_vec(),
@@ -1645,6 +1900,27 @@ mod tests {
                 "{wire}"
             );
         }
+    }
+
+    #[test]
+    fn stepping_the_selection_starts_at_the_top_and_stops_at_the_ends() {
+        // Pressing `j` on a fresh list must visibly do something.
+        assert_eq!(next_selection(None, 3, 1), Some(0));
+        assert_eq!(next_selection(None, 3, -1), Some(0));
+
+        assert_eq!(next_selection(Some(0), 3, 1), Some(1));
+        assert_eq!(next_selection(Some(2), 3, -1), Some(1));
+
+        // Clamped, not wrapped: holding `j` at the bottom of a long list must
+        // not jump back to the top.
+        assert_eq!(next_selection(Some(2), 3, 1), None);
+        assert_eq!(next_selection(Some(0), 3, -1), None);
+    }
+
+    #[test]
+    fn stepping_an_empty_list_does_nothing_rather_than_panicking() {
+        assert_eq!(next_selection(None, 0, 1), None);
+        assert_eq!(next_selection(Some(0), 0, -1), None);
     }
 
     #[test]

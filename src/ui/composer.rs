@@ -42,6 +42,8 @@ pub fn view(composer: &Composer) -> Element<'_, Message> {
         .push(
             widget::text_input(String::new(), &composer.draft.body)
                 .on_input(Message::ComposeBodyChanged)
+                .on_focus(Message::TextFocused)
+                .on_unfocus(Message::TextUnfocused)
                 .width(Length::Fill),
         );
 
@@ -160,6 +162,8 @@ fn field(
         .push(
             widget::text_input(String::new(), value)
                 .on_input(on_input)
+                .on_focus(Message::TextFocused)
+                .on_unfocus(Message::TextUnfocused)
                 .width(Length::Fill),
         )
         .into()

@@ -44,12 +44,13 @@ separates "not done yet" from "not doing".
 | Drafts | server-synced | local |
 | Send | + outbox, undo send, scheduled | typed pre-acceptance errors, outbox |
 | Search | FTS5 + tantivy + semantic, saved queries | headers and snippet, over the index |
+| Keyboard | registry, palette, rebinding, quick steps | registry, Gmail keys, chords, cheat sheet |
 | Accounts | six-stage discovery, OAuth PKCE | three-stage discovery, password |
 
 ### Not done yet
 
-In rough order of how much they are missed: **keyboard shortcuts and an action
-registry**, **body search** (tantivy), **IDLE**, **OAuth**, **QRESYNC**,
+In rough order of how much they are missed: **body search** (tantivy), **IDLE**,
+**OAuth**, **QRESYNC**,
 **server-side drafts**, **unified inbox**, **undo**, **rules**, **labels**,
 **snooze**, **one-click unsubscribe**, **import/export**, **OpenPGP and
 S/MIME**, and the other four engines (**JMAP**, **Gmail**, **Graph**, **POP3**).
@@ -73,8 +74,9 @@ S/MIME**, and the other four engines (**JMAP**, **Gmail**, **Graph**, **POP3**).
 Envelope has roughly a fifth of Meltemi's feature surface and most of what makes
 a mail client usable daily. What it is missing that genuinely bites: **one
 protocol and one auth method** — IMAP with a password, so Gmail and Outlook need
-an app password rather than OAuth — and **no keyboard-first triage**, which for
-a keyboard-first client's users is the largest single gap.
+an app password rather than OAuth. After that it is **undo** and **snooze**:
+triage verbs that the registry now has somewhere to live, but that nothing
+implements.
 
 ## Gates
 
@@ -208,8 +210,8 @@ also of little use without a send path, so it belongs after SMTP, not before.
    it does not, and a reconciliation pass for servers that mangle both. Worth
    building; not worth shipping half of.
 3. **IDLE**, so the mailbox updates without waiting up to two minutes.
-4. **Keyboard shortcuts.** The largest gap for the people this suite is for, and
-   the one that does not need any protocol work.
+4. **A command palette.** The registry it would resolve through already exists;
+   this is a widget and a fuzzy match over `Action::label`.
 5. **A server quirks table**, shared in shape with the CalDAV one (01) — the
    IMAP zoo is the same problem, larger.
 
