@@ -18,6 +18,9 @@ cosmic-pim-mail = { path = "../cosmic-pim/crates/cosmic-pim-mail" }
 # account says. Envelope stopped running its own IMAP-only pass the day the
 # substrate could route all five.
 cosmic-pim-sync = { path = "../cosmic-pim/crates/cosmic-pim-sync" }
+# The OAuth flow: sign-in in the user's own browser, and token renewal. What
+# turns "Gmail needs an app password" into "sign in with Google".
+cosmic-pim-auth = { path = "../cosmic-pim/crates/cosmic-pim-auth" }
 
 i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
 i18n-embed-fl = "0.10"

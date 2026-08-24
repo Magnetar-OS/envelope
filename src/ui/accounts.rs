@@ -19,19 +19,20 @@ use crate::fl;
 pub fn view<'a>(
     accounts: &'a [Account],
     form: Option<&'a MailForm>,
+    sign_in: SignIn<'a>,
     syncing: bool,
     status: Option<&'a str>,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
-    let mut column = widget::column::with_capacity(5).spacing(spacing.space_s);
+    let mut column = widget::column::with_capacity(6).spacing(spacing.space_s);
 
     if accounts.is_empty() {
-        return column
-            .push(
-                widget::text::body(fl!("no-accounts-description"))
-                    .wrapping(cosmic::iced::core::text::Wrapping::Word),
-            )
-            .into();
+        column = column.push(
+            widget::text::body(fl!("no-accounts-description"))
+                .wrapping(cosmic::iced::core::text::Wrapping::Word),
+        );
+        column = column.push(sign_in_section(&sign_in));
+        return column.into();
     }
 
     let mut section = widget::settings::section().title(fl!("accounts"));
@@ -73,6 +74,8 @@ pub fn view<'a>(
         button.on_press(Message::SyncNow)
     });
 
+    column = column.push(sign_in_section(&sign_in));
+
     if let Some(status) = status {
         column = column.push(
             widget::text::caption(status.to_owned())
@@ -81,6 +84,51 @@ pub fn view<'a>(
     }
 
     column.into()
+}
+
+/// What the sign-in section needs from the model.
+pub struct SignIn<'a> {
+    pub providers: &'a [crate::mail::SignInProvider],
+    pub email: &'a str,
+    pub in_flight: bool,
+}
+
+/// One row per provider a browser sign-in can reach.
+///
+/// Absent entirely when no provider has a client id configured: a section
+/// whose every button fails at the provider's "invalid client" page is worse
+/// than no section.
+fn sign_in_section<'a>(sign_in: &SignIn<'a>) -> Element<'a, Message> {
+    if sign_in.providers.is_empty() {
+        return widget::Space::new().height(Length::Fixed(0.0)).into();
+    }
+
+    let mut section = widget::settings::section().title(fl!("sign-in")).add(
+        widget::settings::item::builder(fl!("sign-in-address")).control(
+            widget::text_input("you@example.com", sign_in.email)
+                .on_input(Message::SignInEmailChanged)
+                .on_focus(Message::TextFocused)
+                .on_unfocus(Message::TextUnfocused)
+                .width(Length::Fixed(220.0)),
+        ),
+    );
+
+    for provider in sign_in.providers {
+        let button = widget::button::text(if sign_in.in_flight {
+            fl!("sign-in-waiting")
+        } else {
+            fl!("sign-in-with", provider = provider.name.clone())
+        });
+        section = section.add(
+            widget::settings::item::builder(provider.name.clone()).control(if sign_in.in_flight {
+                button
+            } else {
+                button.on_press(Message::SignInStarted(provider.id.clone()))
+            }),
+        );
+    }
+
+    section.into()
 }
 
 fn endpoint_form(form: &MailForm) -> Element<'_, Message> {

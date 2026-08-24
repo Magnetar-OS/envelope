@@ -13,6 +13,13 @@ Envelope is one of three applications over a shared substrate,
 | **Circle** | [circle](https://github.com/entro314-labs/circle) | Contacts |
 | **Envelope** | you are here | Mail |
 
+**Sign in with a browser.** For providers with OAuth configured — Google and
+Microsoft in the shipped manifests, once given a client id — Envelope runs the
+sign-in in your own browser, never an embedded page, and stores the grant in
+the suite's shared account store. Tokens renew themselves; a Google sign-in
+comes out as a Gmail-engine account, not IMAP with a token in the password
+slot.
+
 **Accounts are shared.** Envelope reads
 `$XDG_CONFIG_HOME/cosmic-pim/accounts.toml`, so an account added in Slate shows
 up here with its password already stored. The one thing it will not have is a

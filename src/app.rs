@@ -69,6 +69,15 @@ pub struct AppModel {
 
     mail_form: Option<MailForm>,
     composer: Option<Composer>,
+    /// The providers a browser sign-in can reach, loaded once — the registry
+    /// is files on disk and does not change under a running app.
+    sign_in_providers: Vec<crate::mail::SignInProvider>,
+    /// The address typed into the sign-in row.
+    sign_in_email: String,
+    /// A sign-in is in the browser. One at a time: the flow binds a fixed
+    /// loopback port, so a second would fail on the bind and confuse the
+    /// first.
+    signing_in: bool,
     /// Local drafts for the selected account, newest first.
     drafts: Vec<cosmic_pim_mail::drafts::Saved>,
     showing_drafts: bool,
@@ -387,6 +396,9 @@ pub enum Message {
     MailFormCancel,
     MailFormSave,
     MailFormDiscover,
+    SignInEmailChanged(String),
+    SignInStarted(String),
+    SignInFinished(Box<Result<String, String>>),
     MailFormDiscovered(Box<Result<cosmic_pim_mail::Discovered, String>>),
 
     Compose,
@@ -522,6 +534,9 @@ impl cosmic::Application for AppModel {
             reader_error: None,
             mail_form: None,
             composer: None,
+            sign_in_providers: mail::sign_in_providers(),
+            sign_in_email: String::new(),
+            signing_in: false,
             drafts: Vec::new(),
             showing_drafts: false,
             outbox: Vec::new(),
@@ -764,6 +779,11 @@ impl cosmic::Application for AppModel {
                 crate::ui::accounts::view(
                     &self.accounts,
                     self.mail_form.as_ref(),
+                    crate::ui::accounts::SignIn {
+                        providers: &self.sign_in_providers,
+                        email: &self.sign_in_email,
+                        in_flight: self.signing_in,
+                    },
                     self.syncing,
                     self.status.as_deref(),
                 ),
@@ -1085,6 +1105,27 @@ impl cosmic::Application for AppModel {
                 })
             }
             Message::MailFormFromNameChanged(name) => self.with_form(|form| form.from_name = name),
+            Message::SignInEmailChanged(email) => {
+                self.sign_in_email = email;
+                Task::none()
+            }
+            Message::SignInStarted(provider_id) => self.sign_in(&provider_id),
+            Message::SignInFinished(result) => {
+                self.signing_in = false;
+                match *result {
+                    Ok(account_id) => {
+                        self.sign_in_email.clear();
+                        self.accounts = load_accounts();
+                        // Straight into the new account: the sign-in was the
+                        // whole point of the visit.
+                        self.update(Message::AccountSelected(account_id))
+                    }
+                    Err(why) => {
+                        self.status = Some(fl!("sign-in-failed", reason = why));
+                        Task::none()
+                    }
+                }
+            }
             Message::MailFormDiscover => self.discover_settings(),
             Message::MailFormDiscovered(result) => {
                 if let Some(form) = self.mail_form.as_mut() {
@@ -1625,6 +1666,28 @@ impl AppModel {
             .await
             .unwrap_or_else(|why| Err(why.to_string()));
             Message::AttachmentSaved(result)
+        })
+    }
+
+    /// Runs a browser sign-in on a worker thread.
+    fn sign_in(&mut self, provider_id: &str) -> Task<Message> {
+        if self.signing_in {
+            return Task::none();
+        }
+        let email = self.sign_in_email.trim().to_owned();
+        if email.is_empty() || !email.contains('@') {
+            self.status = Some(fl!("sign-in-needs-address"));
+            return Task::none();
+        }
+        self.signing_in = true;
+        self.status = Some(fl!("sign-in-browser"));
+        let provider_id = provider_id.to_owned();
+
+        cosmic::task::future(async move {
+            let result = tokio::task::spawn_blocking(move || mail::sign_in(&provider_id, &email))
+                .await
+                .unwrap_or_else(|why| Err(why.to_string()));
+            Message::SignInFinished(Box::new(result))
         })
     }
 

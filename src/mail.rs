@@ -14,7 +14,9 @@ use std::path::PathBuf;
 use std::collections::{BTreeMap, HashMap};
 
 use chrono::Utc;
-use cosmic_pim_accounts::{Account, AccountStore, MailEndpoint, MailProtocol, Transport};
+use cosmic_pim_accounts::{
+    Account, AccountStore, AuthMethod, MailEndpoint, MailProtocol, Transport,
+};
 use cosmic_pim_mail::attachment;
 use cosmic_pim_mail::compose::Draft;
 use cosmic_pim_mail::discovery::{self, Discovered};
@@ -130,10 +132,24 @@ impl Connection {
         let Some(mail) = account.mail.as_ref() else {
             return Ok(None);
         };
-        let password = accounts
-            .password(&account.id)
-            .map_err(|why| format!("could not read the stored password: {why}"))?
-            .ok_or_else(|| "no password is stored for this account".to_string())?;
+        // Cheap reads only — this runs while the window is being built. An
+        // OAuth token that turns out to be expired is renewed by the worker
+        // that hits the wall, through fresh_credentials, not here.
+        let credentials = match account.auth {
+            AuthMethod::Password => Credentials::Password(
+                accounts
+                    .password(&account.id)
+                    .map_err(|why| format!("could not read the stored password: {why}"))?
+                    .ok_or_else(|| "no password is stored for this account".to_string())?,
+            ),
+            AuthMethod::OAuth => Credentials::OAuth2(
+                accounts
+                    .credential(&account.id)
+                    .map_err(|why| format!("could not read the sign-in: {why}"))?
+                    .ok_or_else(|| "no sign-in is saved for this account".to_string())?
+                    .access_token,
+            ),
+        };
 
         let submission = account.from_identity().map(|(name, address)| Submission {
             endpoint: SmtpEndpoint {
@@ -158,7 +174,7 @@ impl Connection {
                 security: transport(mail.imap_transport),
                 username: account.mail_username().to_owned(),
             },
-            credentials: Credentials::Password(password),
+            credentials,
             root: maildir::default_root(),
             index_path: index::default_path(),
         }))
@@ -167,6 +183,95 @@ impl Connection {
     fn mailbox_path(&self, folder: &Folder) -> PathBuf {
         maildir::mailbox_path(&self.root, &self.account_id, folder)
     }
+}
+
+/// A provider somebody can sign in to with a browser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignInProvider {
+    pub id: String,
+    pub name: String,
+}
+
+/// The providers OAuth sign-in can offer.
+///
+/// Only those with a client id configured: a Sign in button that ends at the
+/// provider's "invalid client" page is worse than its absence, and the
+/// registry knows which those are.
+#[must_use]
+pub fn sign_in_providers() -> Vec<SignInProvider> {
+    cosmic_pim_accounts::Registry::load()
+        .all()
+        .into_iter()
+        .filter(|provider| {
+            provider
+                .oauth
+                .as_ref()
+                .is_some_and(cosmic_pim_accounts::OAuth::is_configured)
+        })
+        .map(|provider| SignInProvider {
+            id: provider.id.clone(),
+            name: provider.name.clone(),
+        })
+        .collect()
+}
+
+/// Runs one OAuth sign-in, start to finish, and stores the account.
+///
+/// Blocking for up to the flow's five-minute redirect deadline, so strictly a
+/// worker call. The browser is the user's own — opened here, next to the
+/// listener, so the port is already bound when the redirect comes back.
+/// Everything else — PKCE, the loopback listener, the code exchange — is the
+/// substrate's.
+///
+/// Returns the new account's id, already in the shared store with its grant,
+/// so Slate and Circle see it too.
+pub fn sign_in(provider_id: &str, email: &str) -> Result<String, String> {
+    let registry = cosmic_pim_accounts::Registry::load();
+    let provider = registry
+        .get(provider_id)
+        .ok_or_else(|| format!("no provider called {provider_id}"))?;
+    let oauth = provider
+        .oauth
+        .as_ref()
+        .ok_or_else(|| format!("{} does not use sign-in", provider.name))?;
+
+    let pending = cosmic_pim_auth::begin(oauth).map_err(|why| why.to_string())?;
+    open::that_detached(pending.authorize_url())
+        .map_err(|why| format!("could not open the browser: {why}"))?;
+
+    let code = pending.wait().map_err(|why| why.to_string())?;
+    let credential = pending
+        .exchange(&code, oauth)
+        .map_err(|why| why.to_string())?;
+
+    // The provider builds the account — protocol, endpoints, JMAP URL — which
+    // is how a Google sign-in comes out as a Gmail-engine account rather than
+    // an IMAP one with a token stuffed in the password slot.
+    let account = provider.account_for(email.trim());
+    let id = account.id.clone();
+    let mut accounts = AccountStore::open_default().map_err(|why| why.to_string())?;
+    accounts
+        .add_oauth(account, &provider.id, &credential)
+        .map_err(|why| why.to_string())?;
+    Ok(id)
+}
+
+/// The credentials to use right now, renewed if the stored ones expired.
+///
+/// Called at the top of every worker that touches a server, because an OAuth
+/// access token lives about an hour and a connection built at nine is stale by
+/// ten. For a password account this is the held password and no I/O; for OAuth
+/// it re-reads the stored grant and refreshes it over the network when it has
+/// to — which is exactly why it must never run on the UI thread.
+fn fresh_credentials(connection: &Connection) -> Result<Credentials, String> {
+    if connection.account.auth == AuthMethod::Password {
+        return Ok(connection.credentials.clone());
+    }
+    let mut accounts = AccountStore::open_default().map_err(|why| why.to_string())?;
+    let registry = cosmic_pim_accounts::Registry::load();
+    let secret = cosmic_pim_auth::resolve(&mut accounts, &registry, &connection.account_id)
+        .map_err(|why| why.to_string())?;
+    Ok(cosmic_pim_sync::credentials_for(&secret))
 }
 
 /// Runs one sync pass, over whichever protocol the account uses.
@@ -184,9 +289,10 @@ pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
         since_ms: None,
     };
 
+    let credentials = fresh_credentials(connection)?;
     let pass = cosmic_pim_sync::sync_account_mail(
         &connection.account,
-        &connection.credentials,
+        &credentials,
         &connection.root,
         options,
         now_ms(),
@@ -470,8 +576,9 @@ pub fn watch_inbox(
         return Ok(WatchOutcome::Unsupported);
     }
 
-    let mut session = Session::connect(&connection.endpoint, &connection.credentials)
-        .map_err(|why| why.to_string())?;
+    let credentials = fresh_credentials(connection)?;
+    let mut session =
+        Session::connect(&connection.endpoint, &credentials).map_err(|why| why.to_string())?;
     if !session.supports_idle() {
         let _ = session.logout();
         return Ok(WatchOutcome::Unsupported);
@@ -672,7 +779,11 @@ pub fn send(
         return Sent::Failed("this account has no From address".into());
     };
 
-    let filed_bytes = match smtp::send(&submission.endpoint, &connection.credentials, draft) {
+    let credentials = match fresh_credentials(connection) {
+        Ok(credentials) => credentials,
+        Err(why) => return Sent::Failed(why),
+    };
+    let filed_bytes = match smtp::send(&submission.endpoint, &credentials, draft) {
         Outcome::Sent(bytes) => bytes,
         // Definitely not delivered, so it can wait for the network rather than
         // for the user. An ambiguous failure is not queued — it may already
@@ -736,7 +847,11 @@ fn file_to_sent(connection: &Connection, folders: &[Folder], raw: &[u8]) -> bool
         return false;
     };
 
-    match Session::connect(&connection.endpoint, &connection.credentials).and_then(|mut session| {
+    let Ok(credentials) = fresh_credentials(connection) else {
+        tracing::warn!("the message was sent but the Sent copy could not authenticate");
+        return false;
+    };
+    match Session::connect(&connection.endpoint, &credentials).and_then(|mut session| {
         let result = session.append(
             &sent.wire_name,
             raw,

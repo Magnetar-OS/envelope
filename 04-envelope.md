@@ -46,12 +46,11 @@ separates "not done yet" from "not doing".
 | Send | + outbox, undo send, scheduled | typed pre-acceptance errors, outbox |
 | Search | FTS5 + tantivy + semantic, saved queries | FTS5 with bm25, over the index |
 | Keyboard | registry, palette, rebinding, quick steps | registry, Gmail keys, chords, cheat sheet |
-| Accounts | six-stage discovery, OAuth PKCE | three-stage discovery, password |
+| Accounts | six-stage discovery, OAuth PKCE | registry + three-stage discovery, OAuth PKCE |
 
 ### Not done yet
 
-In rough order of how much they are missed: **OAuth token flow** (the wire half — XOAUTH2, Credentials — is in the
-substrate; what is missing is the browser dance and refresh), **QRESYNC**,
+In rough order of how much they are missed: **QRESYNC**,
 **server-side drafts**, **unified inbox**, **undo**, **rules**, **labels**,
 **snooze**, **one-click unsubscribe**, **import/export**, **OpenPGP and
 S/MIME**, and the other four engines (**JMAP**, **Gmail**, **Graph**, **POP3**).
