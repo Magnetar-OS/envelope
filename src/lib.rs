@@ -14,6 +14,7 @@
 
 pub mod actions;
 pub mod app;
+pub mod config;
 pub mod flags;
 pub mod i18n;
 pub mod mail;

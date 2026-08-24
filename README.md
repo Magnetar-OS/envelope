@@ -175,11 +175,12 @@ in `cosmic-pim`.
 ## Building
 
 ```sh
-cargo build --release
-./target/release/envelope
+just build-release
+just install-user     # into ~/.local, no root needed
 ```
 
-Requires a sibling checkout of `cosmic-pim`.
+`just check-all` runs what CI does: metadata validation, formatting,
+clippy, and the tests. Requires a sibling checkout of `cosmic-pim`.
 
 ## Licence
 

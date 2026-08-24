@@ -17,6 +17,7 @@
 use std::collections::HashMap;
 
 use cosmic::app::{Core, Task, context_drawer};
+use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::Length;
 use cosmic::iced::Subscription;
 use cosmic::widget::{self, about::About, menu};
@@ -27,6 +28,7 @@ use cosmic_pim_mail::folder::{Folder, SpecialUse};
 use cosmic_pim_mail::model::Flags;
 
 use crate::actions::{self, Action, Resolved};
+use crate::config::Config;
 use crate::fl;
 use crate::mail::{self, Connection, Conversation, Opened, SyncReport};
 
@@ -82,22 +84,18 @@ pub struct AppModel {
     text_focus: usize,
     /// The first key of a chord, waiting for its second.
     pending_chord: Option<char>,
+    /// Settings that persist between runs, and are picked up live when another
+    /// process changes them.
+    config: Config,
+    /// The interval field's text, which is not the setting: a half-typed number
+    /// must not be rejected on every keystroke.
+    poll_seconds: String,
 
     /// What is in the search box. Empty means the box is closed.
     search: String,
     results: Vec<cosmic_pim_mail::Hit>,
     searching: bool,
 }
-
-/// How often the mailbox is checked.
-///
-/// A poll, not IDLE. IDLE is the right answer and needs a connection held open
-/// on its own thread; until that exists, two minutes is the interval that keeps
-/// a mail client feeling live without being the reason a laptop's radio never
-/// sleeps. It is also short enough that the writeback queue drains promptly —
-/// a flag change made offline reaches the server on the next tick, not the next
-/// time somebody presses a button.
-const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// How many search results are shown.
 ///
@@ -363,6 +361,9 @@ pub enum Message {
     ComposeDiscard,
     DraftsLoaded(Vec<cosmic_pim_mail::drafts::Saved>),
     ShowDrafts,
+    ConfigChanged(Config),
+    PollSecondsChanged(String),
+    MarkReadOnOpenChanged(bool),
     /// One of the registry's actions, however it was invoked.
     Act(Action),
     KeyPressed(
@@ -386,7 +387,7 @@ pub enum Message {
     AttachmentSaved(Result<std::path::PathBuf, String>),
     /// Attach a file the user picked.
     AttachFile,
-    FilePicked(Option<Vec<std::path::PathBuf>>),
+    FilePicked(Result<Vec<std::path::PathBuf>, String>),
     AttachmentRemoved(usize),
     DraftOpened(String),
     DraftDeleted(String),
@@ -399,6 +400,7 @@ pub enum ContextPage {
     #[default]
     About,
     Accounts,
+    Settings,
     Shortcuts,
 }
 
@@ -441,7 +443,6 @@ impl cosmic::Application for AppModel {
             .links([(fl!("repository"), REPOSITORY)]);
 
         let accounts = load_accounts();
-        let selected_account = accounts.first().map(|a| a.id.clone());
 
         let mut model = Self {
             core,
@@ -455,7 +456,8 @@ impl cosmic::Application for AppModel {
                 .map(|(bind, action)| (bind, MenuAction(action)))
                 .collect(),
             accounts,
-            selected_account,
+            // Filled in below, once the saved settings are loaded.
+            selected_account: None,
             connection: None,
             folders: Vec::new(),
             selected_folder: None,
@@ -477,10 +479,36 @@ impl cosmic::Application for AppModel {
             showing_outbox: false,
             text_focus: 0,
             pending_chord: None,
+            poll_seconds: String::new(),
+            config: cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
+                .map(|context| match Config::get_entry(&context) {
+                    Ok(config) => config,
+                    Err((why, config)) => {
+                        // Reported, not swallowed: a configuration that failed
+                        // to load looks exactly like one that was never saved,
+                        // and the user would put the setting back and watch it
+                        // vanish again.
+                        for why in why {
+                            tracing::warn!(%why, "could not read the saved settings");
+                        }
+                        config
+                    }
+                })
+                .unwrap_or_default(),
             search: String::new(),
             results: Vec::new(),
             searching: false,
         };
+        // The account that was open last, if it is still there. Falling back to
+        // the first rather than to none: an application that opens on nothing
+        // when its remembered account was removed is one the user has to
+        // rescue.
+        model.selected_account = model
+            .accounts
+            .iter()
+            .find(|account| account.id == model.config.last_account)
+            .or_else(|| model.accounts.first())
+            .map(|account| account.id.clone());
         model.rebuild_connection();
 
         // A link the desktop handed us opens straight into the composer. Done
@@ -524,6 +552,7 @@ impl cosmic::Application for AppModel {
                         item(Action::Sync),
                         menu::Item::Divider,
                         item(Action::Shortcuts),
+                        item(Action::Settings),
                         item(Action::Accounts),
                         item(Action::About),
                     ],
@@ -564,7 +593,12 @@ impl cosmic::Application for AppModel {
             // Unconditional. Gating it on "is an account configured" would mean
             // the timer does not exist yet when one is added, and the first
             // check would wait for a restart.
-            cosmic::iced::time::every(POLL_INTERVAL).map(|_| Message::Poll),
+            cosmic::iced::time::every(self.config.poll_interval()).map(|_| Message::Poll),
+            // Settings changed by another process — cosmic-settings, a text
+            // editor — take effect without a restart.
+            self.core()
+                .watch_config::<Config>(Self::APP_ID)
+                .map(|update| Message::ConfigChanged(update.config)),
             // Every key press, decided in `update` — the decision needs the
             // model (is a text field focused, is a chord half-typed) and a
             // subscription does not have it.
@@ -664,6 +698,11 @@ impl cosmic::Application for AppModel {
                 Message::ToggleContextPage(ContextPage::Accounts),
             )
             .title(fl!("accounts")),
+            ContextPage::Settings => context_drawer::context_drawer(
+                crate::ui::settings::view(&self.config, &self.poll_seconds),
+                Message::ToggleContextPage(ContextPage::Settings),
+            )
+            .title(fl!("settings")),
             ContextPage::Shortcuts => context_drawer::context_drawer(
                 crate::ui::shortcuts::view(),
                 Message::ToggleContextPage(ContextPage::Shortcuts),
@@ -748,6 +787,7 @@ impl cosmic::Application for AppModel {
                 if self.selected_account.as_deref() == Some(id.as_str()) {
                     return Task::none();
                 }
+                self.remember(|config| config.last_account = id.clone());
                 self.selected_account = Some(id);
                 self.clear_mailbox_state();
                 self.rebuild_connection();
@@ -787,7 +827,7 @@ impl cosmic::Application for AppModel {
                         if !report.folders.is_empty() {
                             self.folders = report.folders;
                             if self.selected_folder.is_none() {
-                                self.selected_folder = self.default_folder();
+                                self.selected_folder = self.restore_folder();
                             }
                         }
                         Task::batch([self.reload_conversations(), self.reload_outbox()])
@@ -808,6 +848,9 @@ impl cosmic::Application for AppModel {
                 self.selected_conversation = None;
                 self.opened = None;
                 self.reader_error = None;
+                if let Some(folder) = self.current_folder().cloned() {
+                    self.remember(|config| config.last_folder = folder.wire_name);
+                }
                 Task::batch([self.reload_conversations(), self.update_title()])
             }
 
@@ -855,8 +898,11 @@ impl cosmic::Application for AppModel {
                         // Opening a message marks it read, which is what every
                         // mail client does and what users expect. It goes
                         // through the same queued path as the button, so it
-                        // reaches the server rather than being a local lie.
-                        if !already_read {
+                        // reaches the server rather than being a local lie —
+                        // and it is a setting, because for somebody using their
+                        // inbox as a to-do list, a message losing its unread
+                        // mark on a glance is losing a task.
+                        if !already_read && self.config.mark_read_on_open {
                             return self.set_flags(|flags| Flags {
                                 seen: true,
                                 ..flags
@@ -1017,6 +1063,24 @@ impl cosmic::Application for AppModel {
                 }
                 self.reload_outbox()
             }
+            Message::ConfigChanged(config) => {
+                self.poll_seconds = config.poll_seconds.to_string();
+                self.config = config;
+                Task::none()
+            }
+            Message::PollSecondsChanged(text) => {
+                // The field holds text so a half-typed number is not rejected
+                // mid-keystroke; only a whole one reaches the setting.
+                if let Ok(seconds) = text.trim().parse::<u32>() {
+                    self.remember(|config| config.poll_seconds = seconds);
+                }
+                self.poll_seconds = text;
+                Task::none()
+            }
+            Message::MarkReadOnOpenChanged(on) => {
+                self.remember(|config| config.mark_read_on_open = on);
+                Task::none()
+            }
             Message::TextFocused => {
                 self.text_focus = self.text_focus.saturating_add(1);
                 Task::none()
@@ -1068,22 +1132,32 @@ impl cosmic::Application for AppModel {
                 Task::none()
             }
             Message::AttachFile => cosmic::task::future(async move {
-                let picked = cosmic::dialog::file_chooser::open::Dialog::new()
-                    .open_files()
-                    .await
-                    .ok()
-                    .map(|response| {
-                        response
-                            .urls()
-                            .iter()
-                            .filter_map(|url| url.to_file_path().ok())
-                            .collect()
-                    });
-                Message::FilePicked(picked)
+                let dialog =
+                    cosmic::dialog::file_chooser::open::Dialog::new().title(fl!("choose-files"));
+                match dialog.open_files().await {
+                    Ok(response) => Message::FilePicked(Ok(response
+                        .urls()
+                        .iter()
+                        .filter_map(|url| url.to_file_path().ok())
+                        .collect())),
+                    // Cancelling is not a failure and must not be reported as
+                    // one; anything else is, because a portal that is missing
+                    // or refused looks identical to "nothing happened"
+                    // otherwise, and the user presses the button again.
+                    Err(cosmic::dialog::file_chooser::Error::Cancelled) => {
+                        Message::FilePicked(Ok(Vec::new()))
+                    }
+                    Err(why) => Message::FilePicked(Err(why.to_string())),
+                }
             }),
             Message::FilePicked(paths) => {
-                let Some(paths) = paths else {
-                    return Task::none();
+                let paths = match paths {
+                    Ok(paths) => paths,
+                    Err(why) => {
+                        return self.with_composer(|composer| {
+                            composer.error = Some(fl!("no-file-dialog", reason = why));
+                        });
+                    }
                 };
                 for path in paths {
                     match cosmic_pim_mail::compose::Attachment::from_path(&path) {
@@ -1206,7 +1280,7 @@ impl AppModel {
         cosmic_pim_mail::folder::sort_for_display(&mut folders);
 
         self.folders = folders;
-        self.selected_folder = self.default_folder();
+        self.selected_folder = self.restore_folder();
         Task::batch([self.reload_conversations(), self.update_title()])
     }
 
@@ -1484,6 +1558,33 @@ impl AppModel {
         })
     }
 
+    /// Writes a setting through `cosmic-config`.
+    ///
+    /// Best-effort: a setting that could not be saved is worth a log line and
+    /// nothing more. Refusing to change the selection because the disk is full
+    /// would be making a small problem into the user's problem.
+    fn remember(&mut self, edit: impl FnOnce(&mut Config)) {
+        edit(&mut self.config);
+        let Ok(context) = cosmic_config::Config::new(Self::APP_ID, Config::VERSION) else {
+            return;
+        };
+        if let Err(why) = self.config.write_entry(&context) {
+            tracing::warn!(%why, "could not save the settings");
+        }
+    }
+
+    /// The folder to open when there is no reason to prefer another.
+    ///
+    /// The one that was open last, if the server still has it; otherwise the
+    /// inbox. Remembering is what stops somebody who reads out of Archive from
+    /// having to navigate there on every launch.
+    fn restore_folder(&self) -> Option<usize> {
+        self.folders
+            .iter()
+            .position(|folder| folder.wire_name == self.config.last_folder)
+            .or_else(|| self.default_folder())
+    }
+
     /// Puts the folder and the account in the window title.
     ///
     /// Which matters more here than in a single-document application: with two
@@ -1610,6 +1711,7 @@ impl AppModel {
             }
 
             Action::Shortcuts => self.update(Message::ToggleContextPage(ContextPage::Shortcuts)),
+            Action::Settings => self.update(Message::ToggleContextPage(ContextPage::Settings)),
             Action::Accounts => self.update(Message::ToggleContextPage(ContextPage::Accounts)),
             Action::About => self.update(Message::ToggleContextPage(ContextPage::About)),
         }

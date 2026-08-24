@@ -6,6 +6,7 @@ pub mod accounts;
 pub mod composer;
 pub mod list;
 pub mod reader;
+pub mod settings;
 pub mod shortcuts;
 pub mod sidebar;
 

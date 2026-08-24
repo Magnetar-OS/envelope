@@ -55,6 +55,7 @@ pub enum Action {
     GoArchive,
 
     Shortcuts,
+    Settings,
     Accounts,
     About,
 }
@@ -84,6 +85,7 @@ impl Action {
             Self::GoSent => fl!("go-sent"),
             Self::GoArchive => fl!("go-archive"),
             Self::Shortcuts => fl!("shortcuts"),
+            Self::Settings => fl!("settings"),
             Self::Accounts => fl!("accounts"),
             Self::About => fl!("about"),
         }
@@ -109,6 +111,7 @@ impl Action {
             | Self::Sync
             | Self::Escape
             | Self::Shortcuts
+            | Self::Settings
             | Self::Accounts
             | Self::About => Group::Application,
         }
@@ -390,6 +393,12 @@ pub fn bindings() -> Vec<Binding> {
         Binding {
             action: Action::Shortcuts,
             bare: Some(Bare::Key('?')),
+            combination: None,
+            handled_by_framework: false,
+        },
+        Binding {
+            action: Action::Settings,
+            bare: None,
             combination: None,
             handled_by_framework: false,
         },
