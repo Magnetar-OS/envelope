@@ -11,7 +11,7 @@
 use cosmic::Element;
 use cosmic::iced::Length;
 use cosmic::widget;
-use cosmic_pim_accounts::{Account, Transport};
+use cosmic_pim_accounts::{Account, MailProtocol, Transport};
 
 use crate::app::{MailForm, Message};
 use crate::fl;
@@ -89,6 +89,16 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
     let section = widget::settings::section()
         .title(fl!("mail-server"))
         .add(
+            widget::settings::item::builder(fl!("protocol"))
+                .description(fl!("protocol-hint"))
+                .control(
+                    widget::dropdown(PROTOCOL_LABELS, Some(form.protocol_index()), |index| {
+                        Message::MailFormProtocolChanged(PROTOCOLS[index])
+                    })
+                    .width(Length::Fixed(220.0)),
+                ),
+        )
+        .add(
             widget::settings::item::builder(fl!("imap-host")).control(
                 widget::text_input("imap.example.com", &form.host)
                     .on_input(Message::MailFormHostChanged)
@@ -113,6 +123,17 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                 })
                 .width(Length::Fixed(220.0)),
             ),
+        )
+        .add(
+            widget::settings::item::builder(fl!("jmap-url"))
+                .description(fl!("jmap-url-hint"))
+                .control(
+                    widget::text_input("https://…/.well-known/jmap", &form.jmap_url)
+                        .on_input(Message::MailFormJmapUrlChanged)
+                        .on_focus(Message::TextFocused)
+                        .on_unfocus(Message::TextUnfocused)
+                        .width(Length::Fixed(220.0)),
+                ),
         )
         .add(
             widget::settings::item::builder(fl!("username"))
@@ -233,3 +254,13 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
 
 pub const TRANSPORTS: [Transport; 3] = [Transport::Tls, Transport::StartTls, Transport::Plaintext];
 const TRANSPORT_LABELS: &[&str] = &["TLS", "STARTTLS", "None"];
+
+/// The protocols a password can drive.
+///
+/// Gmail and Graph are real engines in the substrate but need an OAuth token,
+/// and a dropdown entry that can only ever fail at sync time with "wrong
+/// password" is worse than its absence. They join the list with the token
+/// flow.
+pub const PROTOCOLS: [MailProtocol; 3] =
+    [MailProtocol::Imap, MailProtocol::Jmap, MailProtocol::Pop3];
+const PROTOCOL_LABELS: &[&str] = &["IMAP", "JMAP", "POP3"];

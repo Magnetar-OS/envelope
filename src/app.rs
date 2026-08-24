@@ -23,7 +23,7 @@ use cosmic::iced::Subscription;
 use cosmic::widget::{self, about::About, menu};
 use cosmic::{Application as _, ApplicationExt as _};
 use cosmic::{Apply as _, Element};
-use cosmic_pim_accounts::{Account, AccountStore, MailEndpoint, Transport};
+use cosmic_pim_accounts::{Account, AccountStore, MailEndpoint, MailProtocol, Transport};
 use cosmic_pim_mail::folder::{Folder, SpecialUse};
 use cosmic_pim_mail::model::Flags;
 
@@ -235,6 +235,11 @@ pub struct MailForm {
     /// Empty means "the login, if it is an address".
     pub from_address: String,
     pub from_name: String,
+    /// Which protocol reads this account's mail.
+    pub protocol: MailProtocol,
+    /// The JMAP session resource. Meaningful only when the protocol is JMAP,
+    /// and filled in by the provider registry far more often than by hand.
+    pub jmap_url: String,
     /// The address discovery works from — usually the From address, which is
     /// the only thing the user reliably knows.
     pub discovering: bool,
@@ -259,10 +264,30 @@ impl MailForm {
             smtp_transport: mail.map(|m| m.smtp_transport).unwrap_or_default(),
             from_address: mail.map(|m| m.from_address.clone()).unwrap_or_default(),
             from_name: mail.map(|m| m.from_name.clone()).unwrap_or_default(),
+            protocol: mail.map(|m| m.protocol).unwrap_or_default(),
+            jmap_url: mail
+                .and_then(|m| m.jmap_session_url.clone())
+                .unwrap_or_default(),
             discovering: false,
             discovered_from: None,
             error: None,
         }
+    }
+
+    /// Fills the form in from a provider-registry entry.
+    ///
+    /// The registry knows more than discovery does — which protocol, and the
+    /// JMAP session URL — so a hit here fills everything.
+    fn apply_endpoint(&mut self, endpoint: &MailEndpoint) {
+        self.protocol = endpoint.protocol;
+        self.host = endpoint.imap_host.clone();
+        self.port = endpoint.imap_port.to_string();
+        self.transport = endpoint.imap_transport;
+        self.smtp_host = endpoint.smtp_host.clone();
+        self.smtp_port = endpoint.smtp_port.to_string();
+        self.smtp_transport = endpoint.smtp_transport;
+        self.jmap_url = endpoint.jmap_session_url.clone().unwrap_or_default();
+        self.discovered_from = Some(fl!("found-provider"));
     }
 
     /// Fills the form in from what discovery found.
@@ -294,6 +319,14 @@ impl MailForm {
     #[must_use]
     pub fn smtp_transport_index(&self) -> usize {
         transport_index(self.smtp_transport)
+    }
+
+    #[must_use]
+    pub fn protocol_index(&self) -> usize {
+        crate::ui::accounts::PROTOCOLS
+            .iter()
+            .position(|p| *p == self.protocol)
+            .unwrap_or(0)
     }
 }
 
@@ -343,6 +376,8 @@ pub enum Message {
     MailFormHostChanged(String),
     MailFormPortChanged(String),
     MailFormTransportChanged(Transport),
+    MailFormProtocolChanged(MailProtocol),
+    MailFormJmapUrlChanged(String),
     MailFormUsernameChanged(String),
     MailFormSmtpHostChanged(String),
     MailFormSmtpPortChanged(String),
@@ -1014,6 +1049,10 @@ impl cosmic::Application for AppModel {
             Message::MailFormUsernameChanged(username) => {
                 self.with_form(|form| form.username = username)
             }
+            Message::MailFormProtocolChanged(protocol) => {
+                self.with_form(|form| form.protocol = protocol)
+            }
+            Message::MailFormJmapUrlChanged(url) => self.with_form(|form| form.jmap_url = url),
             Message::MailFormSmtpHostChanged(host) => self.with_form(|form| form.smtp_host = host),
             Message::MailFormSmtpPortChanged(port) => self.with_form(|form| form.smtp_port = port),
             Message::MailFormSmtpTransportChanged(transport) => self.with_form(|form| {
@@ -1028,16 +1067,20 @@ impl cosmic::Application for AppModel {
                 form.smtp_transport = transport;
             }),
             Message::MailFormFromAddressChanged(address) => {
-                // The table half of discovery runs on every keystroke: it needs
-                // no network, and a recognised provider should fill the form in
-                // as soon as the domain is typed rather than after a button.
+                // The no-network half of discovery runs on every keystroke, so
+                // a recognised provider fills the form in as soon as the
+                // domain is typed. The registry first — it knows the protocol
+                // and the JMAP URL, which the table does not.
+                let provider = mail::provider_settings(&address);
                 let known = mail::known_settings(&address);
                 self.with_form(|form| {
                     form.from_address = address;
-                    if form.host.trim().is_empty()
-                        && let Some(found) = known
-                    {
-                        form.apply(&found);
+                    if form.host.trim().is_empty() {
+                        if let Some(endpoint) = provider {
+                            form.apply_endpoint(&endpoint);
+                        } else if let Some(found) = known {
+                            form.apply(&found);
+                        }
                     }
                 })
             }
@@ -1600,6 +1643,12 @@ impl AppModel {
         if form.discovering {
             return Task::none();
         }
+        // The registry answers without a network and with more authority than
+        // the probing stages have; only a miss goes on to them.
+        if let Some(endpoint) = mail::provider_settings(&email) {
+            form.apply_endpoint(&endpoint);
+            return Task::none();
+        }
         form.discovering = true;
         form.error = None;
 
@@ -2125,17 +2174,28 @@ impl AppModel {
         // Struct-update over the constructor, so a field the substrate grows —
         // it has already grown five — defaults sensibly here instead of
         // breaking the build or, worse, being zeroed.
-        let endpoint = MailEndpoint {
+        // The one "incoming server" pair the form shows maps to whichever
+        // protocol was chosen — a POP3 user typed their POP3 server into it,
+        // and asking them which field family that was would be exposing the
+        // storage schema as UI.
+        let mut endpoint = MailEndpoint {
+            protocol: form.protocol,
             imap_port: port,
             imap_transport: form.transport,
             imap_username: Some(form.username.trim().to_owned()).filter(|u| !u.is_empty()),
             smtp_host: form.smtp_host.trim().to_owned(),
             smtp_port,
             smtp_transport: form.smtp_transport,
+            jmap_session_url: Some(form.jmap_url.trim().to_owned()).filter(|u| !u.is_empty()),
             from_address: form.from_address.trim().to_owned(),
             from_name: form.from_name.trim().to_owned(),
             ..MailEndpoint::tls(form.host.trim())
         };
+        if form.protocol == MailProtocol::Pop3 {
+            endpoint.pop3_host = form.host.trim().to_owned();
+            endpoint.pop3_port = port;
+            endpoint.pop3_transport = form.transport;
+        }
         let account_id = form.account_id.clone();
 
         // Written through the shared store, so Slate and Circle see the same

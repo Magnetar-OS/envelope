@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::collections::{BTreeMap, HashMap};
 
 use chrono::Utc;
-use cosmic_pim_accounts::{Account, AccountStore, MailProtocol, Transport};
+use cosmic_pim_accounts::{Account, AccountStore, MailEndpoint, MailProtocol, Transport};
 use cosmic_pim_mail::attachment;
 use cosmic_pim_mail::compose::Draft;
 use cosmic_pim_mail::discovery::{self, Discovered};
@@ -248,6 +248,25 @@ pub fn discover(email: &str) -> Result<Discovered, String> {
 #[must_use]
 pub fn known_settings(email: &str) -> Option<Discovered> {
     discovery::known(email)
+}
+
+/// The provider registry's answer for an address, if it has one.
+///
+/// Richer than [`known_settings`]: a provider entry knows which *protocol* the
+/// account should use and carries the JMAP session URL — which is how a
+/// Fastmail address ends up on JMAP rather than on the IMAP fallback the
+/// discovery table would give it. Consulted first for exactly that reason.
+/// No network; the registry is files on disk.
+#[must_use]
+pub fn provider_settings(email: &str) -> Option<MailEndpoint> {
+    let username = email.trim();
+    let registry = cosmic_pim_accounts::provider::Registry::load();
+    let provider = registry.for_email(username)?;
+    provider
+        .services
+        .mail
+        .as_ref()
+        .map(|mail| mail.endpoint_for(username))
 }
 
 /// This account's outbox.
