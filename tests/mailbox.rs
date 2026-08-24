@@ -12,10 +12,10 @@
 
 use cosmic_pim_mail::folder::{self, Folder};
 use cosmic_pim_mail::imap::{Endpoint, Security};
-use cosmic_pim_mail::smtp::SmtpEndpoint;
 use cosmic_pim_mail::maildir::{self, MaildirStore};
 use cosmic_pim_mail::model::Flags;
 use cosmic_pim_mail::push::PushQueue;
+use cosmic_pim_mail::smtp::SmtpEndpoint;
 use cosmic_pim_mail::store::{MailStore, RemoteMessage};
 use envelope::mail::{self, Connection};
 
@@ -74,7 +74,14 @@ fn deliver(root: &std::path::Path, messages: &[(u32, &str, Flags)]) {
     }
 }
 
-fn message(id: &str, references: &str, subject: &str, from: &str, date: &str, body: &str) -> String {
+fn message(
+    id: &str,
+    references: &str,
+    subject: &str,
+    from: &str,
+    date: &str,
+    body: &str,
+) -> String {
     format!(
         "Message-ID: <{id}>\r\n\
          From: {from}\r\n\
@@ -120,14 +127,20 @@ fn a_mailbox_reads_back_as_conversations_newest_first() {
     deliver(
         root,
         &[
-            (1, &hello, Flags { seen: true, ..Flags::default() }),
+            (
+                1,
+                &hello,
+                Flags {
+                    seen: true,
+                    ..Flags::default()
+                },
+            ),
             (2, &reply, Flags::default()),
             (3, &lunch, Flags::default()),
         ],
     );
 
-    let conversations =
-        mail::conversations(&connection(root), &inbox()).expect("read the mailbox");
+    let conversations = mail::conversations(&connection(root), &inbox()).expect("read the mailbox");
 
     assert_eq!(conversations.len(), 2, "the reply did not join its parent");
     assert_eq!(
@@ -136,10 +149,16 @@ fn a_mailbox_reads_back_as_conversations_newest_first() {
     );
 
     let thread = &conversations[1];
-    assert_eq!(thread.subject, "Release plan", "the thread kept a Re: prefix");
+    assert_eq!(
+        thread.subject, "Release plan",
+        "the thread kept a Re: prefix"
+    );
     assert_eq!(thread.uids, vec![1, 2]);
     assert_eq!(thread.participants, ["Ada", "Bob"]);
-    assert!(thread.unread, "a thread with one unread reply must read as unread");
+    assert!(
+        thread.unread,
+        "a thread with one unread reply must read as unread"
+    );
     assert_eq!(thread.snippet, "Looks good to me.");
     assert_eq!(thread.newest_uid(), Some(2));
 }
@@ -186,7 +205,14 @@ Content-Type: text/html; charset=utf-8\r\n\
 #[test]
 fn opening_a_message_that_is_gone_says_so_rather_than_panicking() {
     let dir = tempfile::tempdir().expect("tempdir");
-    deliver(dir.path(), &[(1, &message("a@x", "", "s", "a@x", "", "b"), Flags::default())]);
+    deliver(
+        dir.path(),
+        &[(
+            1,
+            &message("a@x", "", "s", "a@x", "", "b"),
+            Flags::default(),
+        )],
+    );
     let error = mail::open(&connection(dir.path()), &inbox(), 99).expect_err("no such message");
     assert!(error.contains("no longer"), "{error}");
 }
@@ -199,7 +225,11 @@ fn a_flag_change_is_applied_locally_and_queued_for_the_server() {
     let root = dir.path();
     deliver(
         root,
-        &[(1, &message("a@x", "", "Subject", "a@x", "", "body"), Flags::default())],
+        &[(
+            1,
+            &message("a@x", "", "Subject", "a@x", "", "body"),
+            Flags::default(),
+        )],
     );
 
     mail::set_flags(&connection(root), &inbox(), &[1], |flags| Flags {
@@ -257,8 +287,16 @@ fn archiving_a_conversation_takes_all_of_it_and_queues_the_move() {
     deliver(
         root,
         &[
-            (1, &message("a@x", "", "Plan", "a@x", "", "one"), Flags::default()),
-            (2, &message("b@x", "<a@x>", "Re: Plan", "b@x", "", "two"), Flags::default()),
+            (
+                1,
+                &message("a@x", "", "Plan", "a@x", "", "one"),
+                Flags::default(),
+            ),
+            (
+                2,
+                &message("b@x", "<a@x>", "Re: Plan", "b@x", "", "two"),
+                Flags::default(),
+            ),
         ],
     );
 
@@ -273,7 +311,11 @@ fn archiving_a_conversation_takes_all_of_it_and_queues_the_move() {
         store.state().expect("state").entries.is_empty(),
         "the archived conversation is still in the inbox"
     );
-    assert_eq!(store.pending().len(), 2, "the move will never reach the server");
+    assert_eq!(
+        store.pending().len(),
+        2,
+        "the move will never reach the server"
+    );
 
     // And it survives a restart, because an archive made on a train has to.
     let reopened =
@@ -297,7 +339,14 @@ fn a_message_with_no_date_sorts_last_rather_than_first() {
             ),
             (
                 2,
-                &message("b@x", "", "Dated", "b@x", "Mon, 3 Feb 2025 09:00:00 +0000", "two"),
+                &message(
+                    "b@x",
+                    "",
+                    "Dated",
+                    "b@x",
+                    "Mon, 3 Feb 2025 09:00:00 +0000",
+                    "two",
+                ),
                 Flags::default(),
             ),
         ],
@@ -318,8 +367,30 @@ fn the_index_is_a_cache_and_deleting_it_costs_only_a_rescan() {
     deliver(
         root,
         &[
-            (1, &message("a@x", "", "Plan", "a@x", "Mon, 3 Feb 2025 09:00:00 +0000", "one"), Flags::default()),
-            (2, &message("b@x", "<a@x>", "Re: Plan", "b@x", "Mon, 3 Feb 2025 10:00:00 +0000", "two"), Flags::default()),
+            (
+                1,
+                &message(
+                    "a@x",
+                    "",
+                    "Plan",
+                    "a@x",
+                    "Mon, 3 Feb 2025 09:00:00 +0000",
+                    "one",
+                ),
+                Flags::default(),
+            ),
+            (
+                2,
+                &message(
+                    "b@x",
+                    "<a@x>",
+                    "Re: Plan",
+                    "b@x",
+                    "Mon, 3 Feb 2025 10:00:00 +0000",
+                    "two",
+                ),
+                Flags::default(),
+            ),
         ],
     );
 
@@ -329,7 +400,10 @@ fn the_index_is_a_cache_and_deleting_it_costs_only_a_rescan() {
 
     std::fs::remove_file(&connection.index_path).expect("delete the cache");
     let after = mail::conversations(&connection, &inbox()).expect("read again");
-    assert_eq!(after, before, "the mailbox did not survive losing its cache");
+    assert_eq!(
+        after, before,
+        "the mailbox did not survive losing its cache"
+    );
 }
 
 #[test]
@@ -435,13 +509,30 @@ fn a_search_finds_messages_by_sender_and_subject_across_folders() {
         &[
             (
                 1,
-                &message("a@x", "", "Invoice 42 overdue", "Ada <ada@example.com>", "Mon, 3 Feb 2025 09:00:00 +0000", "Please pay."),
+                &message(
+                    "a@x",
+                    "",
+                    "Invoice 42 overdue",
+                    "Ada <ada@example.com>",
+                    "Mon, 3 Feb 2025 09:00:00 +0000",
+                    "Please pay.",
+                ),
                 Flags::default(),
             ),
             (
                 2,
-                &message("b@x", "", "Release plan", "Bob <bob@example.net>", "Mon, 3 Feb 2025 10:00:00 +0000", "Draft attached."),
-                Flags { seen: true, ..Flags::default() },
+                &message(
+                    "b@x",
+                    "",
+                    "Release plan",
+                    "Bob <bob@example.net>",
+                    "Mon, 3 Feb 2025 10:00:00 +0000",
+                    "Draft attached.",
+                ),
+                Flags {
+                    seen: true,
+                    ..Flags::default()
+                },
             ),
         ],
     );
@@ -457,7 +548,9 @@ fn a_search_finds_messages_by_sender_and_subject_across_folders() {
     assert_eq!(hits[0].mailbox, "INBOX", "a hit must say where it is");
 
     assert_eq!(
-        mail::search(&connection, &folders, "from:bob", 50).expect("search").len(),
+        mail::search(&connection, &folders, "from:bob", 50)
+            .expect("search")
+            .len(),
         1
     );
     assert!(
@@ -476,8 +569,33 @@ fn flag_filters_are_applied_against_the_maildir_not_the_index() {
     deliver(
         root,
         &[
-            (1, &message("a@x", "", "Report one", "a@x", "Mon, 3 Feb 2025 09:00:00 +0000", "x"), Flags::default()),
-            (2, &message("b@x", "", "Report two", "b@x", "Mon, 3 Feb 2025 10:00:00 +0000", "x"), Flags { seen: true, ..Flags::default() }),
+            (
+                1,
+                &message(
+                    "a@x",
+                    "",
+                    "Report one",
+                    "a@x",
+                    "Mon, 3 Feb 2025 09:00:00 +0000",
+                    "x",
+                ),
+                Flags::default(),
+            ),
+            (
+                2,
+                &message(
+                    "b@x",
+                    "",
+                    "Report two",
+                    "b@x",
+                    "Mon, 3 Feb 2025 10:00:00 +0000",
+                    "x",
+                ),
+                Flags {
+                    seen: true,
+                    ..Flags::default()
+                },
+            ),
         ],
     );
 
@@ -485,14 +603,22 @@ fn flag_filters_are_applied_against_the_maildir_not_the_index() {
     mail::conversations(&connection, &inbox()).expect("read");
     let folders = [inbox()];
 
-    assert_eq!(mail::search(&connection, &folders, "report", 50).expect("search").len(), 2);
+    assert_eq!(
+        mail::search(&connection, &folders, "report", 50)
+            .expect("search")
+            .len(),
+        2
+    );
     let unread = mail::search(&connection, &folders, "report is:unread", 50).expect("search");
     assert_eq!(unread.len(), 1);
     assert_eq!(unread[0].subject, "Report one");
 
     // And it tracks the store rather than a snapshot.
-    mail::set_flags(&connection, &inbox(), &[1], |flags| Flags { seen: true, ..flags })
-        .expect("mark read");
+    mail::set_flags(&connection, &inbox(), &[1], |flags| Flags {
+        seen: true,
+        ..flags
+    })
+    .expect("mark read");
     assert!(
         mail::search(&connection, &folders, "report is:unread", 50)
             .expect("search")
@@ -507,13 +633,32 @@ fn an_empty_search_returns_nothing_rather_than_the_mailbox() {
     let root = dir.path();
     deliver(
         root,
-        &[(1, &message("a@x", "", "Anything", "a@x", "Mon, 3 Feb 2025 09:00:00 +0000", "x"), Flags::default())],
+        &[(
+            1,
+            &message(
+                "a@x",
+                "",
+                "Anything",
+                "a@x",
+                "Mon, 3 Feb 2025 09:00:00 +0000",
+                "x",
+            ),
+            Flags::default(),
+        )],
     );
     let connection = connection(root);
     mail::conversations(&connection, &inbox()).expect("read");
 
-    assert!(mail::search(&connection, &[inbox()], "", 50).expect("search").is_empty());
-    assert!(mail::search(&connection, &[inbox()], "   ", 50).expect("search").is_empty());
+    assert!(
+        mail::search(&connection, &[inbox()], "", 50)
+            .expect("search")
+            .is_empty()
+    );
+    assert!(
+        mail::search(&connection, &[inbox()], "   ", 50)
+            .expect("search")
+            .is_empty()
+    );
 }
 
 const WITH_ATTACHMENT: &str = "Message-ID: <att@x>\r\n\
@@ -548,19 +693,16 @@ fn an_attachment_can_be_saved_and_a_hostile_filename_cannot_escape() {
     let into = root.join("downloads");
     let bytes = cosmic_pim_mail::attachment::bytes_of(
         &{
-            let store = MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox()))
-                .expect("open");
+            let store =
+                MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox())).expect("open");
             store.raw(1).expect("read").expect("uid 1")
         },
         0,
     )
     .expect("extract");
-    let saved = cosmic_pim_mail::attachment::save_into(
-        &into,
-        &opened.message.attachments[0].name,
-        &bytes,
-    )
-    .expect("save");
+    let saved =
+        cosmic_pim_mail::attachment::save_into(&into, &opened.message.attachments[0].name, &bytes)
+            .expect("save");
 
     assert_eq!(
         saved.parent().expect("a parent"),
@@ -582,11 +724,13 @@ fn a_composed_message_carries_its_attachment_and_the_recipient_can_read_it() {
     });
     draft.subject = "Report".into();
     draft.body = "Attached.".into();
-    draft.attachments.push(cosmic_pim_mail::compose::Attachment {
-        name: "report.csv".into(),
-        mime_type: "text/csv".into(),
-        bytes: b"a,b\n1,2\n".to_vec(),
-    });
+    draft
+        .attachments
+        .push(cosmic_pim_mail::compose::Attachment {
+            name: "report.csv".into(),
+            mime_type: "text/csv".into(),
+            bytes: b"a,b\n1,2\n".to_vec(),
+        });
 
     let wire = draft.build(false).expect("build").formatted();
     let received = cosmic_pim_mail::Message::parse(&wire).expect("the recipient can parse it");
@@ -596,7 +740,10 @@ fn a_composed_message_carries_its_attachment_and_the_recipient_can_read_it() {
         cosmic_pim_mail::attachment::bytes_of(&wire, 0).expect("extract"),
         b"a,b\n1,2\n"
     );
-    assert!(received.body.text.contains("Attached."), "the body was lost");
+    assert!(
+        received.body.text.contains("Attached."),
+        "the body was lost"
+    );
 }
 
 #[test]
@@ -611,11 +758,13 @@ fn an_attachment_survives_a_draft_being_saved_and_reopened() {
         address: "me@example.com".into(),
     });
     draft.subject = "With a file".into();
-    draft.attachments.push(cosmic_pim_mail::compose::Attachment {
-        name: "photo.png".into(),
-        mime_type: "image/png".into(),
-        bytes: vec![0x89, b'P', b'N', b'G'],
-    });
+    draft
+        .attachments
+        .push(cosmic_pim_mail::compose::Attachment {
+            name: "photo.png".into(),
+            mime_type: "image/png".into(),
+            bytes: vec![0x89, b'P', b'N', b'G'],
+        });
 
     let id = mail::save_draft(&connection, None, &draft).expect("save");
     let reopened = mail::load_draft(&connection, &id)

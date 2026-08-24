@@ -2,7 +2,7 @@
 Name=Mail
 GenericName=Email Client
 Comment=Read and write your mail
-Categories=Office;Email;Network;
+Categories=Network;Email;
 Exec=envelope %u
 Icon=io.github.entro314labs.Envelope
 Terminal=false

@@ -15,18 +15,18 @@ use std::collections::{BTreeMap, HashMap};
 
 use chrono::Utc;
 use cosmic_pim_accounts::{Account, AccountStore, Transport};
-use cosmic_pim_mail::folder::{Folder, SpecialUse};
 use cosmic_pim_mail::attachment;
 use cosmic_pim_mail::compose::Draft;
 use cosmic_pim_mail::discovery::{self, Discovered};
 use cosmic_pim_mail::drafts::{self, Drafts, Saved};
-use cosmic_pim_mail::outbox::{Outbox, Queued};
+use cosmic_pim_mail::folder::{Folder, SpecialUse};
 use cosmic_pim_mail::imap::{self, Endpoint, Security, Session, SyncOptions};
-use cosmic_pim_mail::smtp::{self, Outcome, SmtpEndpoint};
 use cosmic_pim_mail::index::{self, Hit, Index};
 use cosmic_pim_mail::maildir::{self, MaildirStore};
 use cosmic_pim_mail::model::{Flags, Mailbox, Message};
+use cosmic_pim_mail::outbox::{Outbox, Queued};
 use cosmic_pim_mail::push::{PushOp, PushQueue};
+use cosmic_pim_mail::smtp::{self, Outcome, SmtpEndpoint};
 use cosmic_pim_mail::store::MailStore;
 
 /// How often a cycle does the full-mailbox reconciliation pass.
@@ -119,10 +119,7 @@ impl Connection {
     /// Returns `Ok(None)` rather than an error when the account simply has no
     /// mail endpoint: that is every account Slate created, and it is a prompt to
     /// fill one in, not a failure.
-    pub fn for_account(
-        accounts: &AccountStore,
-        account: &Account,
-    ) -> Result<Option<Self>, String> {
+    pub fn for_account(accounts: &AccountStore, account: &Account) -> Result<Option<Self>, String> {
         let Some(mail) = account.mail.as_ref() else {
             return Ok(None);
         };
@@ -215,9 +212,7 @@ pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
                 if outcome.renumbered
                     && let Err(why) = forget_index(connection, &folder.wire_name)
                 {
-                    report
-                        .failures
-                        .push((folder.display_name.clone(), why));
+                    report.failures.push((folder.display_name.clone(), why));
                 }
             }
             Err(why) => report
@@ -267,7 +262,9 @@ pub fn retry_queued(connection: &Connection, id: &str) -> Result<(), String> {
 }
 
 pub fn discard_queued(connection: &Connection, id: &str) -> Result<(), String> {
-    outbox(connection)?.remove(id).map_err(|why| why.to_string())
+    outbox(connection)?
+        .remove(id)
+        .map_err(|why| why.to_string())
 }
 
 /// Attempts everything in the outbox that is due, filing what goes out.
@@ -335,7 +332,9 @@ pub fn load_draft(connection: &Connection, id: &str) -> Result<Option<Draft>, St
 }
 
 pub fn delete_draft(connection: &Connection, id: &str) -> Result<(), String> {
-    drafts(connection)?.delete(id).map_err(|why| why.to_string())
+    drafts(connection)?
+        .delete(id)
+        .map_err(|why| why.to_string())
 }
 
 /// Searches the account, applying the flag filters the index cannot.
@@ -421,15 +420,15 @@ pub fn save_attachment(
         .map_err(|why| why.to_string())?
         .ok_or_else(|| "that message is no longer in this mailbox".to_string())?;
 
-    let message = Message::parse(&raw).ok_or_else(|| "that message could not be read".to_string())?;
+    let message =
+        Message::parse(&raw).ok_or_else(|| "that message could not be read".to_string())?;
     let attachment = message
         .attachments
         .get(index)
         .ok_or_else(|| "that attachment is not in the message".to_string())?;
 
     let bytes = attachment::bytes_of(&raw, index).map_err(|why| why.to_string())?;
-    attachment::save_into(&downloads(), &attachment.name, &bytes)
-        .map_err(|why| why.to_string())
+    attachment::save_into(&downloads(), &attachment.name, &bytes).map_err(|why| why.to_string())
 }
 
 /// Drops one mailbox's index rows.
@@ -459,7 +458,10 @@ pub fn cached_folders(connection: &Connection, folders: &[Folder]) -> Vec<Folder
 /// has not seen. A folder that has not changed since the last look costs a
 /// query, which is what makes clicking between folders feel like navigation
 /// rather than loading.
-pub fn conversations(connection: &Connection, folder: &Folder) -> Result<Vec<Conversation>, String> {
+pub fn conversations(
+    connection: &Connection,
+    folder: &Folder,
+) -> Result<Vec<Conversation>, String> {
     let path = connection.mailbox_path(folder);
     if !path.join("cur").is_dir() {
         return Ok(Vec::new());
@@ -483,7 +485,8 @@ pub fn open(connection: &Connection, folder: &Folder, uid: u32) -> Result<Opened
         .raw(uid)
         .map_err(|why| why.to_string())?
         .ok_or_else(|| "that message is no longer in this mailbox".to_string())?;
-    let message = Message::parse(&raw).ok_or_else(|| "that message could not be read".to_string())?;
+    let message =
+        Message::parse(&raw).ok_or_else(|| "that message could not be read".to_string())?;
     let flags = store
         .state()
         .map_err(|why| why.to_string())?
@@ -623,12 +626,11 @@ pub fn send(
             let id = draft_id
                 .filter(|id| cosmic_pim_mail::drafts::is_valid_id(id))
                 .map_or_else(|| drafts::new_id(now_ms()), ToOwned::to_owned);
-            return match outbox(connection)
-                .and_then(|outbox| {
-                    outbox
-                        .queue(&id, draft, &outcome, now_ms())
-                        .map_err(|why| why.to_string())
-                }) {
+            return match outbox(connection).and_then(|outbox| {
+                outbox
+                    .queue(&id, draft, &outcome, now_ms())
+                    .map_err(|why| why.to_string())
+            }) {
                 // The draft becomes the queued message; leaving both would show
                 // it twice and send it once.
                 Ok(()) => {
@@ -679,15 +681,18 @@ fn file_to_sent(connection: &Connection, folders: &[Folder], raw: &[u8]) -> bool
         return false;
     };
 
-    match Session::connect(&connection.endpoint, &connection.password)
-        .and_then(|mut session| {
-            let result = session.append(&sent.wire_name, raw, Flags {
+    match Session::connect(&connection.endpoint, &connection.password).and_then(|mut session| {
+        let result = session.append(
+            &sent.wire_name,
+            raw,
+            Flags {
                 seen: true,
                 ..Flags::default()
-            });
-            let _ = session.logout();
-            result
-        }) {
+            },
+        );
+        let _ = session.logout();
+        result
+    }) {
         Ok(()) => true,
         Err(why) => {
             // Not fatal: the message was delivered, which is the part that

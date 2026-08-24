@@ -242,7 +242,9 @@ pub fn results<'a>(
         if hit.has_attachments {
             heading = heading.push(widget::icon::from_name("mail-attachment-symbolic").size(12));
         }
-        heading = heading.push(widget::text::caption(crate::ui::relative_date_ms(hit.date_ms)));
+        heading = heading.push(widget::text::caption(crate::ui::relative_date_ms(
+            hit.date_ms,
+        )));
 
         let body = widget::column::with_capacity(3)
             .spacing(spacing.space_xxxs)
@@ -252,7 +254,10 @@ pub fn results<'a>(
                 widget::row::with_capacity(2)
                     .spacing(spacing.space_xxs)
                     .push(widget::text::caption(hit.snippet.clone()).width(Length::Fill))
-                    .push(widget::text::caption(fl!("in-folder", folder = folder.to_owned()))),
+                    .push(widget::text::caption(fl!(
+                        "in-folder",
+                        folder = folder.to_owned()
+                    ))),
             );
 
         column = column.push(

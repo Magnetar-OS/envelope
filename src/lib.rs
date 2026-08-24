@@ -14,10 +14,11 @@
 
 pub mod actions;
 pub mod app;
+pub mod flags;
+pub mod i18n;
 pub mod mail;
 pub mod mailto;
 pub mod ui;
-pub mod i18n;
 
 /// Runs the application.
 pub fn run() -> cosmic::iced::Result {
@@ -31,17 +32,17 @@ pub fn run() -> cosmic::iced::Result {
     let requested_languages = i18n_embed::DesktopLanguageRequester::requested_languages();
     i18n::init(&requested_languages);
 
-    let settings = cosmic::app::Settings::default()
-        .size(cosmic::iced::Size::new(1200.0, 800.0));
+    let settings = cosmic::app::Settings::default().size(cosmic::iced::Size::new(1200.0, 800.0));
 
-    // A `mailto:` URL on the command line is how the desktop hands us a link
-    // someone clicked — in a browser, in Circle, in Slate's attendee list. It
-    // is passed as a flag rather than parsed here because turning it into a
-    // draft needs an account's From identity, which only the model has.
-    let mailto = std::env::args().find(|arg| {
-        let lower = arg.to_ascii_lowercase();
-        lower.starts_with("mailto:")
-    });
-
-    cosmic::app::run::<app::AppModel>(settings, mailto)
+    // `run_single_instance`, not `run`. A mail client registered as the
+    // desktop's `mailto:` handler is nearly always already running when
+    // somebody clicks a link, and this is what hands the link to the instance
+    // that exists rather than opening a second one. It is also what makes the
+    // desktop entry's `DBusActivatable=true` true.
+    cosmic::app::run_single_instance::<app::AppModel>(
+        settings,
+        flags::Flags {
+            launch: flags::Launch::from_args(std::env::args()),
+        },
+    )
 }

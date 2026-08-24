@@ -22,8 +22,8 @@
 //! stops working when somebody switches layout to write an email is not
 //! keyboard-first.
 
-use cosmic::widget::menu::key_bind::{KeyBind, Modifier};
 use cosmic::iced::keyboard::Key;
+use cosmic::widget::menu::key_bind::{KeyBind, Modifier};
 
 use crate::fl;
 
@@ -102,12 +102,14 @@ impl Action {
             | Self::Delete
             | Self::ToggleRead
             | Self::ToggleFlagged => Group::Reading,
-            Self::GoInbox
-            | Self::GoDrafts
-            | Self::GoOutbox
-            | Self::GoSent
-            | Self::GoArchive => Group::Going,
-            Self::Search | Self::Sync | Self::Escape | Self::Shortcuts | Self::Accounts
+            Self::GoInbox | Self::GoDrafts | Self::GoOutbox | Self::GoSent | Self::GoArchive => {
+                Group::Going
+            }
+            Self::Search
+            | Self::Sync
+            | Self::Escape
+            | Self::Shortcuts
+            | Self::Accounts
             | Self::About => Group::Application,
         }
     }
@@ -185,6 +187,14 @@ pub struct Binding {
     pub bare: Option<Bare>,
     /// The modifier form, which works even while typing.
     pub combination: Option<KeyBind>,
+    /// libcosmic already routes this combination to an `Application` hook.
+    ///
+    /// `Escape` and `Ctrl+F` are handled by `keyboard_nav`, which calls
+    /// `on_escape` and `on_search`. Matching them here as well would run both:
+    /// Escape with a composer *and* a context drawer open would close both at
+    /// once. So they stay in the registry — the cheat sheet should still list
+    /// them, they are real shortcuts — and [`for_combination`] skips them.
+    pub handled_by_framework: bool,
 }
 
 impl Binding {
@@ -262,52 +272,62 @@ pub fn bindings() -> Vec<Binding> {
             action: Action::Next,
             bare: Some(Bare::Key('j')),
             combination: None,
+            handled_by_framework: false,
         },
         Binding {
             action: Action::Previous,
             bare: Some(Bare::Key('k')),
             combination: None,
+            handled_by_framework: false,
         },
         Binding {
             action: Action::Archive,
             bare: Some(Bare::Key('e')),
             combination: None,
+            handled_by_framework: false,
         },
         Binding {
             action: Action::Delete,
             bare: Some(Bare::Key('#')),
             combination: Some(named(Named::Delete)),
+            handled_by_framework: false,
         },
         Binding {
             action: Action::ToggleRead,
             bare: Some(Bare::Key('u')),
             combination: None,
+            handled_by_framework: false,
         },
         Binding {
             action: Action::ToggleFlagged,
             bare: Some(Bare::Key('s')),
             combination: None,
+            handled_by_framework: false,
         },
         // Writing
         Binding {
             action: Action::Compose,
             bare: Some(Bare::Key('c')),
             combination: Some(ctrl("n")),
+            handled_by_framework: false,
         },
         Binding {
             action: Action::Reply,
             bare: Some(Bare::Key('r')),
             combination: Some(ctrl("r")),
+            handled_by_framework: false,
         },
         Binding {
             action: Action::ReplyAll,
             bare: Some(Bare::Key('a')),
             combination: Some(ctrl_shift("r")),
+            handled_by_framework: false,
         },
         Binding {
             action: Action::Forward,
             bare: Some(Bare::Key('f')),
             combination: Some(ctrl_shift("f")),
+            handled_by_framework: false,
         },
         Binding {
             // No bare key: this one has to work from inside the composer, which
@@ -315,83 +335,92 @@ pub fn bindings() -> Vec<Binding> {
             action: Action::Send,
             bare: None,
             combination: Some(ctrl(",")),
+            handled_by_framework: false,
         },
         // Going
         Binding {
             action: Action::GoInbox,
             bare: Some(Bare::Chord('g', 'i')),
             combination: None,
+            handled_by_framework: false,
         },
         Binding {
             action: Action::GoDrafts,
             bare: Some(Bare::Chord('g', 'd')),
             combination: None,
+            handled_by_framework: false,
         },
         Binding {
             action: Action::GoOutbox,
             bare: Some(Bare::Chord('g', 'o')),
             combination: None,
+            handled_by_framework: false,
         },
         Binding {
             action: Action::GoSent,
             bare: Some(Bare::Chord('g', 't')),
             combination: None,
+            handled_by_framework: false,
         },
         Binding {
             action: Action::GoArchive,
             bare: Some(Bare::Chord('g', 'a')),
             combination: None,
+            handled_by_framework: false,
         },
         // The application
         Binding {
             action: Action::Search,
             bare: Some(Bare::Key('/')),
             combination: Some(ctrl("f")),
+            handled_by_framework: true,
         },
         Binding {
             action: Action::Sync,
             bare: None,
             combination: Some(named(Named::F5)),
+            handled_by_framework: false,
         },
         Binding {
             action: Action::Escape,
             bare: None,
             combination: Some(named(Named::Escape)),
+            handled_by_framework: true,
         },
         Binding {
             action: Action::Shortcuts,
             bare: Some(Bare::Key('?')),
             combination: None,
+            handled_by_framework: false,
         },
         Binding {
             action: Action::Accounts,
             bare: None,
             combination: Some(ctrl(".")),
+            handled_by_framework: false,
         },
         Binding {
             action: Action::About,
             bare: None,
             combination: None,
+            handled_by_framework: false,
         },
     ]
 }
 
-/// The action a modifier combination invokes, if any.
+/// The combinations this application dispatches itself, as the map libcosmic
+/// also reads to draw accelerators beside menu entries.
 ///
-/// These fire whatever has focus — that is the point of requiring a modifier.
+/// One map for both, following `cosmic-edit`: a menu entry and the keystroke
+/// printed next to it are then the same binding rather than two that agree
+/// today.
 #[must_use]
-pub fn for_combination(
-    modifiers: cosmic::iced::keyboard::Modifiers,
-    key: &Key,
-    physical: Option<&cosmic::iced::keyboard::key::Physical>,
-) -> Option<Action> {
-    bindings().into_iter().find_map(|binding| {
-        binding
-            .combination
-            .as_ref()
-            .is_some_and(|bind| bind.matches(modifiers, key, physical))
-            .then_some(binding.action)
-    })
+pub fn combinations() -> Vec<(KeyBind, Action)> {
+    bindings()
+        .into_iter()
+        .filter(|binding| !binding.handled_by_framework)
+        .filter_map(|binding| binding.combination.map(|bind| (bind, binding.action)))
+        .collect()
 }
 
 /// The action a bare key invokes, given whatever chord is pending.
@@ -414,9 +443,10 @@ pub fn for_bare(key: char, pending: Option<char>) -> Resolved {
         };
     }
 
-    if let Some(action) = bindings().into_iter().find_map(|binding| {
-        (binding.bare == Some(Bare::Key(key))).then_some(binding.action)
-    }) {
+    if let Some(action) = bindings()
+        .into_iter()
+        .find_map(|binding| (binding.bare == Some(Bare::Key(key))).then_some(binding.action))
+    {
         return Resolved::Act(action);
     }
 
@@ -523,18 +553,49 @@ mod tests {
     }
 
     #[test]
-    fn modifier_combinations_resolve_whatever_the_layout() {
+    fn modifier_combinations_are_matched_against_the_map_the_menu_uses() {
         use cosmic::iced::keyboard::Modifiers;
-        let ctrl = Modifiers::CTRL;
+        let combinations = combinations();
+        let matched = |modifiers, key: Key| {
+            combinations
+                .iter()
+                .find(|(bind, _)| bind.matches(modifiers, &key, None))
+                .map(|(_, action)| *action)
+        };
+
         assert_eq!(
-            for_combination(ctrl, &Key::Character("n".into()), None),
+            matched(Modifiers::CTRL, Key::Character("n".into())),
             Some(Action::Compose)
         );
         assert_eq!(
-            for_combination(Modifiers::default(), &Key::Character("n".into()), None),
+            matched(Modifiers::default(), Key::Character("n".into())),
             None,
             "a bare letter must not fire a combination"
         );
+    }
+
+    #[test]
+    fn the_frameworks_own_shortcuts_are_listed_but_not_matched_here() {
+        // libcosmic's keyboard_nav already routes Escape and Ctrl+F to
+        // `on_escape` and `on_search`. Matching them again would run both —
+        // Escape would close a composer and a context drawer at once.
+        let combinations = combinations();
+        assert!(
+            !combinations
+                .iter()
+                .any(|(_, action)| matches!(action, Action::Escape | Action::Search)),
+            "a framework shortcut is dispatched twice"
+        );
+        // They are still in the registry, because the cheat sheet must show
+        // them: they are real shortcuts, just somebody else's to dispatch.
+        let bindings = bindings();
+        for action in [Action::Escape, Action::Search] {
+            let binding = bindings
+                .iter()
+                .find(|binding| binding.action == action)
+                .unwrap_or_else(|| panic!("{action:?} left the registry"));
+            assert!(!binding.shortcut().is_empty());
+        }
     }
 
     #[test]
@@ -562,7 +623,9 @@ mod tests {
         let bindings = bindings();
         for group in Group::ALL {
             assert!(
-                bindings.iter().any(|binding| binding.action.group() == group),
+                bindings
+                    .iter()
+                    .any(|binding| binding.action.group() == group),
                 "{group:?} is empty"
             );
         }

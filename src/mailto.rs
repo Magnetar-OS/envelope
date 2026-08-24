@@ -171,8 +171,8 @@ mod tests {
 
     #[test]
     fn multiple_recipients_are_split_and_folded() {
-        let draft = prefill("mailto:A@Example.com,b@example.net?to=c@example.org", me())
-            .expect("a mailto");
+        let draft =
+            prefill("mailto:A@Example.com,b@example.net?to=c@example.org", me()).expect("a mailto");
         let addresses: Vec<&str> = draft.to.iter().map(|m| m.address.as_str()).collect();
         assert_eq!(
             addresses,
@@ -197,8 +197,8 @@ mod tests {
     #[test]
     fn a_broken_escape_does_not_eat_the_rest_of_the_field() {
         // A stray % is far more likely a literal than a truncated escape.
-        let draft = prefill("mailto:a@example.com?subject=100%25%20or%20nothing", me())
-            .expect("a mailto");
+        let draft =
+            prefill("mailto:a@example.com?subject=100%25%20or%20nothing", me()).expect("a mailto");
         assert_eq!(draft.subject, "100% or nothing");
         let draft = prefill("mailto:a@example.com?subject=50%", me()).expect("a mailto");
         assert_eq!(draft.subject, "50%");

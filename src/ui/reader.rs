@@ -112,7 +112,9 @@ impl<'a> Reader<'a> {
                     .align_y(Alignment::Center)
                     .spacing(spacing.space_xxs)
                     .push(widget::text::body(sender).width(Length::Fill))
-                    .push(widget::text::caption(crate::ui::relative_date(message.date))),
+                    .push(widget::text::caption(crate::ui::relative_date(
+                        message.date,
+                    ))),
             );
 
         if !recipients.is_empty() {
@@ -148,12 +150,14 @@ impl<'a> Reader<'a> {
 
         let filing = widget::row::with_capacity(4)
             .spacing(spacing.space_xxs)
-            .push(widget::button::text(if opened.flags.seen {
-                fl!("mark-unread")
-            } else {
-                fl!("mark-read")
-            })
-            .on_press(Message::ToggleRead))
+            .push(
+                widget::button::text(if opened.flags.seen {
+                    fl!("mark-unread")
+                } else {
+                    fl!("mark-read")
+                })
+                .on_press(Message::ToggleRead),
+            )
             .push(
                 widget::button::text(if opened.flags.flagged {
                     fl!("unstar")
@@ -252,12 +256,10 @@ impl<'a> Reader<'a> {
                         .width(Length::Fill),
                     )
                     .push(
-                        widget::button::text(fl!("save"))
-                            .on_press(Message::SaveAttachment(index)),
+                        widget::button::text(fl!("save")).on_press(Message::SaveAttachment(index)),
                     ),
             );
         }
         column.into()
     }
 }
-

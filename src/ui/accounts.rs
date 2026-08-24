@@ -8,9 +8,9 @@
 //! the mail endpoint — a CalDAV URL says nothing about an IMAP host — so that
 //! is the single thing this page asks for.
 
+use cosmic::Element;
 use cosmic::iced::Length;
 use cosmic::widget;
-use cosmic::Element;
 use cosmic_pim_accounts::{Account, Transport};
 
 use crate::app::{MailForm, Message};
@@ -59,7 +59,11 @@ pub fn view<'a>(
         column = column.push(endpoint_form(form));
     }
 
-    let label = if syncing { fl!("syncing") } else { fl!("sync-now") };
+    let label = if syncing {
+        fl!("syncing")
+    } else {
+        fl!("sync-now")
+    };
     let button = widget::button::text(label);
     // No `on_press` while a pass is in flight: a second concurrent pass would
     // race the first one on the same sidecar files.
@@ -187,8 +191,7 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
     });
     if let Some(found) = &form.discovered_from {
         discovery = discovery.push(
-            widget::text::caption(found.clone())
-                .wrapping(cosmic::iced::core::text::Wrapping::Word),
+            widget::text::caption(found.clone()).wrapping(cosmic::iced::core::text::Wrapping::Word),
         );
     }
 

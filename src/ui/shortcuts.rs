@@ -7,8 +7,8 @@
 //! against. A shortcut list that has drifted from the shortcuts is worse than
 //! none, because somebody trusted it.
 
-use cosmic::widget;
 use cosmic::Element;
+use cosmic::widget;
 
 use crate::actions::{Group, bindings};
 use crate::app::Message;

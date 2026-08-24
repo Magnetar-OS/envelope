@@ -16,11 +16,11 @@
 
 use std::collections::HashMap;
 
-use cosmic::Application as _;
 use cosmic::app::{Core, Task, context_drawer};
-use cosmic::iced::Subscription;
 use cosmic::iced::Length;
+use cosmic::iced::Subscription;
 use cosmic::widget::{self, about::About, menu};
+use cosmic::{Application as _, ApplicationExt as _};
 use cosmic::{Apply as _, Element};
 use cosmic_pim_accounts::{Account, AccountStore, MailEndpoint, Transport};
 use cosmic_pim_mail::folder::{Folder, SpecialUse};
@@ -31,7 +31,10 @@ use crate::fl;
 use crate::mail::{self, Connection, Conversation, Opened, SyncReport};
 
 const APP_ID: &str = "io.github.entro314labs.Envelope";
-const REPOSITORY: &str = "https://github.com/entro314-labs/envelope";
+/// Read from the manifest rather than repeated here, so the About page cannot
+/// name a repository the package does not come from.
+const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
+const APP_ICON: &[u8] = include_bytes!("../resources/icons/hicolor/scalable/apps/icon.svg");
 
 pub struct AppModel {
     core: Core,
@@ -345,7 +348,9 @@ pub enum Message {
     MailFormDiscovered(Box<Result<cosmic_pim_mail::Discovered, String>>),
 
     Compose,
-    Reply { all: bool },
+    Reply {
+        all: bool,
+    },
     Forward,
     ComposeToChanged(String),
     ComposeCcChanged(String),
@@ -360,8 +365,11 @@ pub enum Message {
     ShowDrafts,
     /// One of the registry's actions, however it was invoked.
     Act(Action),
-    KeyPressed(cosmic::iced::keyboard::Modifiers, cosmic::iced::keyboard::Key,
-        Option<cosmic::iced::keyboard::key::Physical>),
+    KeyPressed(
+        cosmic::iced::keyboard::Modifiers,
+        cosmic::iced::keyboard::Key,
+        Option<cosmic::iced::keyboard::key::Physical>,
+    ),
     TextFocused,
     TextUnfocused,
     ShowOutbox,
@@ -409,8 +417,10 @@ impl menu::action::MenuAction for MenuAction {
 
 impl cosmic::Application for AppModel {
     type Executor = cosmic::executor::Default;
-    /// A `mailto:` URL the desktop launched us with, if any.
-    type Flags = Option<String>;
+    /// What this launch is asking for. See [`crate::flags`] — it is a type
+    /// rather than a string because that is what lets a second launch reach
+    /// the first over D-Bus instead of opening another window.
+    type Flags = crate::flags::Flags;
     type Message = Message;
     const APP_ID: &'static str = APP_ID;
 
@@ -422,12 +432,13 @@ impl cosmic::Application for AppModel {
         &mut self.core
     }
 
-    fn init(core: Core, mailto: Self::Flags) -> (Self, Task<Self::Message>) {
+    fn init(core: Core, flags: Self::Flags) -> (Self, Task<Self::Message>) {
         let about = About::default()
             .name(fl!("app-title"))
+            .icon(widget::icon::from_svg_bytes(APP_ICON))
             .version(env!("CARGO_PKG_VERSION"))
-            .license("GPL-3.0-only")
-            .links([("Repository", REPOSITORY)]);
+            .license(env!("CARGO_PKG_LICENSE"))
+            .links([(fl!("repository"), REPOSITORY)]);
 
         let accounts = load_accounts();
         let selected_account = accounts.first().map(|a| a.id.clone());
@@ -439,13 +450,9 @@ impl cosmic::Application for AppModel {
             // The map libcosmic reads to draw an accelerator beside a menu
             // entry. Built from the registry rather than written out, so the
             // menu shows the shortcut the keyboard handler actually matches.
-            key_binds: actions::bindings()
+            key_binds: actions::combinations()
                 .into_iter()
-                .filter_map(|binding| {
-                    binding
-                        .combination
-                        .map(|combination| (combination, MenuAction(binding.action)))
-                })
+                .map(|(bind, action)| (bind, MenuAction(action)))
                 .collect(),
             accounts,
             selected_account,
@@ -479,9 +486,7 @@ impl cosmic::Application for AppModel {
         // A link the desktop handed us opens straight into the composer. Done
         // before the folder load so the user sees what they clicked on rather
         // than an inbox that turns into a composer a moment later.
-        if let Some(url) = mailto {
-            model.open_mailto(&url);
-        }
+        model.launch(flags.launch.as_ref());
 
         // The window is filled from disk first and the server is asked
         // afterwards, in that order: the mailbox is already there, so there is
@@ -582,6 +587,63 @@ impl cosmic::Application for AppModel {
         ])
     }
 
+    /// Escape, routed here by libcosmic's `keyboard_nav`.
+    ///
+    /// Implemented as a hook rather than as one of our own bindings because the
+    /// framework already dispatches it: matching it twice would close a
+    /// composer *and* a context drawer on one keystroke.
+    fn on_escape(&mut self) -> Task<Self::Message> {
+        self.escape()
+    }
+
+    /// `Ctrl+F`, likewise routed here rather than matched twice.
+    fn on_search(&mut self) -> Task<Self::Message> {
+        self.act(Action::Search)
+    }
+
+    /// A `mailto:` link, or a desktop-entry action, arriving at an instance
+    /// that is already running.
+    ///
+    /// Without this the desktop file lies: it declares `DBusActivatable=true`
+    /// and a `compose` action, and libcosmic's single-instance support hands
+    /// the second launch over here rather than starting a second process. A
+    /// `mailto:` clicked while Envelope is open would otherwise do nothing at
+    /// all — the new process exits, and the running one is never told.
+    fn dbus_activation(
+        &mut self,
+        message: cosmic::dbus_activation::Message,
+    ) -> Task<Self::Message> {
+        match message.msg {
+            cosmic::dbus_activation::Details::Open { url } => {
+                // The first mailto: wins. Several at once is not a thing that
+                // happens, and opening four composers because a page had four
+                // links would be worse than opening one.
+                for url in url {
+                    if url.scheme().eq_ignore_ascii_case("mailto") {
+                        self.open_mailto(url.as_str());
+                        break;
+                    }
+                }
+                Task::none()
+            }
+            cosmic::dbus_activation::Details::ActivateAction { action, .. } => {
+                match action.parse::<crate::flags::Launch>() {
+                    Ok(launch) => {
+                        self.launch(Some(&launch));
+                        Task::none()
+                    }
+                    Err(why) => {
+                        tracing::warn!(action, %why, "an activation this build does not understand");
+                        Task::none()
+                    }
+                }
+            }
+            // Plain activation: the window is being raised, which the runtime
+            // has already done.
+            cosmic::dbus_activation::Details::Activate => Task::none(),
+        }
+    }
+
     fn context_drawer(&self) -> Option<context_drawer::ContextDrawer<'_, Self::Message>> {
         if !self.core.window.show_context {
             return None;
@@ -655,7 +717,11 @@ impl cosmic::Application for AppModel {
                     .height(Length::Fill),
             )
             .push(widget::divider::vertical::default())
-            .push(widget::container(right).width(Length::Fill).height(Length::Fill))
+            .push(
+                widget::container(right)
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            )
             .into()
     }
 
@@ -742,7 +808,7 @@ impl cosmic::Application for AppModel {
                 self.selected_conversation = None;
                 self.opened = None;
                 self.reader_error = None;
-                self.reload_conversations()
+                Task::batch([self.reload_conversations(), self.update_title()])
             }
 
             Message::ConversationsLoaded(result) => {
@@ -791,7 +857,10 @@ impl cosmic::Application for AppModel {
                         // through the same queued path as the button, so it
                         // reaches the server rather than being a local lie.
                         if !already_read {
-                            return self.set_flags(|flags| Flags { seen: true, ..flags });
+                            return self.set_flags(|flags| Flags {
+                                seen: true,
+                                ..flags
+                            });
                         }
                     }
                     Err(why) => {
@@ -804,7 +873,10 @@ impl cosmic::Application for AppModel {
 
             Message::ToggleRead => {
                 let seen = self.opened.as_ref().is_some_and(|o| o.flags.seen);
-                self.set_flags(move |flags| Flags { seen: !seen, ..flags })
+                self.set_flags(move |flags| Flags {
+                    seen: !seen,
+                    ..flags
+                })
             }
 
             Message::ToggleFlagged => {
@@ -893,12 +965,10 @@ impl cosmic::Application for AppModel {
             Message::MailFormSave => self.save_form(),
 
             Message::Compose => self.compose(|_, from| cosmic_pim_mail::Draft::new(from)),
-            Message::Reply { all } => {
-                self.compose(move |opened, from| match opened {
-                    Some(opened) => cosmic_pim_mail::Draft::reply(&opened.message, from, all),
-                    None => cosmic_pim_mail::Draft::new(from),
-                })
-            }
+            Message::Reply { all } => self.compose(move |opened, from| match opened {
+                Some(opened) => cosmic_pim_mail::Draft::reply(&opened.message, from, all),
+                None => cosmic_pim_mail::Draft::new(from),
+            }),
             Message::Forward => self.compose(|opened, from| match opened {
                 Some(opened) => cosmic_pim_mail::Draft::forward(&opened.message, from),
                 None => cosmic_pim_mail::Draft::new(from),
@@ -907,9 +977,7 @@ impl cosmic::Application for AppModel {
             Message::ComposeToChanged(text) => self.with_composer(|c| c.to = text),
             Message::ComposeCcChanged(text) => self.with_composer(|c| c.cc = text),
             Message::ComposeBccChanged(text) => self.with_composer(|c| c.bcc = text),
-            Message::ComposeSubjectChanged(text) => {
-                self.with_composer(|c| c.draft.subject = text)
-            }
+            Message::ComposeSubjectChanged(text) => self.with_composer(|c| c.draft.subject = text),
             Message::ComposeBodyChanged(text) => self.with_composer(|c| c.draft.body = text),
             Message::ComposeCancel => self.close_composer(true),
             Message::ComposeDiscard => self.close_composer(false),
@@ -957,7 +1025,9 @@ impl cosmic::Application for AppModel {
                 self.text_focus = self.text_focus.saturating_sub(1);
                 Task::none()
             }
-            Message::KeyPressed(modifiers, key, physical) => self.key_pressed(&modifiers, &key, physical.as_ref()),
+            Message::KeyPressed(modifiers, key, physical) => {
+                self.key_pressed(&modifiers, &key, physical.as_ref())
+            }
             Message::Act(action) => self.act(action),
 
             Message::ShowDrafts => {
@@ -1067,7 +1137,11 @@ impl AppModel {
         self.folders
             .iter()
             .position(|f| f.special_use == Some(SpecialUse::Inbox))
-            .or(if self.folders.is_empty() { None } else { Some(0) })
+            .or(if self.folders.is_empty() {
+                None
+            } else {
+                Some(0)
+            })
     }
 
     fn rebuild_connection(&mut self) {
@@ -1122,29 +1196,33 @@ impl AppModel {
             .filter_map(|entry| {
                 let local = entry.file_name().to_string_lossy().into_owned();
                 let wire = unescape_local_name(&local)?;
-                Some(cosmic_pim_mail::folder::from_list_entry(&wire, Some('/'), &[]))
+                Some(cosmic_pim_mail::folder::from_list_entry(
+                    &wire,
+                    Some('/'),
+                    &[],
+                ))
             })
             .collect();
         cosmic_pim_mail::folder::sort_for_display(&mut folders);
 
         self.folders = folders;
         self.selected_folder = self.default_folder();
-        self.reload_conversations()
+        Task::batch([self.reload_conversations(), self.update_title()])
     }
 
     fn reload_conversations(&mut self) -> Task<Message> {
-        let (Some(connection), Some(folder)) = (self.connection.clone(), self.current_folder().cloned())
+        let (Some(connection), Some(folder)) =
+            (self.connection.clone(), self.current_folder().cloned())
         else {
             self.conversations.clear();
             return Task::none();
         };
         self.loading_conversations = true;
         cosmic::task::future(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                mail::conversations(&connection, &folder)
-            })
-            .await
-            .unwrap_or_else(|why| Err(why.to_string()));
+            let result =
+                tokio::task::spawn_blocking(move || mail::conversations(&connection, &folder))
+                    .await
+                    .unwrap_or_else(|why| Err(why.to_string()));
             Message::ConversationsLoaded(result)
         })
     }
@@ -1256,6 +1334,18 @@ impl AppModel {
             .unwrap_or_else(|why| Err(why.to_string()));
             Message::Mutated(result)
         })
+    }
+
+    /// Acts on what a launch asked for, whether it started this process or
+    /// arrived over D-Bus at one already running.
+    fn launch(&mut self, launch: Option<&crate::flags::Launch>) {
+        match launch {
+            Some(crate::flags::Launch::Mailto(url)) => self.open_mailto(url),
+            Some(crate::flags::Launch::Compose) => {
+                let _ = self.act(Action::Compose);
+            }
+            None => {}
+        }
     }
 
     /// Opens the composer on a `mailto:` link.
@@ -1394,6 +1484,27 @@ impl AppModel {
         })
     }
 
+    /// Puts the folder and the account in the window title.
+    ///
+    /// Which matters more here than in a single-document application: with two
+    /// accounts open in two windows, "Envelope" twice in the switcher is not
+    /// enough to tell them apart.
+    fn update_title(&mut self) -> Task<Message> {
+        let mut title = fl!("app-title");
+        if let Some(folder) = self.current_folder() {
+            title = format!("{} — {title}", folder.leaf_name());
+        }
+        if self.accounts.len() > 1
+            && let Some(account) = self.account()
+        {
+            title = format!("{title} ({})", account.display_name);
+        }
+        match self.core.main_window_id() {
+            Some(id) => self.set_window_title(title, id),
+            None => Task::none(),
+        }
+    }
+
     /// Is something expecting characters?
     ///
     /// Single-letter shortcuts must not fire while a text field has focus —
@@ -1411,10 +1522,14 @@ impl AppModel {
         physical: Option<&cosmic::iced::keyboard::key::Physical>,
     ) -> Task<Message> {
         // Combinations first, and whatever has focus: that is what a modifier
-        // is for.
-        if let Some(action) = actions::for_combination(*modifiers, key, physical) {
-            self.pending_chord = None;
-            return self.act(action);
+        // is for. Matched against the same map the menu draws its accelerators
+        // from, so the two cannot drift.
+        for (bind, action) in &self.key_binds {
+            if bind.matches(*modifiers, key, physical) {
+                let action = action.0;
+                self.pending_chord = None;
+                return self.act(action);
+            }
         }
 
         if self.typing() {
@@ -1680,8 +1795,7 @@ impl AppModel {
     }
 
     fn send_draft(&mut self) -> Task<Message> {
-        let (Some(composer), Some(connection)) =
-            (self.composer.as_mut(), self.connection.clone())
+        let (Some(composer), Some(connection)) = (self.composer.as_mut(), self.connection.clone())
         else {
             return Task::none();
         };
@@ -1702,7 +1816,13 @@ impl AppModel {
 
         cosmic::task::future(async move {
             let sent = tokio::task::spawn_blocking(move || {
-                mail::send(&connection, &draft, &folders, answering, draft_id.as_deref())
+                mail::send(
+                    &connection,
+                    &draft,
+                    &folders,
+                    answering,
+                    draft_id.as_deref(),
+                )
             })
             .await
             .unwrap_or_else(|why| mail::Sent::Uncertain(why.to_string()));
@@ -1983,20 +2103,14 @@ mod tests {
         )
         .expect("parse");
 
-        let composer = Composer::new(
-            cosmic_pim_mail::Draft::reply(&original, me, false),
-            None,
-        );
+        let composer = Composer::new(cosmic_pim_mail::Draft::reply(&original, me, false), None);
         assert_eq!(composer.to, "Ada <ada@example.com>");
         assert_eq!(composer.draft.subject, "Re: Plan");
         // The field text is what gets sent, not the draft's original list.
-        assert_eq!(
-            composer.resolved().to[0].address,
-            "ada@example.com"
-        );
+        assert_eq!(composer.resolved().to[0].address, "ada@example.com");
     }
 
-        #[test]
+    #[test]
     fn a_malformed_directory_name_is_skipped_rather_than_guessed_at() {
         assert!(unescape_local_name("%ZZ").is_none());
         assert!(unescape_local_name("truncated%").is_none());

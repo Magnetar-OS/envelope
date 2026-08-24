@@ -128,3 +128,4 @@ group-going = Going to
 group-application = The application
 shortcuts-hint = Single keys work whenever you are not typing. The combinations always work.
 no-such-folder = This server has no folder of that kind.
+repository = Repository

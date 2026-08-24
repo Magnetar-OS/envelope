@@ -7,9 +7,9 @@
 //! the reader shows text, so an HTML composer would be writing in a format this
 //! application cannot display.
 
+use cosmic::Element;
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget;
-use cosmic::Element;
 
 use crate::app::{Composer, Message};
 use crate::fl;
@@ -69,7 +69,11 @@ pub fn view(composer: &Composer) -> Element<'_, Message> {
         .push(
             widget::row::with_capacity(4)
                 .spacing(spacing.space_xs)
-                .push(destructive_button(fl!("discard"), idle, Message::ComposeDiscard))
+                .push(destructive_button(
+                    fl!("discard"),
+                    idle,
+                    Message::ComposeDiscard,
+                ))
                 .push(button(fl!("save-draft"), idle, Message::ComposeCancel))
                 .push(widget::Space::new().width(Length::Fill))
                 // Greyed for the same reasons the send would fail, rather than
@@ -112,7 +116,11 @@ fn attachments(composer: &Composer) -> Element<'_, Message> {
             widget::row::with_capacity(2)
                 .align_y(Alignment::Center)
                 .spacing(spacing.space_xxs)
-                .push(button(fl!("attach"), !composer.sending, Message::AttachFile))
+                .push(button(
+                    fl!("attach"),
+                    !composer.sending,
+                    Message::AttachFile,
+                ))
                 .push(if attached.is_empty() {
                     widget::text::caption(String::new())
                 } else {
@@ -147,7 +155,6 @@ fn attachments(composer: &Composer) -> Element<'_, Message> {
 
     column.into()
 }
-
 
 fn field(
     label: String,
