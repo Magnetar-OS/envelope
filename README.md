@@ -56,8 +56,10 @@ Envelope reads, threads, syncs, and sends. What works:
 
 - **Drafts**, kept on this device. Closing the composer saves; discarding is a
   separate button that says so.
-- **Search** across folders, by sender, subject, and the first line, with
-  `from:`, `subject:`, `is:unread`, `is:starred`, and `has:attachment`.
+- **Search** across folders — senders, subjects, and message bodies, best
+  match first, with `from:`, `subject:`, `is:unread`, `is:starred`, and
+  `has:attachment`. Result rows show the matching passage, and a half-typed
+  word already matches.
 - **Attachments** — received ones save to Downloads, and files can be attached
   to what you send. Nothing is ever opened for you.
 - **An outbox.** A send that could not reach the server waits there and goes out
@@ -70,10 +72,6 @@ What does not work yet: **HTML composition**, and that is a decision rather than
 a gap — the reader shows text, so an HTML composer would be writing in a format
 the application cannot display. **Drafts do not sync**, and the reason is in the
 next section.
-
-Search does not cover message **bodies** yet — that needs a full-text index with
-ranking, which is the `tantivy` port. The query language is already separate
-from what executes it, so body search slots in behind the same parser.
 
 Also not here, in the order they are likely to matter: JMAP, native Gmail and
 Graph APIs, and OpenPGP and S/MIME. All three exist in the donor and are ports,

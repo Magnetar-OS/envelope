@@ -44,14 +44,13 @@ separates "not done yet" from "not doing".
 | Attachments | send, receive, drag-drop, inline CID | send, receive, save |
 | Drafts | server-synced | local |
 | Send | + outbox, undo send, scheduled | typed pre-acceptance errors, outbox |
-| Search | FTS5 + tantivy + semantic, saved queries | headers and snippet, over the index |
+| Search | FTS5 + tantivy + semantic, saved queries | FTS5 with bm25, over the index |
 | Keyboard | registry, palette, rebinding, quick steps | registry, Gmail keys, chords, cheat sheet |
 | Accounts | six-stage discovery, OAuth PKCE | three-stage discovery, password |
 
 ### Not done yet
 
-In rough order of how much they are missed: **body search** (tantivy),
-**OAuth token flow** (the wire half — XOAUTH2, Credentials — is in the
+In rough order of how much they are missed: **OAuth token flow** (the wire half — XOAUTH2, Credentials — is in the
 substrate; what is missing is the browser dance and refresh), **QRESYNC**,
 **server-side drafts**, **unified inbox**, **undo**, **rules**, **labels**,
 **snooze**, **one-click unsubscribe**, **import/export**, **OpenPGP and
@@ -135,11 +134,10 @@ implements.
    substrate. The cycle itself — cursor, windowed discovery, CONDSTORE deltas,
    held-back MODSEQ, periodic reconcile — is perhaps 400 lines and ported
    cleanly.
-4. Search: **done for headers.** `mail::search` is a pure parser and
-   `Index::search` executes it. `search_query.rs` did not need porting — the
-   donor's language was larger than what a mail client's search box is used
-   for, and the ~150 lines here cover it. `tantivy_search.rs` remains, for
-   bodies.
+4. Search: **done**, bodies included — FTS5 with bm25 in the index, which was
+   the donor's own first tier. Neither `search_query.rs` nor
+   `tantivy_search.rs` needed porting; tantivy is now for the day a mailbox
+   outgrows bm25 over FTS5.
 5. UI: **done**, including composition, drafts, and search.
 
 ## Sizes in the donor, corrected
@@ -205,10 +203,7 @@ also of little use without a send path, so it belongs after SMTP, not before.
 
 ## Next, in order
 
-1. **Body search.** `tantivy_search.rs` — the ranking. `search_query.rs` is
-   superseded: `mail::search` is the query language, considerably smaller, and
-   already the shape the ranking plugs into.
-2. **Server-side drafts.** UIDPLUS where it exists, `Message-ID` matching where
+1. **Server-side drafts.** UIDPLUS where it exists, `Message-ID` matching where
    it does not, and a reconciliation pass for servers that mangle both. Worth
    building; not worth shipping half of.
 3. **A command palette.** The registry it would resolve through already exists;

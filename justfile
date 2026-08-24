@@ -95,15 +95,20 @@ run *args:
 # The two cache refreshes are not optional polish: update-desktop-database is
 # what registers the MimeType associations, and Envelope claiming
 # x-scheme-handler/mailto is the whole point of its desktop entry. Neither
-# cache notices a new file on its own. Best-effort (`|| true`) because a
-# staged install into a package root has no caches to refresh.
+# cache notices a new file on its own. Guarded on rootdir: run unguarded
+# they happily CREATE mimeinfo.cache / icon-theme.cache inside a staged
+# package root, and those cache files then ship in the package and conflict
+# with every other package's copy — a staged tree belongs to a package
+# manager whose hooks refresh the real caches at install time.
 install:
     install -Dm0755 {{ cargo-target-dir / 'release' / name }} {{bin-dst}}
     install -Dm0644 {{desktop-src}} {{desktop-dst}}
     install -Dm0644 {{metainfo-src}} {{appdata-dst}}
     install -Dm0644 {{icon-src}} {{icon-svg-dst}}
-    update-desktop-database {{ base-dir / 'share' / 'applications' }} || true
-    gtk-update-icon-cache -t {{icons-dst}} || true
+    if [ -z '{{rootdir}}' ]; then \
+        update-desktop-database {{ base-dir / 'share' / 'applications' }} || true; \
+        gtk-update-icon-cache -t {{icons-dst}} || true; \
+    fi
 
 # Uninstalls installed files
 uninstall:
