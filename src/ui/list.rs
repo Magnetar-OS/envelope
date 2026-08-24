@@ -89,13 +89,20 @@ impl<'a> List<'a> {
             conversation.date_ms,
         )));
 
+        // The index stores an absent subject as empty; a blank row reads as a
+        // rendering bug rather than as a subjectless message.
+        let subject = if conversation.subject.is_empty() {
+            fl!("no-subject")
+        } else {
+            conversation.subject.clone()
+        };
         let mut subject_line = widget::row::with_capacity(2)
             .align_y(Alignment::Center)
             .spacing(spacing.space_xxs)
             .push(if conversation.unread {
-                widget::text::heading(conversation.subject.clone()).width(Length::Fill)
+                widget::text::heading(subject).width(Length::Fill)
             } else {
-                widget::text::body(conversation.subject.clone()).width(Length::Fill)
+                widget::text::body(subject).width(Length::Fill)
             });
 
         if conversation.uids.len() > 1 {

@@ -26,8 +26,14 @@ bad-port = That is not a port number.
 no-mail-account = This account has no mail server yet.
 sync-summary = { $fetched } new, { $pushed } sent.
 sync-failed = Sync failed: { $reason }
-sync-partial = { $count } folders could not be synced.
-sync-stuck = { $count } changes cannot reach the server. Check the account's password.
+sync-partial = { $count ->
+        [one] One folder could not be synced.
+       *[other] { $count } folders could not be synced.
+    }
+sync-stuck = { $count ->
+        [one] One change cannot reach the server. Check the account's password.
+       *[other] { $count } changes cannot reach the server. Check the account's password.
+    }
 
 # Message list
 loading = Loading…
@@ -47,7 +53,10 @@ delete = Delete
 attachments = Attachments
 auth-fail = This message was not sent by { $domain }, whatever it says. Treat it as forged.
 auth-partial = This message could not be fully verified as coming from its sender.
-hidden-content = This message hides { $count } things from you that it still says in its source.
+hidden-content = { $count ->
+        [one] This message hides one thing from you that it still says in its source.
+       *[other] This message hides { $count } things from you that it still says in its source.
+    }
 remote-content-blocked = This message wanted to load images from a server, which would have told the sender you opened it. Envelope did not.
 no-archive-folder = This server has no archive folder.
 
@@ -97,7 +106,10 @@ remove = Remove
 attachment-saved = Saved to { $path }
 attachment-not-saved = Could not save it: { $reason }
 attachment-size = { $size }
-attachments-total = { $count } files, { $size }
+attachments-total = { $count ->
+        [one] One file, { $size }
+       *[other] { $count } files, { $size }
+    }
 find-settings = Find settings
 finding-settings = Looking…
 found-known = These are the published settings for this provider.
@@ -108,7 +120,10 @@ outbox = Outbox
 outbox-empty = Nothing waiting to go.
 outbox-stopped = Stopped after too many tries.
 try-again = Try again
-sync-sent = { $count } sent.
+sync-sent = { $count ->
+        [one] One sent.
+       *[other] { $count } sent.
+    }
 
 # Actions and shortcuts
 next-message = Next

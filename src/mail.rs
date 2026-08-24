@@ -26,6 +26,7 @@ use cosmic_pim_mail::maildir::{self, MaildirStore};
 use cosmic_pim_mail::model::{Flags, Mailbox, Message};
 use cosmic_pim_mail::outbox::{Outbox, Queued};
 use cosmic_pim_mail::push::{PushOp, PushQueue};
+use cosmic_pim_mail::sasl::Credentials;
 use cosmic_pim_mail::smtp::{self, Outcome, SmtpEndpoint};
 use cosmic_pim_mail::store::MailStore;
 
@@ -79,7 +80,10 @@ pub struct Connection {
     /// composer that cannot send, and offering one anyway wastes what the user
     /// typed.
     pub submission: Option<Submission>,
-    pub password: String,
+    /// A password today; OAuth when the app grows a token flow. The substrate
+    /// already speaks both, which is why this is the typed form rather than a
+    /// string.
+    pub credentials: Credentials,
     pub root: PathBuf,
     /// Where the conversation index lives.
     ///
@@ -93,8 +97,8 @@ pub struct Connection {
 #[derive(Debug, Clone)]
 pub struct Submission {
     pub endpoint: SmtpEndpoint,
-    /// Who mail is from. One password serves both directions — SMTP AUTH uses
-    /// the account's credentials whatever address is on the From line.
+    /// Who mail is from. One credential serves both directions — SMTP AUTH uses
+    /// the account's, whatever address is on the From line.
     pub identity: Mailbox,
 }
 
@@ -150,7 +154,7 @@ impl Connection {
                 security: transport(mail.imap_transport),
                 username: account.mail_username().to_owned(),
             },
-            password,
+            credentials: Credentials::Password(password),
             root: maildir::default_root(),
             index_path: index::default_path(),
         }))
@@ -168,7 +172,7 @@ impl Connection {
 /// `cosmic-pim-sync` gives calendars, and for the same reason: one broken
 /// folder must not cost the user the other nineteen.
 pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
-    let mut session = Session::connect(&connection.endpoint, &connection.password)
+    let mut session = Session::connect(&connection.endpoint, &connection.credentials)
         .map_err(|why| why.to_string())?;
 
     let folders = session.folders().map_err(|why| why.to_string())?;
@@ -278,7 +282,7 @@ fn drain_outbox(connection: &Connection, folders: &[Folder]) -> Result<usize, St
     };
     let outbox = outbox(connection)?;
     let outcome = outbox
-        .drain(&submission.endpoint, &connection.password, now_ms())
+        .drain(&submission.endpoint, &connection.credentials, now_ms())
         .map_err(|why| why.to_string())?;
 
     for (id, filed) in &outcome.sent {
@@ -617,7 +621,7 @@ pub fn send(
         return Sent::Failed("this account has no From address".into());
     };
 
-    let filed_bytes = match smtp::send(&submission.endpoint, &connection.password, draft) {
+    let filed_bytes = match smtp::send(&submission.endpoint, &connection.credentials, draft) {
         Outcome::Sent(bytes) => bytes,
         // Definitely not delivered, so it can wait for the network rather than
         // for the user. An ambiguous failure is not queued — it may already
@@ -681,7 +685,7 @@ fn file_to_sent(connection: &Connection, folders: &[Folder], raw: &[u8]) -> bool
         return false;
     };
 
-    match Session::connect(&connection.endpoint, &connection.password).and_then(|mut session| {
+    match Session::connect(&connection.endpoint, &connection.credentials).and_then(|mut session| {
         let result = session.append(
             &sent.wire_name,
             raw,

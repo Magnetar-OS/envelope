@@ -76,6 +76,11 @@
 
   <content_rating type="oars-1.1"/>
 
+  <branding>
+    <color type="primary" scheme_preference="light">#94bfe7</color>
+    <color type="primary" scheme_preference="dark">#274768</color>
+  </branding>
+
   <releases>
     <release version="0.1.0" date="2026-08-24">
       <description>

@@ -621,6 +621,27 @@ impl cosmic::Application for AppModel {
         ])
     }
 
+    /// The application is closing.
+    ///
+    /// The composer's save-on-close path only runs when the *composer* is
+    /// closed; without this, quitting the window with a half-written message
+    /// open discards it — the exact loss the drafts store exists to prevent.
+    /// The save is synchronous because a `Task` returned here would race the
+    /// exit.
+    fn on_app_exit(&mut self) -> Option<Self::Message> {
+        if let (Some(composer), Some(connection)) = (self.composer.take(), self.connection.as_ref())
+            && composer.is_worth_saving()
+            && let Err(why) = mail::save_draft(
+                connection,
+                composer.draft_id.as_deref(),
+                &composer.resolved(),
+            )
+        {
+            tracing::error!(%why, "a draft was lost on exit");
+        }
+        None
+    }
+
     /// Escape, routed here by libcosmic's `keyboard_nav`.
     ///
     /// Implemented as a hook rather than as one of our own bindings because the
@@ -1991,8 +2012,10 @@ impl AppModel {
             return self.with_form(|form| form.error = Some(fl!("bad-port")));
         };
 
+        // Struct-update over the constructor, so a field the substrate grows —
+        // it has already grown five — defaults sensibly here instead of
+        // breaking the build or, worse, being zeroed.
         let endpoint = MailEndpoint {
-            imap_host: form.host.trim().to_owned(),
             imap_port: port,
             imap_transport: form.transport,
             imap_username: Some(form.username.trim().to_owned()).filter(|u| !u.is_empty()),
@@ -2001,6 +2024,7 @@ impl AppModel {
             smtp_transport: form.smtp_transport,
             from_address: form.from_address.trim().to_owned(),
             from_name: form.from_name.trim().to_owned(),
+            ..MailEndpoint::tls(form.host.trim())
         };
         let account_id = form.account_id.clone();
 

@@ -91,11 +91,19 @@ run *args:
     env RUST_LOG=envelope=debug RUST_BACKTRACE=full cargo run {{args}}
 
 # Installs the application
+#
+# The two cache refreshes are not optional polish: update-desktop-database is
+# what registers the MimeType associations, and Envelope claiming
+# x-scheme-handler/mailto is the whole point of its desktop entry. Neither
+# cache notices a new file on its own. Best-effort (`|| true`) because a
+# staged install into a package root has no caches to refresh.
 install:
     install -Dm0755 {{ cargo-target-dir / 'release' / name }} {{bin-dst}}
     install -Dm0644 {{desktop-src}} {{desktop-dst}}
     install -Dm0644 {{metainfo-src}} {{appdata-dst}}
     install -Dm0644 {{icon-src}} {{icon-svg-dst}}
+    update-desktop-database {{ base-dir / 'share' / 'applications' }} || true
+    gtk-update-icon-cache -t {{icons-dst}} || true
 
 # Uninstalls installed files
 uninstall:
