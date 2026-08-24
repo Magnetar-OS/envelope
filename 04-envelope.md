@@ -223,13 +223,17 @@ also of little use without a send path, so it belongs after SMTP, not before.
 
 ## Risks
 
-- **Server zoo.** Anticipated and unchanged: Exchange's IMAP, Gmail's quirks,
-  servers without UIDPLUS (handled — the message is marked `\Deleted` and left
-  rather than expunging another client's pending deletions), servers without
-  CONDSTORE (handled — full flag reconciliation instead). What has not been
-  exercised is any of it against a real server; the scripted suite proves the
-  client is coherent, not that it is compatible. Containerised Dovecot in CI is
-  the cheap next step, as Radicale was for CalDAV.
+- **Server zoo.** Now being exercised: `tests/live_dovecot.rs` drives the real
+  client at a stock Dovecot container (gated on `PIM_TEST_IMAP`, silently
+  skipped without it). Its first run found two real bugs — CONDSTORE was
+  advertised-but-never-enabled, so the delta path had been dead against real
+  servers; and a mailbox moved to empty could never empty locally, because the
+  mass-delete guard cannot tell a genuine 1→0 from a hiccup (fixed by letting
+  the drain's own departures leave the store on the server's OK). The quirks
+  table has its first entry: Dovecot 2.4 omits HIGHESTMODSEQ from the SELECT
+  of a mailbox APPEND just auto-created, against RFC 7162; the client degrades
+  one cycle and self-heals. Exchange, Gmail-IMAP, and the rest of the zoo are
+  still unexercised.
 - **Composer scope creep** — unchanged, and now the immediate risk rather than a
   future one.
 - **Threading cost: resolved.** `mail::index` holds what a list shows and parses
