@@ -20,7 +20,7 @@ use cosmic_pim_mail::compose::Draft;
 use cosmic_pim_mail::discovery::{self, Discovered};
 use cosmic_pim_mail::drafts::{self, Drafts, Saved};
 use cosmic_pim_mail::folder::{Folder, SpecialUse};
-use cosmic_pim_mail::imap::{self, Endpoint, Security, Session, SyncOptions};
+use cosmic_pim_mail::imap::{self, Endpoint, Security, Session, SyncOptions, Watched};
 use cosmic_pim_mail::index::{self, Hit, Index};
 use cosmic_pim_mail::maildir::{self, MaildirStore};
 use cosmic_pim_mail::model::{Flags, Mailbox, Message};
@@ -433,6 +433,48 @@ pub fn save_attachment(
 
     let bytes = attachment::bytes_of(&raw, index).map_err(|why| why.to_string())?;
     attachment::save_into(&downloads(), &attachment.name, &bytes).map_err(|why| why.to_string())
+}
+
+/// How a watch ended, as the app needs to hear it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchOutcome {
+    /// The server reported news. Sync, then watch again.
+    Changed,
+    /// Nothing happened within the timeout. Watch again.
+    TimedOut,
+    /// The server has no IDLE. Do not watch again — the poll already covers
+    /// this account, and retrying would reconnect forever to hear the same no.
+    Unsupported,
+}
+
+/// Parks a dedicated connection in IMAP IDLE on the inbox until something
+/// happens.
+///
+/// Blocking for up to `timeout`, so strictly a worker-thread call. A dedicated
+/// connection because IDLE monopolises the one it is on — sharing it with the
+/// sync session would make every cycle wait for the watch.
+///
+/// Only the inbox. One watched mailbox is one connection, and new mail lands
+/// in INBOX; a change anywhere else is the kind of news the periodic
+/// reconciliation exists for. `INBOX` is the one name RFC 3501 guarantees.
+pub fn watch_inbox(
+    connection: &Connection,
+    timeout: std::time::Duration,
+) -> Result<WatchOutcome, String> {
+    let mut session = Session::connect(&connection.endpoint, &connection.credentials)
+        .map_err(|why| why.to_string())?;
+    if !session.supports_idle() {
+        let _ = session.logout();
+        return Ok(WatchOutcome::Unsupported);
+    }
+    let outcome = session
+        .watch("INBOX", timeout)
+        .map_err(|why| why.to_string())?;
+    let _ = session.logout();
+    Ok(match outcome {
+        Watched::Changed => WatchOutcome::Changed,
+        Watched::TimedOut => WatchOutcome::TimedOut,
+    })
 }
 
 /// Drops one mailbox's index rows.

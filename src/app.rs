@@ -90,6 +90,15 @@ pub struct AppModel {
     /// The interval field's text, which is not the setting: a half-typed number
     /// must not be rejected on every keystroke.
     poll_seconds: String,
+    /// Which generation of inbox watch is current.
+    ///
+    /// A watch is a blocking thread parked in IDLE for minutes; it cannot be
+    /// cancelled, only outlived. Switching accounts bumps this, the stale
+    /// thread's eventual result carries the old number and is dropped, and the
+    /// thread itself dies at its next timeout.
+    watch_generation: u64,
+    /// Whether a watch task is currently parked, so exactly one exists.
+    watching: bool,
 
     /// What is in the search box. Empty means the box is closed.
     search: String,
@@ -362,6 +371,11 @@ pub enum Message {
     DraftsLoaded(Vec<cosmic_pim_mail::drafts::Saved>),
     ShowDrafts,
     ConfigChanged(Config),
+    /// An inbox watch came back. The generation says whether it is still ours.
+    WatchEnded {
+        generation: u64,
+        outcome: Result<crate::mail::WatchOutcome, String>,
+    },
     PollSecondsChanged(String),
     MarkReadOnOpenChanged(bool),
     /// One of the registry's actions, however it was invoked.
@@ -480,6 +494,8 @@ impl cosmic::Application for AppModel {
             text_focus: 0,
             pending_chord: None,
             poll_seconds: String::new(),
+            watch_generation: 0,
+            watching: false,
             config: cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
                 .map(|context| match Config::get_entry(&context) {
                     Ok(config) => config,
@@ -810,12 +826,18 @@ impl cosmic::Application for AppModel {
                 }
                 self.remember(|config| config.last_account = id.clone());
                 self.selected_account = Some(id);
+                // Retire the old account's watch: its thread cannot be
+                // cancelled, but its result now carries a stale generation and
+                // will be dropped on arrival.
+                self.watch_generation += 1;
+                self.watching = false;
                 self.clear_mailbox_state();
                 self.rebuild_connection();
                 Task::batch([
                     self.load_cached_folders(),
                     self.reload_drafts(),
                     self.reload_outbox(),
+                    self.sync_now(),
                 ])
             }
 
@@ -851,7 +873,13 @@ impl cosmic::Application for AppModel {
                                 self.selected_folder = self.restore_folder();
                             }
                         }
-                        Task::batch([self.reload_conversations(), self.reload_outbox()])
+                        Task::batch([
+                            self.reload_conversations(),
+                            self.reload_outbox(),
+                            // The first successful sync proves the connection
+                            // works; that is the moment to park the watch.
+                            self.start_watch(),
+                        ])
                     }
                     Err(why) => {
                         self.status = Some(fl!("sync-failed", reason = why));
@@ -1084,6 +1112,10 @@ impl cosmic::Application for AppModel {
                 }
                 self.reload_outbox()
             }
+            Message::WatchEnded {
+                generation,
+                outcome,
+            } => self.watch_ended(generation, outcome),
             Message::ConfigChanged(config) => {
                 self.poll_seconds = config.poll_seconds.to_string();
                 self.config = config;
@@ -1624,6 +1656,84 @@ impl AppModel {
         match self.core.main_window_id() {
             Some(id) => self.set_window_title(title, id),
             None => Task::none(),
+        }
+    }
+
+    /// Parks a watch on the inbox, if none is parked.
+    ///
+    /// Push mail: the server tells us, instead of the poll asking every two
+    /// minutes. The poll stays — it is the fallback for servers without IDLE,
+    /// and it is what drains the writeback queue on a schedule.
+    fn start_watch(&mut self) -> Task<Message> {
+        let Some(connection) = self.connection.clone() else {
+            return Task::none();
+        };
+        if self.watching {
+            return Task::none();
+        }
+        self.watching = true;
+        let generation = self.watch_generation;
+
+        // Under IDLE's 29-minute ceiling, and short enough that a thread
+        // orphaned by an account switch dies within minutes rather than
+        // holding a connection for half an hour.
+        const WATCH: std::time::Duration = std::time::Duration::from_secs(4 * 60);
+
+        cosmic::task::future(async move {
+            let outcome =
+                tokio::task::spawn_blocking(move || mail::watch_inbox(&connection, WATCH))
+                    .await
+                    .unwrap_or_else(|why| Err(why.to_string()));
+            Message::WatchEnded {
+                generation,
+                outcome,
+            }
+        })
+    }
+
+    fn watch_ended(
+        &mut self,
+        generation: u64,
+        outcome: Result<mail::WatchOutcome, String>,
+    ) -> Task<Message> {
+        if generation != self.watch_generation {
+            // A watch from before an account switch. Its news is about a
+            // mailbox that is no longer showing.
+            return Task::none();
+        }
+        self.watching = false;
+        match outcome {
+            Ok(mail::WatchOutcome::Changed) => {
+                // The sync is what acts on the news; the watch restarts once
+                // it has told us. Quiet, like the poll — push mail arriving is
+                // not something to narrate.
+                let sync = if self.syncing {
+                    Task::none()
+                } else {
+                    self.sync_now()
+                };
+                Task::batch([sync, self.start_watch()])
+            }
+            Ok(mail::WatchOutcome::TimedOut) => self.start_watch(),
+            Ok(mail::WatchOutcome::Unsupported) => {
+                // The poll covers this account. Reconnecting forever to hear
+                // the same no would be all cost.
+                tracing::info!("the server has no IDLE; staying on the poll");
+                Task::none()
+            }
+            Err(why) => {
+                // The network dropped, or the server did. Wait out a beat
+                // before reconnecting so a hard-down server is not hammered.
+                tracing::debug!(why, "the inbox watch ended with an error; will retry");
+                let generation = self.watch_generation;
+                cosmic::task::future(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    Message::WatchEnded {
+                        generation,
+                        outcome: Ok(mail::WatchOutcome::TimedOut),
+                    }
+                })
+            }
         }
     }
 
