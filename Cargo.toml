@@ -14,6 +14,10 @@ rust-version = "1.98.0"
 # the message model, the maildir store, threading, and IMAP.
 cosmic-pim-accounts = { path = "../cosmic-pim/crates/cosmic-pim-accounts" }
 cosmic-pim-mail = { path = "../cosmic-pim/crates/cosmic-pim-mail" }
+# The dispatch layer: one sync pass per account, over whichever protocol the
+# account says. Envelope stopped running its own IMAP-only pass the day the
+# substrate could route all five.
+cosmic-pim-sync = { path = "../cosmic-pim/crates/cosmic-pim-sync" }
 
 i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
 i18n-embed-fl = "0.10"

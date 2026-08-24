@@ -30,7 +30,11 @@ fn archive() -> Folder {
 }
 
 fn connection(root: &std::path::Path) -> Connection {
+    let mut account =
+        cosmic_pim_accounts::Account::new("Test", "https://dav.example/", "me@example.com");
+    account.mail = Some(cosmic_pim_accounts::MailEndpoint::tls("unused.invalid"));
     Connection {
+        account,
         account_id: ACCOUNT.into(),
         endpoint: Endpoint {
             host: "unused.invalid".into(),

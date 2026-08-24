@@ -31,9 +31,13 @@ mailbox exactly as they apply to a calendar.
 
 Envelope reads, threads, syncs, and sends. What works:
 
-- **IMAP sync** — folder discovery with RFC 6154 special use, incremental
-  fetch, CONDSTORE flag deltas, periodic full reconciliation, and durable
-  writeback for flag changes, moves, and deletions.
+- **Five mail protocols** — IMAP (CONDSTORE flag deltas, RFC 6154 special use,
+  durable writeback), JMAP, the Gmail API, Microsoft Graph, and POP3, all
+  through the substrate's one dispatch. Which one is a stored property of the
+  account, not a probe.
+- **Push mail** — a dedicated connection parks in IMAP IDLE on the inbox, so
+  new mail arrives when it arrives rather than on the next poll. Servers
+  without IDLE fall back to the poll, once, without being asked again.
 - **Maildir on disk** — one maildir per mailbox under `$XDG_DATA_HOME/mail`.
   `mbsync`, `notmuch`, `mu`, and `mutt` read the same files. Delete the app and
   your mail is still there, in a format thirty years of tools understand.

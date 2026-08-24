@@ -33,7 +33,8 @@ separates "not done yet" from "not doing".
 
 | | Meltemi | Envelope |
 |---|---|---|
-| IMAP sync | CONDSTORE + QRESYNC, poison-message skip-list, snooze keywords | CONDSTORE, no QRESYNC, no skip-list |
+| Engines | IMAP, JMAP, Gmail, Graph, POP3 | the same five, via cosmic-pim-sync |
+| IMAP sync | CONDSTORE + QRESYNC, poison-message skip-list, snooze keywords | CONDSTORE + IDLE, no QRESYNC, no skip-list |
 | Store | SQLCipher-encrypted SQLite | maildir + rebuildable index |
 | Threading | JWZ, server thread ids where offered | JWZ |
 | Folder tree | full, drag-reorder | full, read-only |
@@ -49,8 +50,9 @@ separates "not done yet" from "not doing".
 
 ### Not done yet
 
-In rough order of how much they are missed: **body search** (tantivy), **IDLE**,
-**OAuth**, **QRESYNC**,
+In rough order of how much they are missed: **body search** (tantivy),
+**OAuth token flow** (the wire half — XOAUTH2, Credentials — is in the
+substrate; what is missing is the browser dance and refresh), **QRESYNC**,
 **server-side drafts**, **unified inbox**, **undo**, **rules**, **labels**,
 **snooze**, **one-click unsubscribe**, **import/export**, **OpenPGP and
 S/MIME**, and the other four engines (**JMAP**, **Gmail**, **Graph**, **POP3**).
@@ -209,8 +211,7 @@ also of little use without a send path, so it belongs after SMTP, not before.
 2. **Server-side drafts.** UIDPLUS where it exists, `Message-ID` matching where
    it does not, and a reconciliation pass for servers that mangle both. Worth
    building; not worth shipping half of.
-3. **IDLE**, so the mailbox updates without waiting up to two minutes.
-4. **A command palette.** The registry it would resolve through already exists;
+3. **A command palette.** The registry it would resolve through already exists;
    this is a widget and a fuzzy match over `Action::label`.
 5. **A server quirks table**, shared in shape with the CalDAV one (01) — the
    IMAP zoo is the same problem, larger.

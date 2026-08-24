@@ -14,13 +14,13 @@ use std::path::PathBuf;
 use std::collections::{BTreeMap, HashMap};
 
 use chrono::Utc;
-use cosmic_pim_accounts::{Account, AccountStore, Transport};
+use cosmic_pim_accounts::{Account, AccountStore, MailProtocol, Transport};
 use cosmic_pim_mail::attachment;
 use cosmic_pim_mail::compose::Draft;
 use cosmic_pim_mail::discovery::{self, Discovered};
 use cosmic_pim_mail::drafts::{self, Drafts, Saved};
 use cosmic_pim_mail::folder::{Folder, SpecialUse};
-use cosmic_pim_mail::imap::{self, Endpoint, Security, Session, SyncOptions, Watched};
+use cosmic_pim_mail::imap::{Endpoint, Security, Session, SyncOptions, Watched};
 use cosmic_pim_mail::index::{self, Hit, Index};
 use cosmic_pim_mail::maildir::{self, MaildirStore};
 use cosmic_pim_mail::model::{Flags, Mailbox, Message};
@@ -73,6 +73,9 @@ pub struct SyncReport {
 /// Everything needed to reach one account's mail.
 #[derive(Debug, Clone)]
 pub struct Connection {
+    /// The account itself: the sync dispatch needs the whole thing — which
+    /// protocol, which endpoint, which login — not a summary of it.
+    pub account: Account,
     pub account_id: String,
     pub endpoint: Endpoint,
     /// Where to submit outgoing mail. `None` when the account has no usable
@@ -146,6 +149,7 @@ impl Connection {
         });
 
         Ok(Some(Self {
+            account: account.clone(),
             account_id: account.id.clone(),
             submission,
             endpoint: Endpoint {
@@ -165,45 +169,47 @@ impl Connection {
     }
 }
 
-/// Runs one sync pass over every selectable folder.
+/// Runs one sync pass, over whichever protocol the account uses.
 ///
-/// Blocking, and meant for a worker thread. A failure in one mailbox is
-/// recorded and the pass continues — the same per-collection error isolation
-/// `cosmic-pim-sync` gives calendars, and for the same reason: one broken
-/// folder must not cost the user the other nineteen.
+/// The pass itself lives in `cosmic-pim-sync`, which dispatches IMAP, JMAP,
+/// POP3, Gmail, and Graph — and drains the outbox first, so a send waiting on
+/// the network leaves before the pull that would file it. What is left here is
+/// Envelope's own bookkeeping: turning the report into what the window shows,
+/// and dropping index rows for a mailbox the server renumbered.
+///
+/// Blocking, and meant for a worker thread.
 pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
-    let mut session = Session::connect(&connection.endpoint, &connection.credentials)
-        .map_err(|why| why.to_string())?;
-
-    let folders = session.folders().map_err(|why| why.to_string())?;
-    let mut report = SyncReport {
-        folders: folders.clone(),
-        ..SyncReport::default()
-    };
-
     let options = SyncOptions {
         reconcile: cycle.is_multiple_of(RECONCILE_EVERY),
         since_ms: None,
     };
 
-    for folder in folders.iter().filter(|f| !f.no_select) {
-        let path = connection.mailbox_path(folder);
-        let mut store = match MaildirStore::open(&path) {
-            Ok(store) => store,
-            Err(why) => {
-                report
-                    .failures
-                    .push((folder.display_name.clone(), why.to_string()));
-                continue;
-            }
-        };
-        match imap::sync_mailbox(
-            &mut session,
-            &folder.wire_name,
-            &mut store,
-            options,
-            now_ms(),
-        ) {
+    let pass = cosmic_pim_sync::sync_account_mail(
+        &connection.account,
+        &connection.credentials,
+        &connection.root,
+        options,
+        now_ms(),
+    )
+    .map_err(|why| why.to_string())?;
+
+    let mut report = SyncReport {
+        sent: pass.sent,
+        // Sends the outbox has given up on need a person, the same as a push
+        // the flag queue has given up on.
+        stuck: pass.given_up,
+        ..SyncReport::default()
+    };
+
+    for mailbox in pass.mailboxes {
+        // IMAP hands the full folder over — delimiter and the server's own
+        // special-use declaration included. The label-shaped protocols hand
+        // names, and the reconstruction recovers hierarchy and role from them
+        // by convention, which for labels is all there ever was.
+        let folder = mailbox.folder.unwrap_or_else(|| {
+            cosmic_pim_mail::folder::from_list_entry(&mailbox.wire_name, Some('/'), &[])
+        });
+        match mailbox.outcome {
             Ok(outcome) => {
                 report.fetched += outcome.fetched;
                 report.pushed += outcome.pushed.succeeded;
@@ -211,8 +217,7 @@ pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
 
                 // A renumbering does not make the index stale, it makes it
                 // wrong: every UID in it now names a different message or
-                // none. Dropping the rows is the only correct response, and
-                // the next read rebuilds them from the refetched maildir.
+                // none. The next read rebuilds from the refetched maildir.
                 if outcome.renumbered
                     && let Err(why) = forget_index(connection, &folder.wire_name)
                 {
@@ -223,16 +228,9 @@ pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
                 .failures
                 .push((folder.display_name.clone(), why.to_string())),
         }
+        report.folders.push(folder);
     }
-
-    let _ = session.logout();
-
-    // After the folder pass, so a message that just went out is filed into the
-    // Sent copy this cycle already refreshed.
-    match drain_outbox(connection, &folders) {
-        Ok(sent) => report.sent = sent,
-        Err(why) => report.failures.push(("outbox".to_string(), why)),
-    }
+    cosmic_pim_mail::folder::sort_for_display(&mut report.folders);
 
     Ok(report)
 }
@@ -269,27 +267,6 @@ pub fn discard_queued(connection: &Connection, id: &str) -> Result<(), String> {
     outbox(connection)?
         .remove(id)
         .map_err(|why| why.to_string())
-}
-
-/// Attempts everything in the outbox that is due, filing what goes out.
-///
-/// Called from the sync pass, so a message written offline leaves as soon as
-/// the next check finds the network — without anybody remembering to press
-/// anything, which is the whole reason the queue exists.
-fn drain_outbox(connection: &Connection, folders: &[Folder]) -> Result<usize, String> {
-    let Some(submission) = connection.submission.as_ref() else {
-        return Ok(0);
-    };
-    let outbox = outbox(connection)?;
-    let outcome = outbox
-        .drain(&submission.endpoint, &connection.credentials, now_ms())
-        .map_err(|why| why.to_string())?;
-
-    for (id, filed) in &outcome.sent {
-        tracing::info!(id, "a queued message was sent");
-        file_to_sent(connection, folders, filed);
-    }
-    Ok(outcome.sent.len())
 }
 
 /// This account's local drafts.
@@ -442,8 +419,8 @@ pub enum WatchOutcome {
     Changed,
     /// Nothing happened within the timeout. Watch again.
     TimedOut,
-    /// The server has no IDLE. Do not watch again — the poll already covers
-    /// this account, and retrying would reconnect forever to hear the same no.
+    /// This account cannot be watched — the server has no IDLE, or it does
+    /// not speak IMAP at all. Do not watch again: the poll already covers it.
     Unsupported,
 }
 
@@ -461,6 +438,19 @@ pub fn watch_inbox(
     connection: &Connection,
     timeout: std::time::Duration,
 ) -> Result<WatchOutcome, String> {
+    // IDLE is IMAP's. The other protocols poll (JMAP will push over
+    // EventSource when that lands); answering Unsupported rather than erroring
+    // is what stops the watch loop reconnecting forever at a server that was
+    // never going to say yes.
+    let is_imap = connection
+        .account
+        .mail
+        .as_ref()
+        .is_none_or(|mail| mail.protocol == MailProtocol::Imap);
+    if !is_imap {
+        return Ok(WatchOutcome::Unsupported);
+    }
+
     let mut session = Session::connect(&connection.endpoint, &connection.credentials)
         .map_err(|why| why.to_string())?;
     if !session.supports_idle() {
