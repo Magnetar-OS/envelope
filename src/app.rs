@@ -78,6 +78,13 @@ pub struct AppModel {
     /// loopback port, so a second would fail on the bind and confuse the
     /// first.
     signing_in: bool,
+    /// The command palette, while it is open: the query, and which row is
+    /// selected.
+    palette: Option<(String, usize)>,
+    /// The rows the palette is showing, recomputed when the query changes.
+    /// Held in the model because `dialog()` hands out borrows, and a view
+    /// cannot borrow from a value it computed itself.
+    palette_rows: Vec<(Action, String)>,
     /// Local drafts for the selected account, newest first.
     drafts: Vec<cosmic_pim_mail::drafts::Saved>,
     showing_drafts: bool,
@@ -399,6 +406,9 @@ pub enum Message {
     SignInEmailChanged(String),
     SignInStarted(String),
     SignInFinished(Box<Result<String, String>>),
+    PaletteQueryChanged(String),
+    PaletteSubmitted,
+    PaletteInvoked(Action),
     MailFormDiscovered(Box<Result<cosmic_pim_mail::Discovered, String>>),
 
     Compose,
@@ -537,6 +547,8 @@ impl cosmic::Application for AppModel {
             sign_in_providers: mail::sign_in_providers(),
             sign_in_email: String::new(),
             signing_in: false,
+            palette: None,
+            palette_rows: Vec::new(),
             drafts: Vec::new(),
             showing_drafts: false,
             outbox: Vec::new(),
@@ -763,6 +775,16 @@ impl cosmic::Application for AppModel {
             // has already done.
             cosmic::dbus_activation::Details::Activate => Task::none(),
         }
+    }
+
+    fn dialog(&self) -> Option<Element<'_, Self::Message>> {
+        let (query, selected) = self.palette.as_ref()?;
+        let palette = crate::ui::palette::Palette {
+            query,
+            matches: &self.palette_rows,
+            selected: *selected,
+        };
+        Some(palette.view())
     }
 
     fn context_drawer(&self) -> Option<context_drawer::ContextDrawer<'_, Self::Message>> {
@@ -1105,6 +1127,33 @@ impl cosmic::Application for AppModel {
                 })
             }
             Message::MailFormFromNameChanged(name) => self.with_form(|form| form.from_name = name),
+            Message::PaletteQueryChanged(query) => {
+                if let Some((text, selected)) = self.palette.as_mut() {
+                    *text = query;
+                    // The list under the cursor just changed; keeping the old
+                    // position would highlight an unrelated row.
+                    *selected = 0;
+                }
+                self.refresh_palette_rows();
+                Task::none()
+            }
+            Message::PaletteSubmitted => {
+                let action = self
+                    .palette_rows
+                    .get(self.palette.as_ref().map_or(0, |(_, s)| *s))
+                    .map(|(action, _)| *action);
+                match action {
+                    Some(action) => self.update(Message::PaletteInvoked(action)),
+                    None => Task::none(),
+                }
+            }
+            Message::PaletteInvoked(action) => {
+                // Closed before dispatch, so an action that opens something —
+                // the composer, a context page — is not immediately covered by
+                // the palette it came from.
+                self.palette = None;
+                self.act(action)
+            }
             Message::SignInEmailChanged(email) => {
                 self.sign_in_email = email;
                 Task::none()
@@ -1669,6 +1718,30 @@ impl AppModel {
         })
     }
 
+    /// Recomputes what the palette shows for its current query.
+    fn refresh_palette_rows(&mut self) {
+        let Some((query, _)) = self.palette.as_ref() else {
+            self.palette_rows.clear();
+            return;
+        };
+        let has_message = self.opened.is_some();
+        self.palette_rows = actions::bindings()
+            .into_iter()
+            .filter(|binding| {
+                // An action that needs a message, offered with none open, is a
+                // row that does nothing — hidden rather than greyed, because a
+                // palette is searched, not browsed.
+                (has_message || !binding.action.needs_a_message())
+                    && binding.action != Action::Palette
+                    && actions::label_matches(query, &binding.action.label())
+            })
+            .map(|binding| {
+                let shortcut = binding.shortcut();
+                (binding.action, shortcut)
+            })
+            .collect();
+    }
+
     /// Runs a browser sign-in on a worker thread.
     fn sign_in(&mut self, provider_id: &str) -> Task<Message> {
         if self.signing_in {
@@ -1876,6 +1949,25 @@ impl AppModel {
             }
         }
 
+        // The palette's arrows, while it is open. Its input has focus, so
+        // these arrive here only because a single-line input ignores vertical
+        // arrows — which is exactly the gap that makes this work.
+        if let Some((_, selected)) = self.palette.as_mut() {
+            use cosmic::iced::keyboard::key::Named;
+            let last = self.palette_rows.len().saturating_sub(1);
+            match key {
+                cosmic::iced::keyboard::Key::Named(Named::ArrowDown) => {
+                    *selected = (*selected + 1).min(last);
+                    return Task::none();
+                }
+                cosmic::iced::keyboard::Key::Named(Named::ArrowUp) => {
+                    *selected = selected.saturating_sub(1);
+                    return Task::none();
+                }
+                _ => {}
+            }
+        }
+
         if self.typing() {
             // A half-typed chord does not survive somebody clicking into a
             // field and typing; it would fire on whatever they pressed after.
@@ -1953,6 +2045,15 @@ impl AppModel {
                 Task::none()
             }
 
+            Action::Palette => {
+                if self.palette.take().is_some() {
+                    self.palette_rows.clear();
+                    return Task::none();
+                }
+                self.palette = Some((String::new(), 0));
+                self.refresh_palette_rows();
+                cosmic::widget::text_input::focus(crate::ui::PALETTE_ID.clone())
+            }
             Action::Shortcuts => self.update(Message::ToggleContextPage(ContextPage::Shortcuts)),
             Action::Settings => self.update(Message::ToggleContextPage(ContextPage::Settings)),
             Action::Accounts => self.update(Message::ToggleContextPage(ContextPage::Accounts)),
@@ -1989,6 +2090,10 @@ impl AppModel {
     /// composer, not the window, and Escape with nothing open clears the
     /// search.
     fn escape(&mut self) -> Task<Message> {
+        if self.palette.take().is_some() {
+            self.palette_rows.clear();
+            return Task::none();
+        }
         if self.composer.is_some() {
             return self.update(Message::ComposeCancel);
         }

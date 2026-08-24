@@ -54,6 +54,7 @@ pub enum Action {
     GoSent,
     GoArchive,
 
+    Palette,
     Shortcuts,
     Settings,
     Accounts,
@@ -84,6 +85,7 @@ impl Action {
             Self::GoOutbox => fl!("go-outbox"),
             Self::GoSent => fl!("go-sent"),
             Self::GoArchive => fl!("go-archive"),
+            Self::Palette => fl!("command-palette"),
             Self::Shortcuts => fl!("shortcuts"),
             Self::Settings => fl!("settings"),
             Self::Accounts => fl!("accounts"),
@@ -110,6 +112,7 @@ impl Action {
             Self::Search
             | Self::Sync
             | Self::Escape
+            | Self::Palette
             | Self::Shortcuts
             | Self::Settings
             | Self::Accounts
@@ -391,6 +394,12 @@ pub fn bindings() -> Vec<Binding> {
             handled_by_framework: true,
         },
         Binding {
+            action: Action::Palette,
+            bare: None,
+            combination: Some(ctrl("k")),
+            handled_by_framework: false,
+        },
+        Binding {
             action: Action::Shortcuts,
             bare: Some(Bare::Key('?')),
             combination: None,
@@ -469,6 +478,21 @@ pub fn for_bare(key: char, pending: Option<char>) -> Resolved {
     Resolved::Nothing
 }
 
+/// Does an action's label match what has been typed so far?
+///
+/// Every whitespace-separated word of the query has to appear somewhere in the
+/// label, case-insensitively, in any order — "read mark" matches "Mark read or
+/// unread". Deliberately not fuzzy-subsequence matching: "mr" matching
+/// "Mark read" looks clever in a demo and produces inexplicable rows the
+/// moment a real list has thirty entries.
+#[must_use]
+pub fn label_matches(query: &str, label: &str) -> bool {
+    let label = label.to_lowercase();
+    query
+        .split_whitespace()
+        .all(|word| label.contains(&word.to_lowercase()))
+}
+
 /// What a bare keystroke turned out to be.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Resolved {
@@ -481,6 +505,18 @@ pub enum Resolved {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn palette_matching_is_word_wise_and_order_free() {
+        assert!(label_matches("", "Anything"));
+        assert!(label_matches("mark", "Mark read or unread"));
+        assert!(label_matches("read mark", "Mark read or unread"));
+        assert!(label_matches("MARK", "Mark read or unread"));
+        assert!(!label_matches("marked", "Mark read or unread"));
+        // Not fuzzy on purpose: initials matching whole words produces
+        // inexplicable rows the moment a list has thirty entries.
+        assert!(!label_matches("mr", "Mark read"));
+    }
 
     #[test]
     fn every_action_in_the_registry_is_reachable() {

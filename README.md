@@ -73,7 +73,9 @@ Envelope reads, threads, syncs, and sends. What works:
   on the next check, with its attachments.
 - **Keyboard shortcuts** — Gmail's single letters (`c`, `r`, `a`, `f`, `j`, `k`,
   `e`, `s`, `u`, `/`, `g i`), plus modifier combinations that work while you are
-  typing. `?` shows the list, generated from the bindings themselves.
+  typing. `?` shows the list, generated from the bindings themselves, and
+  `Ctrl+K` opens a command palette over the same registry — type any action's
+  name to run it.
 
 What does not work yet: **HTML composition**, and that is a decision rather than
 a gap — the reader shows text, so an HTML composer would be writing in a format

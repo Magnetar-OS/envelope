@@ -45,7 +45,7 @@ separates "not done yet" from "not doing".
 | Drafts | server-synced | local |
 | Send | + outbox, undo send, scheduled | typed pre-acceptance errors, outbox |
 | Search | FTS5 + tantivy + semantic, saved queries | FTS5 with bm25, over the index |
-| Keyboard | registry, palette, rebinding, quick steps | registry, Gmail keys, chords, cheat sheet |
+| Keyboard | registry, palette, rebinding, quick steps | registry, Gmail keys, chords, cheat sheet, palette |
 | Accounts | six-stage discovery, OAuth PKCE | registry + three-stage discovery, OAuth PKCE |
 
 ### Not done yet
@@ -205,8 +205,6 @@ also of little use without a send path, so it belongs after SMTP, not before.
 1. **Server-side drafts.** UIDPLUS where it exists, `Message-ID` matching where
    it does not, and a reconciliation pass for servers that mangle both. Worth
    building; not worth shipping half of.
-3. **A command palette.** The registry it would resolve through already exists;
-   this is a widget and a fuzzy match over `Action::label`.
 5. **A server quirks table**, shared in shape with the CalDAV one (01) — the
    IMAP zoo is the same problem, larger.
 

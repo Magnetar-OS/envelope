@@ -162,3 +162,6 @@ sign-in-waiting = Waiting for the browser…
 sign-in-browser = Finish signing in, in your browser. This page will update by itself.
 sign-in-needs-address = Type the address you are signing in with first.
 sign-in-failed = The sign-in did not finish: { $reason }
+command-palette = Command palette
+palette-placeholder = Type a command…
+palette-nothing = Nothing matches.

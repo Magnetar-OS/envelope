@@ -5,6 +5,7 @@
 pub mod accounts;
 pub mod composer;
 pub mod list;
+pub mod palette;
 pub mod reader;
 pub mod settings;
 pub mod shortcuts;
@@ -50,6 +51,10 @@ pub fn relative_date(date: Option<DateTime<Utc>>) -> String {
         local.format("%-d %b %Y").to_string()
     }
 }
+
+/// The palette's input, so opening it can focus it.
+pub static PALETTE_ID: std::sync::LazyLock<cosmic::widget::Id> =
+    std::sync::LazyLock::new(|| cosmic::widget::Id::new("palette"));
 
 /// A byte count as a person reads one.
 ///
