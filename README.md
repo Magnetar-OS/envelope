@@ -80,7 +80,10 @@ Envelope reads, threads, syncs, and sends. What works:
   a page in the browser — in that order. Cleartext `http:` targets are never
   used.
 - **Save as file** — any message exports as `.eml`, byte-exact, readable by
-  every mail tool ever written.
+  every mail tool ever written. And the other direction: an mbox archive —
+  a Thunderbird folder, a Google Takeout — imports into the open folder by
+  uploading every message, so the archive becomes real server mail rather
+  than local files a sync would fight over.
 - **Undo** — `z` or `Ctrl+Z` takes back the last flag change or move. A move
   can be taken back exactly until it reaches the server — which covers the
   seconds people actually regret in — and says so honestly after that, rather

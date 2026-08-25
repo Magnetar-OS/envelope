@@ -181,3 +181,16 @@ unsubscribed = Off the list. The sender has up to a few days to comply.
 unsubscribe-failed = The unsubscribe did not go through: { $reason }
 save-as-file = Save as file
 all-inboxes = All inboxes
+
+# Import
+import-mbox = Import an mbox archive…
+choose-mbox = Choose an mbox file
+importing = Uploading the archive to this folder…
+imported = { $imported ->
+        [one] One message imported. Syncing it down.
+       *[other] { $imported } messages imported. Syncing them down.
+    }
+imported-some = { $imported } imported, { $skipped ->
+        [one] one unreadable chunk skipped.
+       *[other] { $skipped } unreadable chunks skipped.
+    } Syncing them down.

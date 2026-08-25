@@ -1045,8 +1045,18 @@ fn the_unified_inbox_merges_accounts_newest_first_and_says_whose() {
     second.account.display_name = "Home".into();
 
     for (connection, uid, subject, date) in [
-        (&first, 1, "Older, at work", "Mon, 3 Feb 2025 09:00:00 +0000"),
-        (&second, 1, "Newer, at home", "Mon, 3 Feb 2025 11:00:00 +0000"),
+        (
+            &first,
+            1,
+            "Older, at work",
+            "Mon, 3 Feb 2025 09:00:00 +0000",
+        ),
+        (
+            &second,
+            1,
+            "Newer, at home",
+            "Mon, 3 Feb 2025 11:00:00 +0000",
+        ),
     ] {
         let path = maildir::mailbox_path(root, &connection.account_id, &inbox());
         let mut store = MaildirStore::open(path).expect("maildir");
@@ -1068,11 +1078,13 @@ fn the_unified_inbox_merges_accounts_newest_first_and_says_whose() {
             .expect("deliver");
     }
 
-    let merged =
-        mail::unified_inbox(&[first, second]).expect("merge");
+    let merged = mail::unified_inbox(&[first, second]).expect("merge");
     assert_eq!(merged.len(), 2);
     assert_eq!(merged[0].conversation.subject, "Newer, at home");
-    assert_eq!(merged[0].account_name, "Home", "the row does not say whose it is");
+    assert_eq!(
+        merged[0].account_name, "Home",
+        "the row does not say whose it is"
+    );
     assert_eq!(merged[1].account_name, "Work");
 }
 

@@ -55,6 +55,7 @@ pub enum Action {
     GoSent,
     GoArchive,
 
+    ImportMbox,
     Palette,
     Shortcuts,
     Settings,
@@ -87,6 +88,7 @@ impl Action {
             Self::GoOutbox => fl!("go-outbox"),
             Self::GoSent => fl!("go-sent"),
             Self::GoArchive => fl!("go-archive"),
+            Self::ImportMbox => fl!("import-mbox"),
             Self::Palette => fl!("command-palette"),
             Self::Shortcuts => fl!("shortcuts"),
             Self::Settings => fl!("settings"),
@@ -115,6 +117,7 @@ impl Action {
             Self::Search
             | Self::Sync
             | Self::Escape
+            | Self::ImportMbox
             | Self::Palette
             | Self::Shortcuts
             | Self::Settings
@@ -401,6 +404,12 @@ pub fn bindings() -> Vec<Binding> {
             bare: None,
             combination: Some(named(Named::Escape)),
             handled_by_framework: true,
+        },
+        Binding {
+            action: Action::ImportMbox,
+            bare: None,
+            combination: None,
+            handled_by_framework: false,
         },
         Binding {
             action: Action::Palette,

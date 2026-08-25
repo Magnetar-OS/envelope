@@ -43,6 +43,7 @@ separates "not done yet" from "not doing".
 | Compose | TipTap rich text, 3 window modes | plain text, one pane |
 | Attachments | send, receive, drag-drop, inline CID | send, receive, save |
 | Drafts | server-synced | local |
+| Import/export | mbox/eml both ways | mbox import, .eml export |
 | Send | + outbox, undo send, scheduled | typed pre-acceptance errors, outbox |
 | Search | FTS5 + tantivy + semantic, saved queries | FTS5 with bm25, over the index |
 | Keyboard | registry, palette, rebinding, quick steps | registry, Gmail keys, chords, cheat sheet, palette |
@@ -51,8 +52,7 @@ separates "not done yet" from "not doing".
 ### Not done yet
 
 In rough order of how much they are missed: **server-side drafts**, **rules**,
-**labels**, **snooze**, **mbox import** (export exists), and **OpenPGP and
-S/MIME**.
+**labels**, **snooze**, and **OpenPGP and S/MIME**.
 
 ### Not doing, and why
 

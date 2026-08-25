@@ -503,6 +503,9 @@ pub enum Message {
 
     SaveAttachment(usize),
     ExportMessage,
+    ImportMbox,
+    MboxPicked(Option<std::path::PathBuf>),
+    MboxImported(Result<(usize, usize), String>),
     MessageExported(Result<std::path::PathBuf, String>),
     Unsubscribe,
     Unsubscribed(Result<(), String>),
@@ -679,6 +682,7 @@ impl cosmic::Application for AppModel {
                     &self.key_binds,
                     vec![
                         item(Action::Compose),
+                        item(Action::ImportMbox),
                         menu::Item::Divider,
                         item(Action::Search),
                         item(Action::Sync),
@@ -1409,6 +1413,49 @@ impl cosmic::Application for AppModel {
             }
             Message::HitOpened(index) => self.open_hit(index),
 
+            Message::ImportMbox => cosmic::task::future(async move {
+                let picked = cosmic::dialog::file_chooser::open::Dialog::new()
+                    .title(fl!("choose-mbox"))
+                    .open_file()
+                    .await
+                    .ok()
+                    .and_then(|response| response.url().to_file_path().ok());
+                Message::MboxPicked(picked)
+            }),
+            Message::MboxPicked(path) => {
+                let (Some(path), Some(connection), Some(folder)) = (
+                    path,
+                    self.connection.clone(),
+                    self.current_folder().cloned(),
+                ) else {
+                    return Task::none();
+                };
+                self.status = Some(fl!("importing"));
+                cosmic::task::future(async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        mail::import_mbox(&connection, &folder, &path)
+                    })
+                    .await
+                    .unwrap_or_else(|why| Err(why.to_string()));
+                    Message::MboxImported(result)
+                })
+            }
+            Message::MboxImported(result) => {
+                match result {
+                    Ok((imported, skipped)) => {
+                        self.status = Some(if skipped > 0 {
+                            fl!("imported-some", imported = imported, skipped = skipped)
+                        } else {
+                            fl!("imported", imported = imported)
+                        });
+                        // The upload is done; the pull is what makes them
+                        // appear.
+                        return self.sync_now();
+                    }
+                    Err(why) => self.status = Some(why),
+                }
+                Task::none()
+            }
             Message::ExportMessage => {
                 let (Some(connection), Some(folder), Some(uid)) = (
                     self.connection.clone(),
@@ -2202,6 +2249,7 @@ impl AppModel {
             Action::ToggleRead => self.update(Message::ToggleRead),
             Action::ToggleFlagged => self.update(Message::ToggleFlagged),
 
+            Action::ImportMbox => self.update(Message::ImportMbox),
             Action::Undo => self.undo(),
             Action::Search => {
                 // Focus rather than a mode: the box is always there, and this

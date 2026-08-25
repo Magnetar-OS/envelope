@@ -666,6 +666,58 @@ pub fn unified_inbox(connections: &[Connection]) -> Result<Vec<UnifiedConversati
     Ok(merged)
 }
 
+/// Imports an mbox file into a folder, by APPENDing every message.
+///
+/// APPEND rather than writing into the maildir, because the maildir is a
+/// *mirror* of the server: injecting messages locally creates entries the next
+/// reconciliation would read as deleted-on-the-server and remove. Uploading
+/// makes them real mail, and the sync that follows brings them back down the
+/// same way everything else arrives.
+///
+/// Blocking for as long as the archive is large; strictly a worker call.
+/// Unparseable chunks are counted and skipped — one mangled message in a
+/// twenty-year archive must not abort the other ten thousand.
+pub fn import_mbox(
+    connection: &Connection,
+    folder: &Folder,
+    path: &std::path::Path,
+) -> Result<(usize, usize), String> {
+    let bytes = std::fs::read(path)
+        .map_err(|why| format!("{} could not be read: {why}", path.display()))?;
+    let messages = cosmic_pim_mail::mbox::messages(&bytes);
+    if messages.is_empty() {
+        return Err("that file does not look like an mbox archive".to_string());
+    }
+
+    let credentials = fresh_credentials(connection)?;
+    let mut session =
+        Session::connect(&connection.endpoint, &credentials).map_err(|why| why.to_string())?;
+
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+    for raw in &messages {
+        if Message::parse(raw).is_none() {
+            skipped += 1;
+            continue;
+        }
+        match session.append(&folder.wire_name, raw, Flags::default()) {
+            Ok(()) => imported += 1,
+            Err(why) => {
+                // Stop rather than skip: an APPEND refused mid-run is the
+                // server (quota, connection), not the message, and silently
+                // dropping the rest of an archive is data loss with a success
+                // message.
+                let _ = session.logout();
+                return Err(format!(
+                    "{imported} imported, then the server refused: {why}"
+                ));
+            }
+        }
+    }
+    let _ = session.logout();
+    Ok((imported, skipped))
+}
+
 /// How a message says its list can be left.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unsubscribe {
