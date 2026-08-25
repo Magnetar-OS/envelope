@@ -165,3 +165,11 @@ sign-in-failed = The sign-in did not finish: { $reason }
 command-palette = Command palette
 palette-placeholder = Type a command…
 palette-nothing = Nothing matches.
+
+# Undo
+undo = Undo
+undo-flags = the flag change
+undo-move = the move to { $folder }
+undone = Took back { $what }.
+undo-failed = Could not take that back: { $reason }
+nothing-to-undo = Nothing to take back.

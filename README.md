@@ -71,6 +71,10 @@ Envelope reads, threads, syncs, and sends. What works:
   to what you send. Nothing is ever opened for you.
 - **An outbox.** A send that could not reach the server waits there and goes out
   on the next check, with its attachments.
+- **Undo** — `z` or `Ctrl+Z` takes back the last flag change or move. A move
+  can be taken back exactly until it reaches the server — which covers the
+  seconds people actually regret in — and says so honestly after that, rather
+  than resurrecting a copy the next sync cannot reconcile.
 - **Keyboard shortcuts** — Gmail's single letters (`c`, `r`, `a`, `f`, `j`, `k`,
   `e`, `s`, `u`, `/`, `g i`), plus modifier combinations that work while you are
   typing. `?` shows the list, generated from the bindings themselves, and

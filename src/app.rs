@@ -81,6 +81,9 @@ pub struct AppModel {
     /// The command palette, while it is open: the query, and which row is
     /// selected.
     palette: Option<(String, usize)>,
+    /// What can be taken back, newest last. Capped, because each move entry
+    /// holds its messages' bytes.
+    undo_stack: Vec<UndoEntry>,
     /// The rows the palette is showing, recomputed when the query changes.
     /// Held in the model because `dialog()` hands out borrows, and a view
     /// cannot borrow from a value it computed itself.
@@ -361,6 +364,40 @@ fn transport_index(transport: Transport) -> usize {
         .unwrap_or(0)
 }
 
+/// One reversible thing the user did.
+#[derive(Clone, Debug)]
+pub struct UndoEntry {
+    /// What the status line says when it is undone.
+    pub description: String,
+    pub reverse: Reverse,
+}
+
+/// How an entry is taken back.
+#[derive(Clone, Debug)]
+pub enum Reverse {
+    /// Restore these exact flags, through the same queued path that changed
+    /// them.
+    Flags {
+        folder: Folder,
+        previous: Vec<(u32, cosmic_pim_mail::model::Flags)>,
+    },
+    /// Cancel the queued move and put the held messages back.
+    ///
+    /// This one has a deadline the stack does not control: once the writeback
+    /// queue drains, the move has happened and the reverse honestly fails.
+    Unmove {
+        folder: Folder,
+        messages: Vec<cosmic_pim_mail::store::RemoteMessage>,
+    },
+}
+
+/// How much history is kept.
+///
+/// Small, because a move entry holds its messages' bytes, and because an undo
+/// stack is for the mistake just made — nobody unwinds forty steps of triage,
+/// they re-triage.
+const UNDO_DEPTH: usize = 10;
+
 #[derive(Clone, Debug)]
 pub enum Message {
     LaunchUrl(String),
@@ -385,8 +422,11 @@ pub enum Message {
     ToggleFlagged,
     Archive,
     Delete,
-    /// A local mutation finished; reload the folder either way.
-    Mutated(Result<(), String>),
+    /// A local mutation finished; reload the folder either way, and remember
+    /// how to take it back if it said how.
+    Mutated(Result<Option<UndoEntry>, String>),
+    /// An undo finished.
+    Undone(Result<String, String>),
 
     MailFormStart(String),
     MailFormHostChanged(String),
@@ -549,6 +589,7 @@ impl cosmic::Application for AppModel {
             signing_in: false,
             palette: None,
             palette_rows: Vec::new(),
+            undo_stack: Vec::new(),
             drafts: Vec::new(),
             showing_drafts: false,
             outbox: Vec::new(),
@@ -908,6 +949,10 @@ impl cosmic::Application for AppModel {
                 // will be dropped on arrival.
                 self.watch_generation += 1;
                 self.watching = false;
+                // The entries name folders and hold messages of the account
+                // being left; applying one to the next account would file its
+                // mail somewhere it has never been.
+                self.undo_stack.clear();
                 self.clear_mailbox_state();
                 self.rebuild_connection();
                 Task::batch([
@@ -1063,8 +1108,22 @@ impl cosmic::Application for AppModel {
             Message::Delete => self.move_selected(SpecialUse::Trash),
 
             Message::Mutated(result) => {
-                if let Err(why) = result {
-                    self.status = Some(why);
+                match result {
+                    Ok(Some(entry)) => {
+                        self.undo_stack.push(entry);
+                        if self.undo_stack.len() > UNDO_DEPTH {
+                            self.undo_stack.remove(0);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(why) => self.status = Some(why),
+                }
+                self.reload_conversations()
+            }
+            Message::Undone(result) => {
+                match result {
+                    Ok(what) => self.status = Some(fl!("undone", what = what)),
+                    Err(why) => self.status = Some(fl!("undo-failed", reason = why)),
                 }
                 self.reload_conversations()
             }
@@ -1549,9 +1608,15 @@ impl AppModel {
             opened.flags = edit(opened.flags);
         }
 
+        let description = fl!("undo-flags");
         cosmic::task::future(async move {
             let result = tokio::task::spawn_blocking(move || {
-                mail::set_flags(&connection, &folder, &[uid], edit)
+                mail::set_flags(&connection, &folder, &[uid], edit).map(|previous| {
+                    (!previous.is_empty()).then_some(UndoEntry {
+                        description,
+                        reverse: Reverse::Flags { folder, previous },
+                    })
+                })
             })
             .await
             .unwrap_or_else(|why| Err(why.to_string()));
@@ -1586,9 +1651,15 @@ impl AppModel {
         self.opened = None;
         self.selected_conversation = None;
 
+        let description = fl!("undo-move", folder = destination.display_name.clone());
         cosmic::task::future(async move {
             let result = tokio::task::spawn_blocking(move || {
-                mail::move_to(&connection, &folder, &destination, &uids)
+                mail::move_to(&connection, &folder, &destination, &uids).map(|messages| {
+                    (!messages.is_empty()).then_some(UndoEntry {
+                        description,
+                        reverse: Reverse::Unmove { folder, messages },
+                    })
+                })
             })
             .await
             .unwrap_or_else(|why| Err(why.to_string()));
@@ -2019,6 +2090,7 @@ impl AppModel {
             Action::ToggleRead => self.update(Message::ToggleRead),
             Action::ToggleFlagged => self.update(Message::ToggleFlagged),
 
+            Action::Undo => self.undo(),
             Action::Search => {
                 // Focus rather than a mode: the box is always there, and this
                 // is the keystroke that puts the cursor in it.
@@ -2059,6 +2131,32 @@ impl AppModel {
             Action::Accounts => self.update(Message::ToggleContextPage(ContextPage::Accounts)),
             Action::About => self.update(Message::ToggleContextPage(ContextPage::About)),
         }
+    }
+
+    /// Takes back the most recent reversible action.
+    fn undo(&mut self) -> Task<Message> {
+        let Some(entry) = self.undo_stack.pop() else {
+            self.status = Some(fl!("nothing-to-undo"));
+            return Task::none();
+        };
+        let Some(connection) = self.connection.clone() else {
+            return Task::none();
+        };
+        let description = entry.description.clone();
+
+        cosmic::task::future(async move {
+            let result = tokio::task::spawn_blocking(move || match entry.reverse {
+                Reverse::Flags { folder, previous } => {
+                    mail::restore_flags(&connection, &folder, &previous)
+                }
+                Reverse::Unmove { folder, messages } => {
+                    mail::unmove(&connection, &folder, &messages)
+                }
+            })
+            .await
+            .unwrap_or_else(|why| Err(why.to_string()));
+            Message::Undone(result.map(|()| description))
+        })
     }
 
     /// Moves the selection through the conversation list.

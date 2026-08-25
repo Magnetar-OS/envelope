@@ -1164,6 +1164,7 @@ dependencies = [
 name = "cosmic-pim-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "calcard",
  "chrono",
  "chrono-tz",

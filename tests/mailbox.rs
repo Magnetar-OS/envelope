@@ -900,3 +900,132 @@ fn discovery_refuses_an_address_that_would_probe_a_private_network() {
         assert!(mail::known_settings(address).is_none());
     }
 }
+
+#[test]
+fn a_flag_change_reports_what_it_replaced_and_restore_puts_it_back() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    deliver(
+        root,
+        &[(
+            1,
+            &message(
+                "a@x",
+                "",
+                "Subject",
+                "a@x",
+                "Mon, 3 Feb 2025 09:00:00 +0000",
+                "body",
+            ),
+            Flags {
+                flagged: true,
+                ..Flags::default()
+            },
+        )],
+    );
+    let connection = connection(root);
+
+    let previous = mail::set_flags(&connection, &inbox(), &[1], |flags| Flags {
+        seen: true,
+        flagged: false,
+        ..flags
+    })
+    .expect("set");
+    assert_eq!(
+        previous,
+        vec![(
+            1,
+            Flags {
+                flagged: true,
+                ..Flags::default()
+            }
+        )]
+    );
+
+    mail::restore_flags(&connection, &inbox(), &previous).expect("restore");
+    let store = MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox())).expect("open");
+    let flags = store.state().expect("state").entries[&1];
+    assert!(
+        flags.flagged && !flags.seen,
+        "the restore did not put the old flags back"
+    );
+    // Both the change and its reverse went through the queue, so the server
+    // ends where the user did.
+    assert!(!store.pending().is_empty());
+}
+
+#[test]
+fn an_unmove_before_the_drain_is_exact() {
+    // The window the user actually regrets in: the archive happened a second
+    // ago and nothing has touched the network yet.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let raw = message(
+        "a@x",
+        "",
+        "Oops",
+        "a@x",
+        "Mon, 3 Feb 2025 09:00:00 +0000",
+        "archived by accident",
+    );
+    deliver(root, &[(1, &raw, Flags::default())]);
+    let connection = connection(root);
+
+    let taken = mail::move_to(&connection, &inbox(), &archive(), &[1]).expect("move");
+    assert_eq!(taken.len(), 1);
+    {
+        let store =
+            MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox())).expect("open");
+        assert!(store.state().expect("state").entries.is_empty());
+        assert_eq!(store.pending().len(), 1);
+    }
+
+    mail::unmove(&connection, &inbox(), &taken).expect("unmove");
+    let store = MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox())).expect("open");
+    assert_eq!(
+        store.state().expect("state").entries.len(),
+        1,
+        "the message did not come back"
+    );
+    assert!(
+        store.pending().is_empty(),
+        "the cancelled move is still queued and will archive it again"
+    );
+    let bytes = store.raw(1).expect("read").expect("bytes");
+    assert!(String::from_utf8_lossy(&bytes).contains("archived by accident"));
+}
+
+#[test]
+fn an_unmove_after_the_drain_says_so_instead_of_pretending() {
+    // Once the queue drained, the move happened on the server and the message
+    // holds a new UID there that MOVE never told us. Pretending to undo would
+    // resurrect a local copy the next sync cannot reconcile.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let raw = message(
+        "a@x",
+        "",
+        "Gone",
+        "a@x",
+        "Mon, 3 Feb 2025 09:00:00 +0000",
+        "left already",
+    );
+    deliver(root, &[(1, &raw, Flags::default())]);
+    let connection = connection(root);
+
+    let taken = mail::move_to(&connection, &inbox(), &archive(), &[1]).expect("move");
+    // Simulate the drain having succeeded: the queue entry is resolved.
+    {
+        let mut store =
+            MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox())).expect("open");
+        store.resolve(1).expect("resolve");
+    }
+
+    let error = mail::unmove(&connection, &inbox(), &taken).expect_err("must refuse");
+    assert!(error.contains("already reached the server"), "{error}");
+    let store = MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox())).expect("open");
+    assert!(
+        store.state().expect("state").entries.is_empty(),
+        "a local copy was resurrected that the next sync cannot reconcile"
+    );
+}

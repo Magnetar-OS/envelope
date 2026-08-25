@@ -43,6 +43,7 @@ pub enum Action {
     ToggleRead,
     ToggleFlagged,
 
+    Undo,
     Search,
     Sync,
     /// Leave whatever is open — the composer, the search, a context page.
@@ -77,6 +78,7 @@ impl Action {
             Self::Delete => fl!("delete"),
             Self::ToggleRead => fl!("toggle-read"),
             Self::ToggleFlagged => fl!("toggle-starred"),
+            Self::Undo => fl!("undo"),
             Self::Search => fl!("search"),
             Self::Sync => fl!("sync-now"),
             Self::Escape => fl!("close"),
@@ -105,7 +107,8 @@ impl Action {
             | Self::Archive
             | Self::Delete
             | Self::ToggleRead
-            | Self::ToggleFlagged => Group::Reading,
+            | Self::ToggleFlagged
+            | Self::Undo => Group::Reading,
             Self::GoInbox | Self::GoDrafts | Self::GoOutbox | Self::GoSent | Self::GoArchive => {
                 Group::Going
             }
@@ -308,6 +311,12 @@ pub fn bindings() -> Vec<Binding> {
             action: Action::ToggleFlagged,
             bare: Some(Bare::Key('s')),
             combination: None,
+            handled_by_framework: false,
+        },
+        Binding {
+            action: Action::Undo,
+            bare: Some(Bare::Key('z')),
+            combination: Some(ctrl("z")),
             handled_by_framework: false,
         },
         // Writing
@@ -578,7 +587,8 @@ mod tests {
         assert_eq!(for_bare('c', None), Resolved::Act(Action::Compose));
         assert_eq!(for_bare('j', None), Resolved::Act(Action::Next));
         assert_eq!(for_bare('C', None), Resolved::Act(Action::Compose));
-        assert_eq!(for_bare('z', None), Resolved::Nothing);
+        assert_eq!(for_bare('z', None), Resolved::Act(Action::Undo));
+        assert_eq!(for_bare('q', None), Resolved::Nothing);
     }
 
     #[test]

@@ -30,7 +30,7 @@ use cosmic_pim_mail::outbox::{Outbox, Queued};
 use cosmic_pim_mail::push::{PushOp, PushQueue};
 use cosmic_pim_mail::sasl::Credentials;
 use cosmic_pim_mail::smtp::{self, Outcome, SmtpEndpoint};
-use cosmic_pim_mail::store::MailStore;
+use cosmic_pim_mail::store::{MailStore, RemoteMessage};
 
 /// How often a cycle does the full-mailbox reconciliation pass.
 ///
@@ -671,16 +671,21 @@ pub fn open(connection: &Connection, folder: &Folder, uid: u32) -> Result<Opened
 /// on the next sync; queue-only would leave the UI showing the old state until
 /// the network came back. The queue is durable, so a change made offline is
 /// still a change.
+///
+/// Returns each message's flags as they were, which is everything an undo
+/// needs: reversing a flag change is applying the previous flags through this
+/// same path.
 pub fn set_flags(
     connection: &Connection,
     folder: &Folder,
     uids: &[u32],
     edit: impl Fn(Flags) -> Flags,
-) -> Result<(), String> {
+) -> Result<Vec<(u32, Flags)>, String> {
     let mut store =
         MaildirStore::open(connection.mailbox_path(folder)).map_err(|why| why.to_string())?;
     let current = store.state().map_err(|why| why.to_string())?.entries;
 
+    let mut previous = Vec::new();
     for uid in uids {
         let Some(existing) = current.get(uid).copied() else {
             continue;
@@ -696,6 +701,27 @@ pub fn set_flags(
                 flags: updated,
             })
             .map_err(|why| why.to_string())?;
+        previous.push((*uid, existing));
+    }
+    Ok(previous)
+}
+
+/// Restores exact flags, one message at a time — the reverse of [`set_flags`].
+pub fn restore_flags(
+    connection: &Connection,
+    folder: &Folder,
+    previous: &[(u32, Flags)],
+) -> Result<(), String> {
+    let mut store =
+        MaildirStore::open(connection.mailbox_path(folder)).map_err(|why| why.to_string())?;
+    for (uid, flags) in previous {
+        store.set_flags(*uid, *flags).map_err(|w| w.to_string())?;
+        store
+            .enqueue(PushOp::SetFlags {
+                uid: *uid,
+                flags: *flags,
+            })
+            .map_err(|why| why.to_string())?;
     }
     Ok(())
 }
@@ -707,15 +733,32 @@ pub fn set_flags(
 /// permanently the next reconciliation pass finds the message still on the
 /// server and brings it back — which is the right failure, because the message
 /// was never lost.
+///
+/// Returns the messages as they were — bytes, flags, dates — which is what an
+/// undo needs to put them back.
 pub fn move_to(
     connection: &Connection,
     folder: &Folder,
     destination: &Folder,
     uids: &[u32],
-) -> Result<(), String> {
+) -> Result<Vec<RemoteMessage>, String> {
     let mut store =
         MaildirStore::open(connection.mailbox_path(folder)).map_err(|why| why.to_string())?;
+    let state = store.state().map_err(|why| why.to_string())?;
+
+    let mut taken = Vec::new();
     for uid in uids {
+        if let Ok(Some(raw)) = store.raw(*uid) {
+            taken.push(RemoteMessage {
+                uid: *uid,
+                flags: state.entries.get(uid).copied().unwrap_or_default(),
+                raw,
+                // Approximate on purpose: the true INTERNALDATE lives on the
+                // server, and holding the message hostage to recover a
+                // timestamp the next sync fixes anyway would be backwards.
+                internal_date_ms: now_ms(),
+            });
+        }
         store
             .enqueue(PushOp::Move {
                 uid: *uid,
@@ -723,6 +766,44 @@ pub fn move_to(
             })
             .map_err(|why| why.to_string())?;
         store.remove(*uid).map_err(|why| why.to_string())?;
+    }
+    Ok(taken)
+}
+
+/// Puts a move back, if it has not already left.
+///
+/// Undo has a deadline it does not control: the moment the writeback queue
+/// drains, the move has happened on the server, the messages hold *new* UIDs
+/// in the destination that the MOVE never told us, and there is nothing local
+/// to reverse. Before that moment — which in practice is the window the user
+/// actually regrets in — undoing is exact: the queued operation is cancelled
+/// and the held bytes go back.
+///
+/// Partial states are handled per message: whichever of them still have their
+/// queue entry come back, and the ones that already left are reported.
+pub fn unmove(
+    connection: &Connection,
+    folder: &Folder,
+    messages: &[RemoteMessage],
+) -> Result<(), String> {
+    let mut store =
+        MaildirStore::open(connection.mailbox_path(folder)).map_err(|why| why.to_string())?;
+    let pending: std::collections::HashSet<u32> =
+        store.pending().iter().map(|entry| entry.op.uid()).collect();
+
+    let mut departed = 0usize;
+    for message in messages {
+        if pending.contains(&message.uid) {
+            store.resolve(message.uid).map_err(|why| why.to_string())?;
+            store.upsert(message).map_err(|why| why.to_string())?;
+        } else {
+            departed += 1;
+        }
+    }
+    if departed > 0 {
+        return Err(format!(
+            "{departed} already reached the server and cannot be brought back from here"
+        ));
     }
     Ok(())
 }
