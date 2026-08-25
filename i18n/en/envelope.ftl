@@ -173,3 +173,10 @@ undo-move = the move to { $folder }
 undone = Took back { $what }.
 undo-failed = Could not take that back: { $reason }
 nothing-to-undo = Nothing to take back.
+
+# Lists and export
+unsubscribe = Unsubscribe
+unsubscribing = Asking the sender to take you off the list…
+unsubscribed = Off the list. The sender has up to a few days to comply.
+unsubscribe-failed = The unsubscribe did not go through: { $reason }
+save-as-file = Save as file

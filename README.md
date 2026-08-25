@@ -71,6 +71,13 @@ Envelope reads, threads, syncs, and sends. What works:
   to what you send. Nothing is ever opened for you.
 - **An outbox.** A send that could not reach the server waits there and goes out
   on the next check, with its attachments.
+- **Unsubscribe**, the honest way. Mail from a list gets an Unsubscribe button
+  that takes the least ceremonious route the sender offers: the RFC 8058
+  one-click POST done silently in place, a `mailto:` opened in the composer, or
+  a page in the browser — in that order. Cleartext `http:` targets are never
+  used.
+- **Save as file** — any message exports as `.eml`, byte-exact, readable by
+  every mail tool ever written.
 - **Undo** — `z` or `Ctrl+Z` takes back the last flag change or move. A move
   can be taken back exactly until it reaches the server — which covers the
   seconds people actually regret in — and says so honestly after that, rather

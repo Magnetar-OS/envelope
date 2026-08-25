@@ -148,7 +148,7 @@ impl<'a> Reader<'a> {
             .push(reply(fl!("reply-all"), Message::Reply { all: true }))
             .push(reply(fl!("forward"), Message::Forward));
 
-        let filing = widget::row::with_capacity(4)
+        let mut filing = widget::row::with_capacity(6)
             .spacing(spacing.space_xxs)
             .push(
                 widget::button::text(if opened.flags.seen {
@@ -171,7 +171,16 @@ impl<'a> Reader<'a> {
                 widget::button::text(fl!("delete"))
                     .class(cosmic::theme::Button::Destructive)
                     .on_press(Message::Delete),
-            );
+            )
+            .push(widget::button::text(fl!("save-as-file")).on_press(Message::ExportMessage));
+
+        // Only for mail that is a mailing, which is exactly what the header's
+        // presence says. Everything else showing an Unsubscribe button would
+        // be a button that does nothing on most of the mailbox.
+        if crate::mail::unsubscribe_route(&opened.message).is_some() {
+            filing = filing
+                .push(widget::button::text(fl!("unsubscribe")).on_press(Message::Unsubscribe));
+        }
 
         widget::column::with_capacity(2)
             .spacing(spacing.space_xxs)

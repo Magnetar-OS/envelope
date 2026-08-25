@@ -495,6 +495,10 @@ pub enum Message {
     HitOpened(usize),
 
     SaveAttachment(usize),
+    ExportMessage,
+    MessageExported(Result<std::path::PathBuf, String>),
+    Unsubscribe,
+    Unsubscribed(Result<(), String>),
     AttachmentSaved(Result<std::path::PathBuf, String>),
     /// Attach a file the user picked.
     AttachFile,
@@ -1365,6 +1369,38 @@ impl cosmic::Application for AppModel {
             }
             Message::HitOpened(index) => self.open_hit(index),
 
+            Message::ExportMessage => {
+                let (Some(connection), Some(folder), Some(uid)) = (
+                    self.connection.clone(),
+                    self.current_folder().cloned(),
+                    self.opened.as_ref().map(|opened| opened.uid),
+                ) else {
+                    return Task::none();
+                };
+                cosmic::task::future(async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        mail::export_message(&connection, &folder, uid)
+                    })
+                    .await
+                    .unwrap_or_else(|why| Err(why.to_string()));
+                    Message::MessageExported(result)
+                })
+            }
+            Message::MessageExported(result) => {
+                self.status = Some(match result {
+                    Ok(path) => fl!("attachment-saved", path = path.display().to_string()),
+                    Err(why) => fl!("attachment-not-saved", reason = why),
+                });
+                Task::none()
+            }
+            Message::Unsubscribe => self.unsubscribe(),
+            Message::Unsubscribed(result) => {
+                self.status = Some(match result {
+                    Ok(()) => fl!("unsubscribed"),
+                    Err(why) => fl!("unsubscribe-failed", reason = why),
+                });
+                Task::none()
+            }
             Message::SaveAttachment(index) => self.save_attachment(index),
             Message::AttachmentSaved(result) => {
                 self.status = Some(match result {
@@ -1765,6 +1801,42 @@ impl AppModel {
                 // least bad thing available, and it is why saving is also
                 // possible before closing.
                 self.status = Some(fl!("draft-not-saved", reason = why));
+                Task::none()
+            }
+        }
+    }
+
+    /// Leaves the open message's list, by the least ceremonious route it
+    /// offers.
+    fn unsubscribe(&mut self) -> Task<Message> {
+        let Some(route) = self
+            .opened
+            .as_ref()
+            .and_then(|opened| mail::unsubscribe_route(&opened.message))
+        else {
+            return Task::none();
+        };
+        match route {
+            mail::Unsubscribe::OneClick(url) => {
+                self.status = Some(fl!("unsubscribing"));
+                cosmic::task::future(async move {
+                    let result =
+                        tokio::task::spawn_blocking(move || mail::unsubscribe_one_click(&url))
+                            .await
+                            .unwrap_or_else(|why| Err(why.to_string()));
+                    Message::Unsubscribed(result)
+                })
+            }
+            // Leaving the list is sending a message, and the composer already
+            // knows how — the same mailto path a link would take.
+            mail::Unsubscribe::Mailto(url) => {
+                self.open_mailto(&url);
+                Task::none()
+            }
+            mail::Unsubscribe::Browser(url) => {
+                if let Err(why) = open::that_detached(&url) {
+                    self.status = Some(why.to_string());
+                }
                 Task::none()
             }
         }

@@ -51,8 +51,8 @@ separates "not done yet" from "not doing".
 ### Not done yet
 
 In rough order of how much they are missed: **server-side drafts**, **unified
-inbox**, **rules**, **labels**, **snooze**, **one-click unsubscribe**,
-**import/export**, and **OpenPGP and S/MIME**.
+inbox**, **rules**, **labels**, **snooze**, **mbox import** (export exists),
+and **OpenPGP and S/MIME**.
 
 ### Not doing, and why
 

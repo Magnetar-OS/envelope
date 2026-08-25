@@ -593,6 +593,77 @@ pub fn watch_inbox(
     })
 }
 
+/// How a message says its list can be left.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unsubscribe {
+    /// RFC 8058: one silent, honest POST. Done in place.
+    OneClick(String),
+    /// A `mailto:` target — leaving the list is sending a message, which the
+    /// composer already knows how to do.
+    Mailto(String),
+    /// A plain `https:` page. Belongs in the browser: without the one-click
+    /// header it is a page, and POSTing at pages is guessing.
+    Browser(String),
+}
+
+/// The best way out of this message's list, if it offers one.
+///
+/// One-click beats mailto beats a page, because that is the order of least
+/// ceremony for the user — and the order the sender's own headers rank them.
+#[must_use]
+pub fn unsubscribe_route(message: &Message) -> Option<Unsubscribe> {
+    if message.one_click_unsubscribe
+        && let Some(url) = message
+            .unsubscribe
+            .iter()
+            .find(|url| url.to_ascii_lowercase().starts_with("https://"))
+    {
+        return Some(Unsubscribe::OneClick(url.clone()));
+    }
+    if let Some(url) = message
+        .unsubscribe
+        .iter()
+        .find(|url| url.to_ascii_lowercase().starts_with("mailto:"))
+    {
+        return Some(Unsubscribe::Mailto(url.clone()));
+    }
+    message
+        .unsubscribe
+        .first()
+        .map(|url| Unsubscribe::Browser(url.clone()))
+}
+
+/// Performs a one-click unsubscribe. Blocking, for a worker thread.
+pub fn unsubscribe_one_click(url: &str) -> Result<(), String> {
+    cosmic_pim_mail::unsubscribe::one_click(url).map_err(|why| why.to_string())
+}
+
+/// Saves a message as an `.eml` file in Downloads, returning where it landed.
+///
+/// The raw bytes, exactly as the server sent them — headers, MIME structure,
+/// signatures — which is what makes the file importable by every other mail
+/// tool ever written. This is the "walk away with your data" promise at the
+/// granularity of one message.
+pub fn export_message(
+    connection: &Connection,
+    folder: &Folder,
+    uid: u32,
+) -> Result<std::path::PathBuf, String> {
+    let store =
+        MaildirStore::open(connection.mailbox_path(folder)).map_err(|why| why.to_string())?;
+    let raw = store
+        .raw(uid)
+        .map_err(|why| why.to_string())?
+        .ok_or_else(|| "that message is no longer in this mailbox".to_string())?;
+    let subject = Message::parse(&raw)
+        .map(|message| message.subject)
+        .filter(|subject| !subject.trim().is_empty())
+        .unwrap_or_else(|| "message".to_string());
+
+    attachment::save_into(&downloads(), &format!("{subject}.eml"), &raw)
+        .map_err(|why| why.to_string())
+}
+
 /// Drops one mailbox's index rows.
 fn forget_index(connection: &Connection, mailbox: &str) -> Result<(), String> {
     let mut index = Index::open(&connection.index_path).map_err(|why| why.to_string())?;
