@@ -1029,3 +1029,95 @@ fn an_unmove_after_the_drain_says_so_instead_of_pretending() {
         "a local copy was resurrected that the next sync cannot reconcile"
     );
 }
+
+#[test]
+fn the_unified_inbox_merges_accounts_newest_first_and_says_whose() {
+    // Two accounts, two maildirs, one list — the reason a multi-account user
+    // opens a mail client at all.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    let mut first = connection(root);
+    first.account_id = "acct-one".into();
+    first.account.display_name = "Work".into();
+    let mut second = connection(root);
+    second.account_id = "acct-two".into();
+    second.account.display_name = "Home".into();
+
+    for (connection, uid, subject, date) in [
+        (&first, 1, "Older, at work", "Mon, 3 Feb 2025 09:00:00 +0000"),
+        (&second, 1, "Newer, at home", "Mon, 3 Feb 2025 11:00:00 +0000"),
+    ] {
+        let path = maildir::mailbox_path(root, &connection.account_id, &inbox());
+        let mut store = MaildirStore::open(path).expect("maildir");
+        store
+            .upsert(&cosmic_pim_mail::store::RemoteMessage {
+                uid,
+                flags: Flags::default(),
+                raw: message(
+                    &format!("{}@x", connection.account_id),
+                    "",
+                    subject,
+                    "a@example.com",
+                    date,
+                    "body",
+                )
+                .into_bytes(),
+                internal_date_ms: 0,
+            })
+            .expect("deliver");
+    }
+
+    let merged =
+        mail::unified_inbox(&[first, second]).expect("merge");
+    assert_eq!(merged.len(), 2);
+    assert_eq!(merged[0].conversation.subject, "Newer, at home");
+    assert_eq!(merged[0].account_name, "Home", "the row does not say whose it is");
+    assert_eq!(merged[1].account_name, "Work");
+}
+
+#[test]
+fn one_broken_account_does_not_empty_the_unified_view() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    let mut good = connection(root);
+    good.account_id = "good".into();
+    deliver_as(root, "good", 1, "Still here");
+
+    // The broken account's index path is a directory, which cannot be opened
+    // as a database.
+    let mut broken = connection(root);
+    broken.account_id = "broken".into();
+    broken.index_path = root.to_path_buf();
+    deliver_as(root, "broken", 1, "Unreadable");
+
+    let merged = mail::unified_inbox(&[broken, good]).expect("must not fail outright");
+    assert_eq!(
+        merged.len(),
+        1,
+        "the broken account took the good one with it: {merged:?}"
+    );
+    assert_eq!(merged[0].conversation.subject, "Still here");
+}
+
+fn deliver_as(root: &std::path::Path, account: &str, uid: u32, subject: &str) {
+    let path = maildir::mailbox_path(root, account, &inbox());
+    let mut store = MaildirStore::open(path).expect("maildir");
+    store
+        .upsert(&cosmic_pim_mail::store::RemoteMessage {
+            uid,
+            flags: Flags::default(),
+            raw: message(
+                &format!("{account}@x"),
+                "",
+                subject,
+                "a@example.com",
+                "Mon, 3 Feb 2025 09:00:00 +0000",
+                "body",
+            )
+            .into_bytes(),
+            internal_date_ms: 0,
+        })
+        .expect("deliver");
+}

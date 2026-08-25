@@ -93,6 +93,9 @@ pub struct AppModel {
     showing_drafts: bool,
     outbox: Vec<cosmic_pim_mail::outbox::Queued>,
     showing_outbox: bool,
+    /// The merged view of every account's inbox.
+    unified: Vec<mail::UnifiedConversation>,
+    showing_unified: bool,
 
     /// How many text inputs currently have focus.
     ///
@@ -485,6 +488,10 @@ pub enum Message {
     TextFocused,
     TextUnfocused,
     ShowOutbox,
+    ShowUnified,
+    UnifiedLoaded(Vec<mail::UnifiedConversation>),
+    /// Open one unified row: switch to its account, then its message.
+    UnifiedOpened(usize),
     OutboxLoaded(Vec<cosmic_pim_mail::outbox::Queued>),
     QueuedRetried(String),
     QueuedDiscarded(String),
@@ -598,6 +605,8 @@ impl cosmic::Application for AppModel {
             showing_drafts: false,
             outbox: Vec::new(),
             showing_outbox: false,
+            unified: Vec::new(),
+            showing_unified: false,
             text_focus: 0,
             pending_chord: None,
             poll_seconds: String::new(),
@@ -706,6 +715,10 @@ impl cosmic::Application for AppModel {
             showing_drafts: self.showing_drafts,
             outbox: self.outbox.len(),
             showing_outbox: self.showing_outbox,
+            // Two mailboxes are what make a merged view a view; with one it is
+            // the inbox with an extra name.
+            offer_unified: self.accounts.iter().filter(|a| a.mail.is_some()).count() >= 2,
+            showing_unified: self.showing_unified,
         }
         .view();
         Some(sidebar.map(cosmic::Action::App))
@@ -871,7 +884,9 @@ impl cosmic::Application for AppModel {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        let list = if self.is_searching() {
+        let list = if self.showing_unified {
+            crate::ui::list::unified(&self.unified)
+        } else if self.is_searching() {
             crate::ui::list::results(&self.results, &self.folders, self.searching, SEARCH_LIMIT)
         } else if self.showing_outbox {
             crate::ui::list::outbox(&self.outbox)
@@ -1002,6 +1017,11 @@ impl cosmic::Application for AppModel {
                         Task::batch([
                             self.reload_conversations(),
                             self.reload_outbox(),
+                            if self.showing_unified {
+                                self.reload_unified()
+                            } else {
+                                Task::none()
+                            },
                             // The first successful sync proves the connection
                             // works; that is the moment to park the watch.
                             self.start_watch(),
@@ -1016,6 +1036,7 @@ impl cosmic::Application for AppModel {
 
             Message::FolderSelected(index) => {
                 self.showing_drafts = false;
+                self.showing_unified = false;
                 if self.selected_folder == Some(index) {
                     return Task::none();
                 }
@@ -1276,10 +1297,28 @@ impl cosmic::Application for AppModel {
                 self.drafts = drafts;
                 Task::none()
             }
+            Message::ShowUnified => {
+                self.showing_unified = !self.showing_unified;
+                if self.showing_unified {
+                    self.showing_drafts = false;
+                    self.showing_outbox = false;
+                    self.selected_conversation = None;
+                    self.opened = None;
+                    self.reader_error = None;
+                    return self.reload_unified();
+                }
+                Task::none()
+            }
+            Message::UnifiedLoaded(unified) => {
+                self.unified = unified;
+                Task::none()
+            }
+            Message::UnifiedOpened(index) => self.open_unified(index),
             Message::ShowOutbox => {
                 self.showing_outbox = !self.showing_outbox;
                 if self.showing_outbox {
                     self.showing_drafts = false;
+                    self.showing_unified = false;
                     self.selected_conversation = None;
                     self.opened = None;
                     self.reader_error = None;
@@ -1347,6 +1386,7 @@ impl cosmic::Application for AppModel {
                 self.showing_drafts = !self.showing_drafts;
                 if self.showing_drafts {
                     self.showing_outbox = false;
+                    self.showing_unified = false;
                     self.selected_conversation = None;
                     self.opened = None;
                     self.reader_error = None;
@@ -2351,6 +2391,62 @@ impl AppModel {
                 Message::MessageOpened(Box::new(result))
             }),
         ])
+    }
+
+    fn reload_unified(&mut self) -> Task<Message> {
+        cosmic::task::future(async move {
+            let unified = tokio::task::spawn_blocking(|| {
+                let connections = mail::all_connections();
+                mail::unified_inbox(&connections)
+            })
+            .await
+            .unwrap_or_else(|why| Err(why.to_string()))
+            .unwrap_or_else(|why| {
+                tracing::warn!(why, "could not build the unified inbox");
+                Vec::new()
+            });
+            Message::UnifiedLoaded(unified)
+        })
+    }
+
+    /// Opens a unified row by switching to its account and inbox.
+    ///
+    /// A switch rather than a side-channel read, for the same reason a search
+    /// hit switches folders: everything the reader's buttons do — archive,
+    /// delete, reply — operates on the selected account, and a reader showing
+    /// one account's message while the sidebar claims another is a desync
+    /// with buttons attached.
+    fn open_unified(&mut self, index: usize) -> Task<Message> {
+        let Some(entry) = self.unified.get(index) else {
+            return Task::none();
+        };
+        let account_id = entry.account_id.clone();
+        let uid = entry.conversation.newest_uid();
+
+        self.showing_unified = false;
+        let switch = if self.selected_account.as_deref() == Some(account_id.as_str()) {
+            self.go_to(SpecialUse::Inbox)
+        } else {
+            self.update(Message::AccountSelected(account_id))
+        };
+
+        // The message itself, through the row's own connection: the account
+        // switch reloads lists asynchronously, and the reader should not wait
+        // on that to show what was clicked.
+        let open = match (self.connection.clone(), uid) {
+            (Some(connection), Some(uid)) => {
+                let inbox = cosmic_pim_mail::folder::from_list_entry("INBOX", Some('/'), &[]);
+                cosmic::task::future(async move {
+                    let result =
+                        tokio::task::spawn_blocking(move || mail::open(&connection, &inbox, uid))
+                            .await
+                            .unwrap_or_else(|why| Err(why.to_string()));
+                    Message::MessageOpened(Box::new(result))
+                })
+            }
+            _ => Task::none(),
+        };
+        Task::batch([switch, open])
     }
 
     fn reload_outbox(&mut self) -> Task<Message> {

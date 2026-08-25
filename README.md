@@ -71,6 +71,9 @@ Envelope reads, threads, syncs, and sends. What works:
   to what you send. Nothing is ever opened for you.
 - **An outbox.** A send that could not reach the server waits there and goes out
   on the next check, with its attachments.
+- **A unified inbox** — with two or more mail accounts, "All inboxes" merges
+  them newest-first, each row saying whose it is. Opening a row switches to
+  that account, so every reader action operates on the right one.
 - **Unsubscribe**, the honest way. Mail from a list gets an Unsubscribe button
   that takes the least ceremonious route the sender offers: the RFC 8058
   one-click POST done silently in place, a `mailto:` opened in the composer, or

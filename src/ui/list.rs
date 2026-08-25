@@ -348,3 +348,65 @@ pub fn outbox(queued: &[cosmic_pim_mail::outbox::Queued]) -> Element<'_, Message
         .height(Length::Fill)
         .into()
 }
+
+/// The unified inbox: every account's INBOX, merged, each row saying whose.
+pub fn unified(entries: &[crate::mail::UnifiedConversation]) -> Element<'_, Message> {
+    let spacing = cosmic::theme::spacing();
+
+    if entries.is_empty() {
+        return widget::text::body(fl!("empty-folder"))
+            .apply(widget::container)
+            .padding(spacing.space_m)
+            .into();
+    }
+
+    let mut column = widget::column::with_capacity(entries.len()).spacing(spacing.space_xxxs);
+
+    for (index, entry) in entries.iter().enumerate() {
+        let conversation = &entry.conversation;
+
+        let mut heading = widget::row::with_capacity(3)
+            .align_y(Alignment::Center)
+            .spacing(spacing.space_xxs)
+            .push(if conversation.unread {
+                widget::text::heading(conversation.participants.join(", ")).width(Length::Fill)
+            } else {
+                widget::text::body(conversation.participants.join(", ")).width(Length::Fill)
+            });
+        heading = heading.push(widget::text::caption(crate::ui::relative_date_ms(
+            conversation.date_ms,
+        )));
+
+        let subject = if conversation.subject.is_empty() {
+            fl!("no-subject")
+        } else {
+            conversation.subject.clone()
+        };
+
+        let body = widget::column::with_capacity(3)
+            .spacing(spacing.space_xxxs)
+            .push(heading)
+            .push(widget::text::body(subject))
+            .push(
+                widget::row::with_capacity(2)
+                    .spacing(spacing.space_xxs)
+                    .push(widget::text::caption(conversation.snippet.clone()).width(Length::Fill))
+                    // Whose inbox this came from is half of what a merged row
+                    // has to say.
+                    .push(widget::text::caption(entry.account_name.clone())),
+            );
+
+        column = column.push(
+            widget::button::custom(body)
+                .width(Length::Fill)
+                .padding(spacing.space_xs)
+                .class(cosmic::theme::Button::Text)
+                .on_press(Message::UnifiedOpened(index)),
+        );
+    }
+
+    widget::scrollable(column.padding(spacing.space_xxs))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}

@@ -593,6 +593,79 @@ pub fn watch_inbox(
     })
 }
 
+/// One conversation in the unified inbox, tagged with whose it is.
+#[derive(Debug, Clone)]
+pub struct UnifiedConversation {
+    pub account_id: String,
+    /// The account's display name, for the row — with several inboxes merged,
+    /// "which account is this from" is half of what a row has to say.
+    pub account_name: String,
+    pub conversation: Conversation,
+}
+
+/// Every configured account's connection, for the unified inbox.
+///
+/// Accounts without a mail endpoint are skipped rather than failed: a
+/// calendar-only account in the shared store is the ordinary case, not an
+/// error. An account whose credentials cannot be read is skipped with a log
+/// line — one broken account must not take the other inboxes with it.
+pub fn all_connections() -> Vec<Connection> {
+    let Ok(accounts) = AccountStore::open_default() else {
+        return Vec::new();
+    };
+    accounts
+        .accounts()
+        .to_vec()
+        .iter()
+        .filter_map(
+            |account| match Connection::for_account(&accounts, account) {
+                Ok(connection) => connection,
+                Err(why) => {
+                    tracing::warn!(
+                        account = account.display_name,
+                        why,
+                        "skipped in the unified inbox"
+                    );
+                    None
+                }
+            },
+        )
+        .collect()
+}
+
+/// The inboxes of every account, merged, newest first.
+///
+/// Reads disk only — each account's index and maildir — so it is as cheap as
+/// opening one folder times the number of accounts, and works offline like
+/// everything else that reads.
+pub fn unified_inbox(connections: &[Connection]) -> Result<Vec<UnifiedConversation>, String> {
+    // `INBOX` is the one name RFC 3501 guarantees, and the label-shaped
+    // protocols store under it too.
+    let inbox = cosmic_pim_mail::folder::from_list_entry("INBOX", Some('/'), &[]);
+
+    let mut merged = Vec::new();
+    for connection in connections {
+        match conversations(connection, &inbox) {
+            Ok(list) => merged.extend(list.into_iter().map(|conversation| UnifiedConversation {
+                account_id: connection.account_id.clone(),
+                account_name: connection.account.display_name.clone(),
+                conversation,
+            })),
+            Err(why) => {
+                // Logged, not fatal: one account's unreadable index must not
+                // empty the merged view of the others.
+                tracing::warn!(
+                    account = connection.account.display_name,
+                    why,
+                    "an inbox could not be read for the unified view"
+                );
+            }
+        }
+    }
+    merged.sort_by_key(|entry| std::cmp::Reverse(entry.conversation.date_ms));
+    Ok(merged)
+}
+
 /// How a message says its list can be left.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unsubscribe {

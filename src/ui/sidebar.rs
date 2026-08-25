@@ -29,6 +29,10 @@ pub struct Sidebar<'a> {
     /// worst thing an outbox can do.
     pub outbox: usize,
     pub showing_outbox: bool,
+    /// Whether the merged view is worth offering — two or more accounts have
+    /// mail. With one, it is the inbox with an extra name.
+    pub offer_unified: bool,
+    pub showing_unified: bool,
 }
 
 impl<'a> Sidebar<'a> {
@@ -38,6 +42,7 @@ impl<'a> Sidebar<'a> {
 
         widget::column::with_capacity(3)
             .spacing(spacing.space_s)
+            .push(self.unified_row())
             .push(self.account_picker())
             .push(self.drafts_row())
             .push(self.outbox_row())
@@ -79,6 +84,21 @@ impl<'a> Sidebar<'a> {
             );
         }
         column.into()
+    }
+
+    fn unified_row(&self) -> Element<'a, Message> {
+        if !self.offer_unified {
+            return widget::Space::new().height(Length::Fixed(0.0)).into();
+        }
+        widget::button::custom(widget::text::body(fl!("all-inboxes")).width(Length::Fill))
+            .width(Length::Fill)
+            .class(if self.showing_unified {
+                cosmic::theme::Button::Suggested
+            } else {
+                cosmic::theme::Button::Text
+            })
+            .on_press(Message::ShowUnified)
+            .into()
     }
 
     fn drafts_row(&self) -> Element<'a, Message> {

@@ -180,3 +180,4 @@ unsubscribing = Asking the sender to take you off the list…
 unsubscribed = Off the list. The sender has up to a few days to comply.
 unsubscribe-failed = The unsubscribe did not go through: { $reason }
 save-as-file = Save as file
+all-inboxes = All inboxes
