@@ -99,9 +99,9 @@ a gap — the reader shows text, so an HTML composer would be writing in a forma
 the application cannot display. **Drafts do not sync**, and the reason is in the
 next section.
 
-Also not here, in the order they are likely to matter: JMAP, native Gmail and
-Graph APIs, and OpenPGP and S/MIME. All three exist in the donor and are ports,
-not designs.
+Also not here, in the order they are likely to matter: OpenPGP and S/MIME.
+Both exist in the donor and are ports, not designs. The larger picture of
+where this is heading is in [ROADMAP.md](ROADMAP.md).
 
 ## Sending
 
@@ -195,10 +195,11 @@ threading, `Authentication-Results` parsing, and the HTML text extractor.
 Still in the donor, still to port: `jmap.rs`, `graph.rs`, `gmail.rs`,
 `tantivy_search.rs`, `search_query.rs`, `pgp_mail.rs`, `smime.rs`, `dsn.rs`.
 
-**Licence.** The Meltemi repository carries no licence declaration. It has a
-single author, so this is a one-commit fix, but until it exists neither
-`cosmic-pim-mail` nor `cosmic-pim-caldav` can be published — see `LICENSING.md`
-in `cosmic-pim`.
+**Licence.** Resolved: Meltemi's `LICENSING.md` grants the ported layers —
+`mail_sync.rs`, `threading.rs`, `model_text.rs`, `auth_results.rs` — under
+MPL-2.0, with SPDX headers on the donor files. Future ports extend that grant
+table in the same commit. See `LICENSING.md` in `cosmic-pim` for the whole
+picture.
 
 ## Building
 

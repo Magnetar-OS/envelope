@@ -79,10 +79,12 @@ implements.
 
 ## Gates
 
-1. **Meltemi licence declaration** (00). Still outstanding, now *verified* to be
-   a one-commit fix: `git log` on the donor shows a single author, so no outside
-   agreement is needed. Until it exists, `cosmic-pim-mail` and
-   `cosmic-pim-caldav` are `publish = false`.
+1. **Meltemi licence declaration** (00). **Resolved.** Meltemi's
+   `LICENSING.md` grants the ported layers — `mail_sync.rs`, `threading.rs`,
+   `model_text.rs`, `auth_results.rs`, alongside the CalDAV and secrets
+   modules — under MPL-2.0, Exhibit A only, with SPDX headers on the donor
+   files. Future ports extend the grant table in the same commit that ports
+   them.
 2. Transport: settled. `reqwest` blocking for anything HTTP-shaped (JMAP, Graph,
    Gmail), never `ureq` 3. IMAP is the `imap` crate on `native-tls` — a separate
    axis, and the ureq rule does not bear on it.
