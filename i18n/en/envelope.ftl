@@ -194,3 +194,6 @@ imported-some = { $imported } imported, { $skipped ->
         [one] one unreadable chunk skipped.
        *[other] { $skipped } unreadable chunks skipped.
     } Syncing them down.
+
+# Crash reports
+crashed-last-time = Envelope crashed last time. What happened is in { $path }

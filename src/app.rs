@@ -593,7 +593,12 @@ impl cosmic::Application for AppModel {
             loading_conversations: false,
             syncing: false,
             cycle: 0,
-            status: None,
+            // A crash last session is said once, here, rather than never: the
+            // process is usually started by a desktop entry, so the panic
+            // message on stderr went nowhere anyone will look.
+            status: crate::crash::take_unreported()
+                .last()
+                .map(|report| fl!("crashed-last-time", path = report.display().to_string())),
             list_error: None,
             reader_error: None,
             mail_form: None,

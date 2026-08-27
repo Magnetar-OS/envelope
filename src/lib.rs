@@ -15,6 +15,7 @@
 pub mod actions;
 pub mod app;
 pub mod config;
+pub mod crash;
 pub mod flags;
 pub mod i18n;
 pub mod mail;
@@ -23,6 +24,10 @@ pub mod ui;
 
 /// Runs the application.
 pub fn run() -> cosmic::iced::Result {
+    // Before anything can panic: a crash must leave a report even when it
+    // happens during start-up.
+    crash::install_hook();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
