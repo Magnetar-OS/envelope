@@ -141,7 +141,7 @@ pub fn drafts(saved: &[cosmic_pim_mail::drafts::Saved]) -> Element<'_, Message> 
         return widget::column::with_capacity(2)
             .spacing(spacing.space_xxs)
             .push(widget::text::body(fl!("no-drafts")))
-            .push(widget::text::caption(fl!("drafts-are-local")))
+            .push(widget::text::caption(fl!("drafts-sync-note")))
             .apply(widget::container)
             .padding(spacing.space_m)
             .into();
@@ -150,7 +150,7 @@ pub fn drafts(saved: &[cosmic_pim_mail::drafts::Saved]) -> Element<'_, Message> 
     let mut column = widget::column::with_capacity(saved.len() + 1)
         .spacing(spacing.space_xxxs)
         .push(
-            widget::text::caption(fl!("drafts-are-local"))
+            widget::text::caption(fl!("drafts-sync-note"))
                 .apply(widget::container)
                 .padding(spacing.space_xxs),
         );

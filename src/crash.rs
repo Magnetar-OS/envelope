@@ -43,7 +43,9 @@ pub fn install_hook() {
 /// Each is renamed `.seen.log` as it is returned, so the notice appears once
 /// rather than nagging on every start; the files themselves stay for reading.
 pub fn take_unreported() -> Vec<PathBuf> {
-    crash_dir().map(|dir| take_unreported_in(&dir)).unwrap_or_default()
+    crash_dir()
+        .map(|dir| take_unreported_in(&dir))
+        .unwrap_or_default()
 }
 
 fn take_unreported_in(dir: &Path) -> Vec<PathBuf> {
@@ -54,9 +56,9 @@ fn take_unreported_in(dir: &Path) -> Vec<PathBuf> {
         .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("crash-") && n.ends_with(".log") && !n.ends_with(".seen.log"))
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                n.starts_with("crash-") && n.ends_with(".log") && !n.ends_with(".seen.log")
+            })
         })
         .collect();
     fresh.sort();
@@ -81,7 +83,11 @@ mod tests {
         std::fs::write(dir.path().join("crash-20260827T000000.000Z.log"), "boom").unwrap();
 
         let first = take_unreported_in(dir.path());
-        assert_eq!(first.len(), 1, "the report should surface on the next launch");
+        assert_eq!(
+            first.len(),
+            1,
+            "the report should surface on the next launch"
+        );
         assert!(first[0].to_string_lossy().ends_with(".seen.log"));
         assert!(first[0].exists(), "the file stays for reading, renamed");
 

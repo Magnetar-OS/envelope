@@ -394,16 +394,122 @@ pub fn discard_queued(connection: &Connection, id: &str) -> Result<(), String> {
         .map_err(|why| why.to_string())
 }
 
-/// This account's local drafts.
+/// This account's drafts: local records, mirrored to the server.
 ///
-/// Local, and Envelope says so in the sidebar. Saving to the server's Drafts
-/// folder means APPEND, and without UIDPLUS the next sync pulls the draft back
-/// down as a message the client cannot recognise as the one it just uploaded —
-/// so every edit leaves another copy. See `cosmic_pim_mail::drafts` for the
-/// whole argument; the short version is that a duplicated draft is worse than a
-/// local one.
+/// The record on this device is the authority the composer edits; the mirror
+/// ([`sweep_drafts`]) keeps the server's Drafts folder holding exactly one
+/// copy per draft, so other devices see it. See `cosmic_pim_mail::draft_sync`
+/// for how replacement avoids the duplication that kept drafts local-only.
 pub fn drafts(connection: &Connection) -> Result<Drafts, String> {
     Drafts::open(connection.root.join(&connection.account_id)).map_err(|why| why.to_string())
+}
+
+/// Pushes local draft edits and discards to the server's Drafts folder.
+///
+/// Cheap when there is nothing to say: the dirty check reads disk only, and
+/// no connection is opened for a clean store — which is what makes this safe
+/// to call after every save, discard, and sync pass. IMAP only for now; the
+/// label-shaped engines keep drafts local until their own draft APIs land.
+///
+/// Blocking, for a worker thread. Returns `None` when there was nothing to do
+/// or the account cannot mirror.
+pub fn sweep_drafts(
+    connection: &Connection,
+    folders: &[Folder],
+) -> Result<Option<cosmic_pim_mail::draft_sync::SweepReport>, String> {
+    let is_imap = connection
+        .account
+        .mail
+        .as_ref()
+        .is_none_or(|mail| mail.protocol == MailProtocol::Imap);
+    if !is_imap {
+        return Ok(None);
+    }
+
+    let store = drafts(connection)?;
+    let dirty = store.dirty().map_err(|why| why.to_string())?;
+    if dirty.is_empty() && store.pending_retractions().is_empty() {
+        return Ok(None);
+    }
+
+    let domain = connection
+        .submission
+        .as_ref()
+        .and_then(|submission| submission.identity.address.split('@').next_back())
+        .unwrap_or_default()
+        .to_owned();
+
+    let credentials = fresh_credentials(connection)?;
+    let mut session =
+        Session::connect(&connection.endpoint, &credentials).map_err(|why| why.to_string())?;
+    // The folder the server declares for the role, or the conventional name —
+    // created if the account has never had one, because a mirror with nowhere
+    // to land is a mirror that silently is not one.
+    let wire = match special(folders, SpecialUse::Drafts) {
+        Some(folder) => folder.wire_name.clone(),
+        None => {
+            let _ = session.create_mailbox("Drafts");
+            "Drafts".to_owned()
+        }
+    };
+    let report = cosmic_pim_mail::draft_sync::sweep(&mut session, &wire, &store, &domain, now_ms());
+    let _ = session.logout();
+    Ok(Some(report))
+}
+
+/// Opens a message in the Drafts folder for **editing**, not reading.
+///
+/// Returns the local draft id and the editable draft. A mirror this device
+/// uploaded opens as its own record — the local copy is the authority. A
+/// draft another device wrote is adopted: parsed back into an editable form
+/// and linked to where it lives, so the first edit here replaces it there.
+pub fn edit_server_draft(
+    connection: &Connection,
+    folder: &Folder,
+    uid: u32,
+) -> Result<(String, Draft), String> {
+    let Some(identity) = connection.submission.as_ref().map(|s| s.identity.clone()) else {
+        return Err("this account has no From address".into());
+    };
+    let store =
+        MaildirStore::open(connection.mailbox_path(folder)).map_err(|why| why.to_string())?;
+    let raw = store
+        .raw(uid)
+        .map_err(|why| why.to_string())?
+        .ok_or_else(|| "that message is no longer in this mailbox".to_string())?;
+    let message = Message::parse(&raw).ok_or_else(|| "that draft could not be read".to_string())?;
+    let drafts_store = drafts(connection)?;
+
+    // One of ours? The mirror's Message-ID carries the record's id.
+    if let Some(id) = message.message_id.as_deref().and_then(own_draft_id)
+        && let Ok(Some(draft)) = drafts_store.load(id, identity.clone())
+    {
+        return Ok((id.to_owned(), draft));
+    }
+
+    // Another device's. Adopt it: editable here, replaced there on save.
+    let draft = Draft::from_mirror(&message, &raw, identity);
+    let id = drafts::new_id(now_ms());
+    let uid_validity = store
+        .state()
+        .map_err(|why| why.to_string())?
+        .cursor
+        .uid_validity;
+    let message_id = message
+        .message_id
+        .clone()
+        .unwrap_or_else(|| cosmic_pim_mail::draft_sync::mint_message_id(&id, ""));
+    drafts_store
+        .adopt(&id, &draft, &message_id, uid_validity, uid, now_ms())
+        .map_err(|why| why.to_string())?;
+    Ok((id, draft))
+}
+
+/// Reads a mirrored draft's record id out of its `Message-ID`, when it is one
+/// of ours: `<hexid>.draft@<domain>`.
+fn own_draft_id(message_id: &str) -> Option<&str> {
+    let (id, _domain) = message_id.split_once(".draft@")?;
+    drafts::is_valid_id(id).then_some(id)
 }
 
 /// Saves a draft, minting an id if it does not have one yet.

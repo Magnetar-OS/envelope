@@ -91,7 +91,7 @@ drafts = Drafts
 no-drafts = No saved drafts.
 draft-no-subject = (no subject)
 save-draft = Save
-drafts-are-local = Kept on this device.
+drafts-sync-note = Synced to the server as you save.
 search = Search
 no-results = Nothing matched.
 searching = Searching…
@@ -197,3 +197,6 @@ imported-some = { $imported } imported, { $skipped ->
 
 # Crash reports
 crashed-last-time = Envelope crashed last time. What happened is in { $path }
+
+# Drafts mirror
+draft-sync-failed = Drafts could not reach the server: { $reason }

@@ -19,9 +19,9 @@ pub struct Sidebar<'a> {
     pub folders: &'a [Folder],
     pub selected_folder: Option<usize>,
     pub unread: &'a std::collections::HashMap<String, usize>,
-    /// Local drafts. Listed above the server's folders and labelled, because
-    /// they are on this device and nowhere else — presenting them as just
-    /// another folder would imply they sync.
+    /// Draft records. Listed above the server's folders because they are the
+    /// editable copies this device holds; the mirror keeps the server's
+    /// Drafts folder showing the same set for IMAP accounts.
     pub drafts: usize,
     pub showing_drafts: bool,
     /// Messages waiting to go out. Shown whenever there are any: a message the

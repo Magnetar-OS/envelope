@@ -516,6 +516,11 @@ pub enum Message {
     AttachmentRemoved(usize),
     DraftOpened(String),
     DraftDeleted(String),
+    /// The drafts mirror finished a pass: `Ok(None)` when there was nothing
+    /// to do, which is the ordinary case.
+    DraftsSwept(Box<Result<Option<cosmic_pim_mail::draft_sync::SweepReport>, String>>),
+    /// A message in the Drafts folder came back as something editable.
+    ServerDraftOpened(Box<Result<(String, cosmic_pim_mail::Draft), String>>),
     ComposeSend,
     ComposeSent(Box<crate::mail::Sent>),
 }
@@ -1031,6 +1036,10 @@ impl cosmic::Application for AppModel {
                             } else {
                                 Task::none()
                             },
+                            // Edits and discards made while offline reach the
+                            // server's Drafts folder on the same schedule as
+                            // every other queued write.
+                            self.sweep_drafts_now(),
                             // The first successful sync proves the connection
                             // works; that is the moment to park the watch.
                             self.start_watch(),
@@ -1554,6 +1563,37 @@ impl cosmic::Application for AppModel {
                 }
             }),
 
+            Message::DraftsSwept(result) => {
+                // A quiet sweep is the ordinary case and says nothing. What
+                // must not be quiet: a draft that is not reaching the server,
+                // because "kept on this device" is exactly what mirroring
+                // promises is no longer true.
+                match *result {
+                    Ok(Some(report)) if !report.failed.is_empty() => {
+                        let (_, why) = report.failed[0].clone();
+                        self.status = Some(fl!("draft-sync-failed", reason = why));
+                    }
+                    Ok(_) => {}
+                    Err(why) => self.status = Some(fl!("draft-sync-failed", reason = why)),
+                }
+                Task::none()
+            }
+
+            Message::ServerDraftOpened(result) => {
+                match *result {
+                    Ok((id, draft)) => {
+                        let mut composer = Composer::new(draft, None);
+                        // Carried, so a save here replaces the server copy
+                        // rather than leaving a second one beside it.
+                        composer.draft_id = Some(id);
+                        self.composer = Some(composer);
+                        self.reader_error = None;
+                    }
+                    Err(why) => self.reader_error = Some(why),
+                }
+                Task::none()
+            }
+
             Message::DraftOpened(id) => self.open_draft(&id),
             Message::DraftDeleted(id) => {
                 if let Some(connection) = self.connection.as_ref()
@@ -1561,7 +1601,7 @@ impl cosmic::Application for AppModel {
                 {
                     self.status = Some(why);
                 }
-                self.reload_drafts()
+                Task::batch([self.reload_drafts(), self.sweep_drafts_now()])
             }
             Message::ComposeSend => self.send_draft(),
             Message::ComposeSent(sent) => self.composer_finished(*sent),
@@ -1682,11 +1722,42 @@ impl AppModel {
         ) else {
             return Task::none();
         };
+        // A message in the Drafts folder is unfinished writing, and opening it
+        // means resuming it — in the composer, not the reader. This is also
+        // how a draft written on another device becomes editable here.
+        if folder.special_use == Some(SpecialUse::Drafts) {
+            return cosmic::task::future(async move {
+                let result = tokio::task::spawn_blocking(move || {
+                    mail::edit_server_draft(&connection, &folder, uid)
+                })
+                .await
+                .unwrap_or_else(|why| Err(why.to_string()));
+                Message::ServerDraftOpened(Box::new(result))
+            });
+        }
         cosmic::task::future(async move {
             let result = tokio::task::spawn_blocking(move || mail::open(&connection, &folder, uid))
                 .await
                 .unwrap_or_else(|why| Err(why.to_string()));
             Message::MessageOpened(Box::new(result))
+        })
+    }
+
+    /// Mirrors draft edits and discards to the server, when there are any.
+    ///
+    /// Cheap to call optimistically: with nothing dirty and no tombstones the
+    /// worker returns without opening a connection.
+    fn sweep_drafts_now(&self) -> Task<Message> {
+        let Some(connection) = self.connection.clone() else {
+            return Task::none();
+        };
+        let folders = self.folders.clone();
+        cosmic::task::future(async move {
+            let result =
+                tokio::task::spawn_blocking(move || mail::sweep_drafts(&connection, &folders))
+                    .await
+                    .unwrap_or_else(|why| Err(why.to_string()));
+            Message::DraftsSwept(Box::new(result))
         })
     }
 
@@ -1875,7 +1946,9 @@ impl AppModel {
             {
                 self.status = Some(why);
             }
-            return self.reload_drafts();
+            // The discard left a tombstone if the draft was mirrored; the
+            // sweep retires the server copy now rather than at the next poll.
+            return Task::batch([self.reload_drafts(), self.sweep_drafts_now()]);
         }
 
         if !composer.is_worth_saving() {
@@ -1886,7 +1959,7 @@ impl AppModel {
             composer.draft_id.as_deref(),
             &composer.resolved(),
         ) {
-            Ok(_) => self.reload_drafts(),
+            Ok(_) => Task::batch([self.reload_drafts(), self.sweep_drafts_now()]),
             Err(why) => {
                 // The composer is already closed, so this cannot be shown
                 // beside the text it lost. Saying so in the status line is the
@@ -2615,7 +2688,8 @@ impl AppModel {
                 } else {
                     fl!("sent-not-filed")
                 });
-                return self.reload_drafts();
+                // The sweep retires the sent draft's server mirror.
+                return Task::batch([self.reload_drafts(), self.sweep_drafts_now()]);
             }
             mail::Sent::Queued => {
                 // Closed, because the message is no longer the user's problem:
