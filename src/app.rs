@@ -429,11 +429,51 @@ pub enum FolderDialog {
         name: String,
     },
     Delete,
+    /// The snooze presets.
+    Snooze,
     /// The move picker: its query, and which row is highlighted.
     Move {
         query: String,
         selected: usize,
     },
+}
+
+/// When snoozed mail comes back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnoozePreset {
+    /// Three hours from now.
+    LaterToday,
+    /// Tomorrow at 08:00, local time.
+    Tomorrow,
+    /// Next Monday at 08:00, local time.
+    NextWeek,
+}
+
+impl SnoozePreset {
+    /// The return time, computed at the moment of choice — never at view
+    /// time, where "later today" would drift as the dialog sat open.
+    #[must_use]
+    pub fn until_ms(self) -> i64 {
+        use chrono::{Datelike as _, Duration, Local, NaiveTime};
+        let now = Local::now();
+        let at_eight = |date: chrono::NaiveDate| {
+            NaiveTime::from_hms_opt(8, 0, 0)
+                .map(|time| date.and_time(time))
+                .and_then(|naive| naive.and_local_timezone(Local).earliest())
+                .map(|moment| moment.timestamp_millis())
+        };
+        match self {
+            Self::LaterToday => (now + Duration::hours(3)).timestamp_millis(),
+            Self::Tomorrow => at_eight(now.date_naive() + Duration::days(1))
+                .unwrap_or_else(|| (now + Duration::hours(18)).timestamp_millis()),
+            Self::NextWeek => {
+                let ahead = 7 - i64::from(now.weekday().num_days_from_monday());
+                let ahead = if ahead == 0 { 7 } else { ahead };
+                at_eight(now.date_naive() + Duration::days(ahead))
+                    .unwrap_or_else(|| (now + Duration::days(ahead)).timestamp_millis())
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -562,6 +602,11 @@ pub enum Message {
     RuleFormSubmitted,
     /// A rules pass ran after a sync; `Ok(None)` means nothing to do.
     RulesApplied(Box<Result<Option<mail::RulesReport>, String>>),
+
+    /// A snooze duration was chosen.
+    SnoozePicked(SnoozePreset),
+    /// The wake pass finished: how many snoozed messages returned.
+    SnoozeWoken(Box<Result<usize, String>>),
 
     /// One of the folder dialogs was asked for.
     FolderDialogOpened(FolderDialog),
@@ -780,6 +825,7 @@ impl cosmic::Application for AppModel {
                         item(Action::Compose),
                         item(Action::ImportMbox),
                         menu::Item::Divider,
+                        item(Action::Snooze),
                         item(Action::MoveToFolder),
                         item(Action::NewFolder),
                         item(Action::RenameFolder),
@@ -957,6 +1003,7 @@ impl cosmic::Application for AppModel {
                 FolderDialog::Delete => {
                     self.current_folder().map(crate::ui::folders::delete_dialog)
                 }
+                FolderDialog::Snooze => Some(crate::ui::folders::snooze_dialog()),
                 FolderDialog::Move { query, selected } => Some(
                     crate::ui::folders::MovePicker {
                         query,
@@ -1171,6 +1218,8 @@ impl cosmic::Application for AppModel {
                             self.sweep_drafts_now(),
                             // Filters run over what the pass just brought in.
                             self.apply_rules_now(),
+                            // And anything snoozed past its time comes back.
+                            self.wake_snoozed_now(),
                             // The first successful sync proves the connection
                             // works; that is the moment to park the watch.
                             self.start_watch(),
@@ -1837,6 +1886,25 @@ impl cosmic::Application for AppModel {
                 Task::none()
             }
 
+            Message::SnoozePicked(preset) => {
+                self.folder_dialog = None;
+                self.snooze_selected(preset.until_ms())
+            }
+            Message::SnoozeWoken(result) => match *result {
+                Ok(0) => Task::none(),
+                Ok(count) => {
+                    self.status = Some(fl!("snoozed-back", count = count));
+                    // The messages are back in INBOX on the server; the next
+                    // pull files them locally. Ask for one now rather than
+                    // waiting out the poll.
+                    self.sync_now()
+                }
+                Err(why) => {
+                    self.status = Some(fl!("snooze-failed", reason = why));
+                    Task::none()
+                }
+            },
+
             Message::FolderDialogOpened(dialog) => {
                 // One overlay at a time; a picker under a palette is neither.
                 self.palette = None;
@@ -2134,6 +2202,58 @@ impl AppModel {
             return Task::none();
         };
         self.move_conversation_to(destination)
+    }
+
+    /// Snoozes the selected conversation until `until_ms`, with undo — a
+    /// snooze is a move underneath, and regrettable in the same window.
+    fn snooze_selected(&mut self, until_ms: i64) -> Task<Message> {
+        let (Some(connection), Some(folder), Some(index)) = (
+            self.connection.clone(),
+            self.current_folder().cloned(),
+            self.selected_conversation,
+        ) else {
+            return Task::none();
+        };
+        let Some(uids) = self.conversations.get(index).map(|c| c.uids.clone()) else {
+            return Task::none();
+        };
+        self.opened = None;
+        self.selected_conversation = None;
+
+        let description = fl!("undo-snooze");
+        cosmic::task::future(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                mail::snooze(&connection, &folder, &uids, until_ms).map(|messages| {
+                    (!messages.is_empty()).then_some(UndoEntry {
+                        description,
+                        reverse: Reverse::Unmove { folder, messages },
+                    })
+                })
+            })
+            .await
+            .unwrap_or_else(|why| Err(why.to_string()));
+            Message::Mutated(result)
+        })
+    }
+
+    /// Wakes due snoozes, on the worker — skipping the connection entirely
+    /// when the schedule has nothing due, which is the two-minute common case.
+    fn wake_snoozed_now(&self) -> Task<Message> {
+        let Some(connection) = self.connection.clone() else {
+            return Task::none();
+        };
+        cosmic::task::future(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                let now = chrono::Utc::now().timestamp_millis();
+                if !mail::has_due_snoozes(&connection, now) {
+                    return Ok(0);
+                }
+                mail::wake_snoozed(&connection, now)
+            })
+            .await
+            .unwrap_or_else(|why| Err(why.to_string()));
+            Message::SnoozeWoken(Box::new(result))
+        })
     }
 
     /// Moves the selected conversation to `destination`, with undo.
@@ -2473,6 +2593,7 @@ impl AppModel {
                     Message::FolderOpFinished(Box::new(result))
                 })
             }
+            FolderDialog::Snooze => Task::none(),
             FolderDialog::Move { .. } => match picked.and_then(|i| self.folders.get(i)).cloned() {
                 Some(destination) => self.move_conversation_to(destination),
                 None => Task::none(),
@@ -2826,6 +2947,12 @@ impl AppModel {
                 Task::none()
             }
 
+            Action::Snooze => {
+                if self.selected_conversation.is_none() {
+                    return Task::none();
+                }
+                self.update(Message::FolderDialogOpened(FolderDialog::Snooze))
+            }
             Action::MoveToFolder => {
                 if self.selected_conversation.is_none() {
                     return Task::none();

@@ -42,6 +42,8 @@ pub enum Action {
     Delete,
     ToggleRead,
     ToggleFlagged,
+    /// Put the conversation away until a chosen time.
+    Snooze,
 
     Undo,
     Search,
@@ -87,6 +89,7 @@ impl Action {
             Self::Delete => fl!("delete"),
             Self::ToggleRead => fl!("toggle-read"),
             Self::ToggleFlagged => fl!("toggle-starred"),
+            Self::Snooze => fl!("snooze"),
             Self::Undo => fl!("undo"),
             Self::Search => fl!("search"),
             Self::Sync => fl!("sync-now"),
@@ -123,6 +126,7 @@ impl Action {
             | Self::Delete
             | Self::ToggleRead
             | Self::ToggleFlagged
+            | Self::Snooze
             | Self::MoveToFolder
             | Self::Undo => Group::Reading,
             Self::GoInbox | Self::GoDrafts | Self::GoOutbox | Self::GoSent | Self::GoArchive => {
@@ -158,6 +162,7 @@ impl Action {
                 | Self::Delete
                 | Self::ToggleRead
                 | Self::ToggleFlagged
+                | Self::Snooze
                 | Self::MoveToFolder
         )
     }
@@ -338,6 +343,13 @@ pub fn bindings() -> Vec<Binding> {
         Binding {
             action: Action::ToggleFlagged,
             bare: Some(Bare::Key('s')),
+            combination: None,
+            handled_by_framework: false,
+        },
+        Binding {
+            // Gmail's snooze key.
+            action: Action::Snooze,
+            bare: Some(Bare::Key('b')),
             combination: None,
             handled_by_framework: false,
         },

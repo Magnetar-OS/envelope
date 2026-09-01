@@ -54,6 +54,33 @@ pub fn delete_dialog<'a>(folder: &Folder) -> Element<'a, Message> {
         .into()
 }
 
+/// The snooze presets: three moments people actually mean, not a calendar
+/// widget. Each button says when; the exact timestamp is computed at press
+/// time so "later today" cannot drift while the dialog sits open.
+#[must_use]
+pub fn snooze_dialog<'a>() -> Element<'a, Message> {
+    use crate::app::SnoozePreset;
+    let spacing = cosmic::theme::spacing();
+    let preset = |label: String, preset: SnoozePreset| {
+        widget::button::standard(label)
+            .width(Length::Fill)
+            .on_press(Message::SnoozePicked(preset))
+    };
+    widget::dialog()
+        .title(fl!("snooze-title"))
+        .control(
+            widget::column::with_capacity(3)
+                .spacing(spacing.space_xxs)
+                .push(preset(fl!("snooze-later-today"), SnoozePreset::LaterToday))
+                .push(preset(fl!("snooze-tomorrow"), SnoozePreset::Tomorrow))
+                .push(preset(fl!("snooze-next-week"), SnoozePreset::NextWeek)),
+        )
+        .secondary_action(
+            widget::button::standard(fl!("cancel")).on_press(Message::FolderDialogCancelled),
+        )
+        .into()
+}
+
 /// The move picker: a query box over the folders that can receive a message,
 /// in the palette's shape because it is the same interaction.
 pub struct MovePicker<'a> {

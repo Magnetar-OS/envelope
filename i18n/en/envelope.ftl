@@ -245,3 +245,16 @@ rules-applied = { $count ->
        *[other] Rules filed { $count } messages.
     }
 rule-failed = The rule “{ $rule }” could not run: { $reason }
+
+# Snooze
+snooze = Snooze
+snooze-title = Snooze until
+snooze-later-today = Later today
+snooze-tomorrow = Tomorrow morning
+snooze-next-week = Next week
+undo-snooze = Snoozed
+snoozed-back = { $count ->
+        [one] A snoozed message is back.
+       *[other] { $count } snoozed messages are back.
+    }
+snooze-failed = Snoozed mail could not be brought back: { $reason }
