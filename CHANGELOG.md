@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Undo send: a sent message waits a configurable grace (10 seconds by
+  default, in Settings) in the outbox, where `z` takes it back into the
+  composer. Send later queues it for later today, tomorrow morning, or next
+  week through the same outbox.
 - Snooze: `b` (or the menu) puts a conversation away until later today,
   tomorrow morning, or next week. Snoozed mail waits in a Snoozed folder on
   the server — visible from every device — and comes back to the inbox

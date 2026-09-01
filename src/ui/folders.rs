@@ -81,6 +81,32 @@ pub fn snooze_dialog<'a>() -> Element<'a, Message> {
         .into()
 }
 
+/// Send later: the snooze presets with a different verb — the same three
+/// moments people mean.
+#[must_use]
+pub fn send_later_dialog<'a>() -> Element<'a, Message> {
+    use crate::app::SnoozePreset;
+    let spacing = cosmic::theme::spacing();
+    let preset = |label: String, preset: SnoozePreset| {
+        widget::button::standard(label)
+            .width(Length::Fill)
+            .on_press(Message::SendLaterPicked(preset))
+    };
+    widget::dialog()
+        .title(fl!("send-later-title"))
+        .control(
+            widget::column::with_capacity(3)
+                .spacing(spacing.space_xxs)
+                .push(preset(fl!("snooze-later-today"), SnoozePreset::LaterToday))
+                .push(preset(fl!("snooze-tomorrow"), SnoozePreset::Tomorrow))
+                .push(preset(fl!("snooze-next-week"), SnoozePreset::NextWeek)),
+        )
+        .secondary_action(
+            widget::button::standard(fl!("cancel")).on_press(Message::FolderDialogCancelled),
+        )
+        .into()
+}
+
 /// The move picker: a query box over the folders that can receive a message,
 /// in the palette's shape because it is the same interaction.
 pub struct MovePicker<'a> {

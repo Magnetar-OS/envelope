@@ -67,7 +67,7 @@ pub fn view(composer: &Composer) -> Element<'_, Message> {
 
     column
         .push(
-            widget::row::with_capacity(4)
+            widget::row::with_capacity(5)
                 .spacing(spacing.space_xs)
                 .push(destructive_button(
                     fl!("discard"),
@@ -76,6 +76,11 @@ pub fn view(composer: &Composer) -> Element<'_, Message> {
                 ))
                 .push(button(fl!("save-draft"), idle, Message::ComposeCancel))
                 .push(widget::Space::new().width(Length::Fill))
+                .push(button(
+                    fl!("send-later"),
+                    idle && composer.problem().is_none(),
+                    Message::SendLater,
+                ))
                 // Greyed for the same reasons the send would fail, rather than
                 // letting the user press it and find out.
                 .push(if idle && composer.problem().is_none() {

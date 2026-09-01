@@ -549,6 +549,40 @@ pub fn delete_draft(connection: &Connection, id: &str) -> Result<(), String> {
         .map_err(|why| why.to_string())
 }
 
+/// Queues a message to go out at `not_before_ms` — the undo-send grace and
+/// "send later" both land here. Returns the queue id an undo needs.
+///
+/// The draft record becomes the queued message, exactly as it does when a
+/// failed send is queued: leaving both would show it twice and send it once.
+pub fn schedule_send(
+    connection: &Connection,
+    draft_id: Option<&str>,
+    draft: &Draft,
+    not_before_ms: i64,
+) -> Result<String, String> {
+    let id = draft_id
+        .filter(|id| drafts::is_valid_id(id))
+        .map_or_else(|| drafts::new_id(now_ms()), ToOwned::to_owned);
+    outbox(connection)?
+        .schedule(&id, draft, not_before_ms)
+        .map_err(|why| why.to_string())?;
+    if let Some(previous) = draft_id
+        && let Err(why) = delete_draft(connection, previous)
+    {
+        tracing::warn!(%why, "a scheduled message left its draft behind");
+    }
+    Ok(id)
+}
+
+/// Takes a scheduled send back, returning the draft to edit. `None` means it
+/// already went — and the caller must say so, not reopen a composer for a
+/// message the recipients already have.
+pub fn cancel_send(connection: &Connection, id: &str) -> Result<Option<Draft>, String> {
+    outbox(connection)?
+        .cancel(id)
+        .map_err(|why| why.to_string())
+}
+
 /// Searches the account, applying the flag filters the index cannot.
 ///
 /// The index answers the text half in SQL. Flags live in the store — they change

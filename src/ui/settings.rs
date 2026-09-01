@@ -14,7 +14,7 @@ use crate::app::Message;
 use crate::config::{Config, MINIMUM_POLL_SECONDS};
 use crate::fl;
 
-pub fn view<'a>(config: &Config, interval: &'a str) -> Element<'a, Message> {
+pub fn view<'a>(config: &Config, interval: &'a str, send_delay: &'a str) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
 
     let section = widget::settings::section()
@@ -33,6 +33,17 @@ pub fn view<'a>(config: &Config, interval: &'a str) -> Element<'a, Message> {
             widget::settings::item::builder(fl!("mark-read-on-open"))
                 .description(fl!("mark-read-on-open-hint"))
                 .toggler(config.mark_read_on_open, Message::MarkReadOnOpenChanged),
+        )
+        .add(
+            widget::settings::item::builder(fl!("send-delay"))
+                .description(fl!("send-delay-hint"))
+                .control(
+                    widget::text_input("10", send_delay)
+                        .on_input(Message::SendDelayChanged)
+                        .on_focus(Message::TextFocused)
+                        .on_unfocus(Message::TextUnfocused)
+                        .width(cosmic::iced::Length::Fixed(120.0)),
+                ),
         );
 
     widget::column::with_capacity(1)

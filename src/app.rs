@@ -126,6 +126,8 @@ pub struct AppModel {
     /// The interval field's text, which is not the setting: a half-typed number
     /// must not be rejected on every keystroke.
     poll_seconds: String,
+    /// The undo-send grace field's text, for the same reason.
+    send_delay: String,
     /// Which generation of inbox watch is current.
     ///
     /// A watch is a blocking thread parked in IDLE for minutes; it cannot be
@@ -406,6 +408,11 @@ pub enum Reverse {
         folder: Folder,
         messages: Vec<cosmic_pim_mail::store::RemoteMessage>,
     },
+    /// Take a scheduled send back out of the outbox and reopen it.
+    ///
+    /// The other reverse with a deadline: once the message goes, the honest
+    /// answer is that it went.
+    CancelSend { id: String },
 }
 
 /// How much history is kept.
@@ -431,6 +438,8 @@ pub enum FolderDialog {
     Delete,
     /// The snooze presets.
     Snooze,
+    /// The send-later presets — the same moments, a different verb.
+    SendLater,
     /// The move picker: its query, and which row is highlighted.
     Move {
         query: String,
@@ -605,6 +614,15 @@ pub enum Message {
 
     /// A snooze duration was chosen.
     SnoozePicked(SnoozePreset),
+    /// The composer's Send later button.
+    SendLater,
+    /// A send-later moment was chosen.
+    SendLaterPicked(SnoozePreset),
+    /// A send was queued: `(queue id, when it goes, grace or scheduled)`.
+    SendScheduled(Box<Result<(String, i64, bool), String>>),
+    /// An undone send came back — or turned out to be gone.
+    SendCancelled(Box<Result<Option<cosmic_pim_mail::Draft>, String>>),
+    SendDelayChanged(String),
     /// The wake pass finished: how many snoozed messages returned.
     SnoozeWoken(Box<Result<usize, String>>),
 
@@ -754,6 +772,7 @@ impl cosmic::Application for AppModel {
             text_focus: 0,
             pending_chord: None,
             poll_seconds: String::new(),
+            send_delay: String::new(),
             watch_generation: 0,
             watching: false,
             config: cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
@@ -775,6 +794,10 @@ impl cosmic::Application for AppModel {
             results: Vec::new(),
             searching: false,
         };
+        // The settings fields show the loaded values from the first frame,
+        // not from the first config-change event.
+        model.poll_seconds = model.config.poll_seconds.to_string();
+        model.send_delay = model.config.send_delay_seconds.to_string();
         // The account that was open last, if it is still there. Falling back to
         // the first rather than to none: an application that opens on nothing
         // when its remembered account was removed is one the user has to
@@ -1004,6 +1027,7 @@ impl cosmic::Application for AppModel {
                     self.current_folder().map(crate::ui::folders::delete_dialog)
                 }
                 FolderDialog::Snooze => Some(crate::ui::folders::snooze_dialog()),
+                FolderDialog::SendLater => Some(crate::ui::folders::send_later_dialog()),
                 FolderDialog::Move { query, selected } => Some(
                     crate::ui::folders::MovePicker {
                         query,
@@ -1050,7 +1074,7 @@ impl cosmic::Application for AppModel {
             )
             .title(fl!("accounts")),
             ContextPage::Settings => context_drawer::context_drawer(
-                crate::ui::settings::view(&self.config, &self.poll_seconds),
+                crate::ui::settings::view(&self.config, &self.poll_seconds, &self.send_delay),
                 Message::ToggleContextPage(ContextPage::Settings),
             )
             .title(fl!("settings")),
@@ -1551,6 +1575,7 @@ impl cosmic::Application for AppModel {
             } => self.watch_ended(generation, outcome),
             Message::ConfigChanged(config) => {
                 self.poll_seconds = config.poll_seconds.to_string();
+                self.send_delay = config.send_delay_seconds.to_string();
                 self.config = config;
                 Task::none()
             }
@@ -1889,6 +1914,84 @@ impl cosmic::Application for AppModel {
             Message::SnoozePicked(preset) => {
                 self.folder_dialog = None;
                 self.snooze_selected(preset.until_ms())
+            }
+            Message::SendLater => {
+                if self.composer.is_none() {
+                    return Task::none();
+                }
+                self.update(Message::FolderDialogOpened(FolderDialog::SendLater))
+            }
+            Message::SendLaterPicked(preset) => {
+                self.folder_dialog = None;
+                self.schedule_send_at(preset.until_ms(), false)
+            }
+            Message::SendScheduled(result) => match *result {
+                Ok((id, not_before_ms, grace)) => {
+                    self.composer = None;
+                    self.status = Some(if grace {
+                        fl!(
+                            "send-scheduled-grace",
+                            seconds = i64::from(self.config.send_delay())
+                        )
+                    } else {
+                        fl!(
+                            "send-scheduled-later",
+                            when = crate::ui::relative_date_ms(not_before_ms)
+                        )
+                    });
+                    self.undo_stack.push(UndoEntry {
+                        description: fl!("undo-send-desc"),
+                        reverse: Reverse::CancelSend { id },
+                    });
+                    if self.undo_stack.len() > UNDO_DEPTH {
+                        self.undo_stack.remove(0);
+                    }
+                    // A timer for sends going soon; anything further out is
+                    // the poll's job, and an in-process timer for tomorrow
+                    // would not survive the app closing tonight anyway.
+                    let wait_ms = not_before_ms - chrono::Utc::now().timestamp_millis();
+                    let timer = if (0..5 * 60_000).contains(&wait_ms) {
+                        cosmic::task::future(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                u64::try_from(wait_ms).unwrap_or(0) + 1_000,
+                            ))
+                            .await;
+                            Message::SyncNow
+                        })
+                    } else {
+                        Task::none()
+                    };
+                    Task::batch([self.reload_outbox(), self.reload_drafts(), timer])
+                }
+                Err(why) => {
+                    if let Some(composer) = self.composer.as_mut() {
+                        composer.sending = false;
+                        composer.error = Some(why);
+                    } else {
+                        self.status = Some(why);
+                    }
+                    Task::none()
+                }
+            },
+            Message::SendCancelled(result) => {
+                match *result {
+                    Ok(Some(draft)) => {
+                        // The words the user wrote, back where they can be
+                        // edited — the entire point of the grace.
+                        self.composer = Some(Composer::new(draft, None));
+                        self.status = Some(fl!("send-taken-back"));
+                    }
+                    Ok(None) => self.status = Some(fl!("send-already-gone")),
+                    Err(why) => self.status = Some(why),
+                }
+                self.reload_outbox()
+            }
+            Message::SendDelayChanged(text) => {
+                if let Ok(seconds) = text.trim().parse::<u32>() {
+                    self.remember(|config| config.send_delay_seconds = seconds);
+                }
+                self.send_delay = text;
+                Task::none()
             }
             Message::SnoozeWoken(result) => match *result {
                 Ok(0) => Task::none(),
@@ -2593,7 +2696,7 @@ impl AppModel {
                     Message::FolderOpFinished(Box::new(result))
                 })
             }
-            FolderDialog::Snooze => Task::none(),
+            FolderDialog::Snooze | FolderDialog::SendLater => Task::none(),
             FolderDialog::Move { .. } => match picked.and_then(|i| self.folders.get(i)).cloned() {
                 Some(destination) => self.move_conversation_to(destination),
                 None => Task::none(),
@@ -3008,6 +3111,18 @@ impl AppModel {
         };
         let description = entry.description.clone();
 
+        // Taking a send back ends in a composer, not a status line, so it
+        // reports through its own message.
+        if let Reverse::CancelSend { id } = entry.reverse {
+            return cosmic::task::future(async move {
+                let result =
+                    tokio::task::spawn_blocking(move || mail::cancel_send(&connection, &id))
+                        .await
+                        .unwrap_or_else(|why| Err(why.to_string()));
+                Message::SendCancelled(Box::new(result))
+            });
+        }
+
         cosmic::task::future(async move {
             let result = tokio::task::spawn_blocking(move || match entry.reverse {
                 Reverse::Flags { folder, previous } => {
@@ -3016,6 +3131,7 @@ impl AppModel {
                 Reverse::Unmove { folder, messages } => {
                     mail::unmove(&connection, &folder, &messages)
                 }
+                Reverse::CancelSend { .. } => unreachable!("handled above"),
             })
             .await
             .unwrap_or_else(|why| Err(why.to_string()));
@@ -3282,6 +3398,14 @@ impl AppModel {
         composer.sending = true;
         composer.error = None;
 
+        // With a grace configured, sending is scheduling: the message waits
+        // out the delay in the outbox, where undo can still reach it.
+        let grace = self.config.send_delay();
+        if grace > 0 {
+            let not_before = chrono::Utc::now().timestamp_millis() + i64::from(grace) * 1_000;
+            return self.schedule_send_at(not_before, true);
+        }
+
         let folders = self.folders.clone();
         let answering = composer.answering.clone();
         let draft_id = composer.draft_id.clone();
@@ -3299,6 +3423,33 @@ impl AppModel {
             .await
             .unwrap_or_else(|why| mail::Sent::Uncertain(why.to_string()));
             Message::ComposeSent(Box::new(sent))
+        })
+    }
+
+    /// Queues the composer's message to go at `not_before_ms`.
+    fn schedule_send_at(&mut self, not_before_ms: i64, grace: bool) -> Task<Message> {
+        let (Some(composer), Some(connection)) = (self.composer.as_mut(), self.connection.clone())
+        else {
+            return Task::none();
+        };
+        let draft = composer.resolved();
+        if let Some(problem) = draft.problem() {
+            composer.error = Some(problem.to_owned());
+            composer.sending = false;
+            return Task::none();
+        }
+        composer.sending = true;
+        composer.error = None;
+        let draft_id = composer.draft_id.clone();
+
+        cosmic::task::future(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                mail::schedule_send(&connection, draft_id.as_deref(), &draft, not_before_ms)
+                    .map(|id| (id, not_before_ms, grace))
+            })
+            .await
+            .unwrap_or_else(|why| Err(why.to_string()));
+            Message::SendScheduled(Box::new(result))
         })
     }
 

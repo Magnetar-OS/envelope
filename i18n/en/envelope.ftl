@@ -258,3 +258,14 @@ snoozed-back = { $count ->
        *[other] { $count } snoozed messages are back.
     }
 snooze-failed = Snoozed mail could not be brought back: { $reason }
+
+# Undo send and send later
+send-later = Send later…
+send-later-title = Send when
+send-scheduled-grace = Sending in { $seconds } seconds — press z to take it back.
+send-scheduled-later = Queued to send { $when }.
+send-taken-back = Taken back. It is a draft in the composer again.
+send-already-gone = It already went — there is nothing to take back.
+undo-send-desc = Queued send
+send-delay = Wait before sending
+send-delay-hint = Seconds a sent message can still be taken back with z. 0 sends immediately.

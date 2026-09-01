@@ -48,6 +48,9 @@ pub struct Config {
     /// Off is for the people who use their inbox as a to-do list, for whom a
     /// message losing its unread mark on a glance is losing a task.
     pub mark_read_on_open: bool,
+    /// Seconds a send waits in the outbox before going, so it can be taken
+    /// back. Zero sends immediately. See [`Config::send_delay`].
+    pub send_delay_seconds: u32,
 }
 
 impl Default for Config {
@@ -57,9 +60,19 @@ impl Default for Config {
             last_folder: String::new(),
             poll_seconds: DEFAULT_POLL_SECONDS,
             mark_read_on_open: true,
+            send_delay_seconds: DEFAULT_SEND_DELAY_SECONDS,
         }
     }
 }
+
+/// Long enough to catch the typo noticed as the button was released; short
+/// enough that "sent" still means soon.
+pub const DEFAULT_SEND_DELAY_SECONDS: u32 = 10;
+
+/// The ceiling on the undo-send grace, hand-edited files included. Two
+/// minutes is where a delay stops being a grace and becomes a scheduler,
+/// and the scheduler is the Send later button.
+pub const MAXIMUM_SEND_DELAY_SECONDS: u32 = 120;
 
 impl Config {
     /// How long to wait between checks, floored.
@@ -70,6 +83,13 @@ impl Config {
     #[must_use]
     pub fn poll_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(u64::from(self.poll_seconds.max(MINIMUM_POLL_SECONDS)))
+    }
+
+    /// The undo-send grace, ceilinged for the same hand-edited-file reason
+    /// the poll is floored.
+    #[must_use]
+    pub fn send_delay(&self) -> u32 {
+        self.send_delay_seconds.min(MAXIMUM_SEND_DELAY_SECONDS)
     }
 }
 
