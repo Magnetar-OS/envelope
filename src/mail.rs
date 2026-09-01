@@ -1116,6 +1116,109 @@ pub fn special(folders: &[Folder], role: SpecialUse) -> Option<&Folder> {
     folders.iter().find(|f| f.special_use == Some(role))
 }
 
+/// A session for a one-off folder operation. IMAP only: the label-shaped
+/// engines manage folders through their own APIs, which are not wired yet.
+fn folder_session(connection: &Connection) -> Result<Session, String> {
+    let is_imap = connection
+        .account
+        .mail
+        .as_ref()
+        .is_none_or(|mail| mail.protocol == MailProtocol::Imap);
+    if !is_imap {
+        return Err("this account's folders are managed by its provider".into());
+    }
+    let credentials = fresh_credentials(connection)?;
+    Session::connect(&connection.endpoint, &credentials).map_err(|why| why.to_string())
+}
+
+/// Creates a folder on the server. The next sync lists it.
+pub fn create_folder(connection: &Connection, name: &str) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("a folder needs a name".into());
+    }
+    let mut session = folder_session(connection)?;
+    let result = session
+        .create_mailbox(&cosmic_pim_mail::folder::encode_modified_utf7(name))
+        .map_err(|why| why.to_string());
+    let _ = session.logout();
+    result
+}
+
+/// Renames a folder, keeping its place in the hierarchy.
+///
+/// RFC 3501 renames the subtree with it. The local maildir and index rows
+/// still carry the old name and are dropped; the next sync re-mirrors the
+/// folder under its new name — the server is the authority on what exists.
+pub fn rename_folder(
+    connection: &Connection,
+    folder: &Folder,
+    new_name: &str,
+) -> Result<(), String> {
+    let new_name = new_name.trim();
+    if new_name.is_empty() {
+        return Err("a folder needs a name".into());
+    }
+    if new_name.contains(folder.delimiter) {
+        return Err(format!(
+            "a folder name cannot contain this server's separator ({})",
+            folder.delimiter
+        ));
+    }
+    // The rename replaces the leaf; parents stay, so the folder does not
+    // move. The wire wants modified UTF-7, same as LIST returned.
+    let leaf = cosmic_pim_mail::folder::encode_modified_utf7(new_name);
+    let to = match folder.wire_name.rfind(folder.delimiter) {
+        Some(cut) => format!("{}{}{leaf}", &folder.wire_name[..cut], folder.delimiter),
+        None => leaf,
+    };
+
+    let mut session = folder_session(connection)?;
+    let result = session
+        .rename_mailbox(&folder.wire_name, &to)
+        .map_err(|why| why.to_string());
+    let _ = session.logout();
+    result?;
+    forget_local(connection, folder);
+    Ok(())
+}
+
+/// Deletes a folder — the folder itself, with every message in it.
+///
+/// The caller has already asked the user; this executes and then drops the
+/// local mirror.
+pub fn delete_folder(connection: &Connection, folder: &Folder) -> Result<(), String> {
+    let mut session = folder_session(connection)?;
+    let result = session
+        .delete_mailbox(&folder.wire_name)
+        .map_err(|why| why.to_string());
+    let _ = session.logout();
+    result?;
+    forget_local(connection, folder);
+    Ok(())
+}
+
+/// Drops a folder's local mirror: the maildir and its index rows.
+///
+/// Best-effort — the server operation already succeeded, and a leftover
+/// directory is disk residue the next sync ignores, not an error worth
+/// failing the operation the user asked for.
+fn forget_local(connection: &Connection, folder: &Folder) {
+    let path = connection.mailbox_path(folder);
+    if path.is_dir()
+        && let Err(why) = std::fs::remove_dir_all(&path)
+    {
+        tracing::warn!(%why, path = %path.display(), "a renamed or deleted folder's maildir survived");
+    }
+    if let Err(why) = forget_index(connection, &folder.wire_name) {
+        tracing::warn!(
+            why,
+            mailbox = folder.wire_name,
+            "index rows survived their folder"
+        );
+    }
+}
+
 /// The same three choices, spelled in `accounts` and in `mail` because
 /// `accounts` sits below every protocol crate. This is the boundary where they
 /// meet, and it is the only place either spelling appears twice.

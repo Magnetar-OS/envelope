@@ -81,6 +81,12 @@ pub struct AppModel {
     /// The command palette, while it is open: the query, and which row is
     /// selected.
     palette: Option<(String, usize)>,
+    /// The folder dialog, while one is open. At most one of this and the
+    /// palette: opening either closes the other.
+    folder_dialog: Option<FolderDialog>,
+    /// The folders the move picker is showing, as indices into `folders`.
+    /// Held in the model because `dialog()` hands out borrows.
+    move_rows: Vec<usize>,
     /// What can be taken back, newest last. Capped, because each move entry
     /// holds its messages' bytes.
     undo_stack: Vec<UndoEntry>,
@@ -401,6 +407,27 @@ pub enum Reverse {
 /// they re-triage.
 const UNDO_DEPTH: usize = 10;
 
+/// Which folder dialog is open, and its editable state.
+///
+/// Rename and delete act on the folder selected in the sidebar; the enum does
+/// not carry one so the dialog cannot outlive a folder-list refresh and act
+/// on a folder that moved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FolderDialog {
+    Create {
+        name: String,
+    },
+    Rename {
+        name: String,
+    },
+    Delete,
+    /// The move picker: its query, and which row is highlighted.
+    Move {
+        query: String,
+        selected: usize,
+    },
+}
+
 #[derive(Clone, Debug)]
 pub enum Message {
     LaunchUrl(String),
@@ -514,6 +541,20 @@ pub enum Message {
     AttachFile,
     FilePicked(Result<Vec<std::path::PathBuf>, String>),
     AttachmentRemoved(usize),
+    /// One of the folder dialogs was asked for.
+    FolderDialogOpened(FolderDialog),
+    /// The create/rename dialog's name field changed.
+    FolderNameChanged(String),
+    /// The move picker's query changed.
+    MoveQueryChanged(String),
+    /// A folder was picked in the move picker.
+    MovePicked(usize),
+    FolderDialogConfirmed,
+    FolderDialogCancelled,
+    /// A folder operation finished on the worker; the string is the status to
+    /// show.
+    FolderOpFinished(Box<Result<String, String>>),
+
     DraftOpened(String),
     DraftDeleted(String),
     /// The drafts mirror finished a pass: `Ok(None)` when there was nothing
@@ -612,6 +653,8 @@ impl cosmic::Application for AppModel {
             sign_in_email: String::new(),
             signing_in: false,
             palette: None,
+            folder_dialog: None,
+            move_rows: Vec::new(),
             palette_rows: Vec::new(),
             undo_stack: Vec::new(),
             drafts: Vec::new(),
@@ -693,6 +736,11 @@ impl cosmic::Application for AppModel {
                     vec![
                         item(Action::Compose),
                         item(Action::ImportMbox),
+                        menu::Item::Divider,
+                        item(Action::MoveToFolder),
+                        item(Action::NewFolder),
+                        item(Action::RenameFolder),
+                        item(Action::DeleteFolder),
                         menu::Item::Divider,
                         item(Action::Search),
                         item(Action::Sync),
@@ -850,6 +898,32 @@ impl cosmic::Application for AppModel {
     }
 
     fn dialog(&self) -> Option<Element<'_, Self::Message>> {
+        if let Some(dialog) = self.folder_dialog.as_ref() {
+            return match dialog {
+                FolderDialog::Create { name } => Some(crate::ui::folders::name_dialog(
+                    fl!("new-folder"),
+                    fl!("create"),
+                    name,
+                )),
+                FolderDialog::Rename { name } => Some(crate::ui::folders::name_dialog(
+                    fl!("rename-folder"),
+                    fl!("rename"),
+                    name,
+                )),
+                FolderDialog::Delete => {
+                    self.current_folder().map(crate::ui::folders::delete_dialog)
+                }
+                FolderDialog::Move { query, selected } => Some(
+                    crate::ui::folders::MovePicker {
+                        query,
+                        matches: &self.move_rows,
+                        folders: &self.folders,
+                        selected: *selected,
+                    }
+                    .view(),
+                ),
+            };
+        }
         let (query, selected) = self.palette.as_ref()?;
         let palette = crate::ui::palette::Palette {
             query,
@@ -1594,6 +1668,63 @@ impl cosmic::Application for AppModel {
                 Task::none()
             }
 
+            Message::FolderDialogOpened(dialog) => {
+                // One overlay at a time; a picker under a palette is neither.
+                self.palette = None;
+                self.palette_rows.clear();
+                self.folder_dialog = Some(dialog);
+                self.refresh_move_rows();
+                cosmic::widget::text_input::focus(crate::ui::FOLDER_NAME_ID.clone())
+            }
+            Message::FolderNameChanged(name) => {
+                if let Some(
+                    FolderDialog::Create { name: field } | FolderDialog::Rename { name: field },
+                ) = self.folder_dialog.as_mut()
+                {
+                    *field = name;
+                }
+                Task::none()
+            }
+            Message::MoveQueryChanged(query) => {
+                if let Some(FolderDialog::Move {
+                    query: field,
+                    selected,
+                }) = self.folder_dialog.as_mut()
+                {
+                    *field = query;
+                    // The list under the cursor just changed.
+                    *selected = 0;
+                }
+                self.refresh_move_rows();
+                Task::none()
+            }
+            Message::MovePicked(index) => {
+                self.folder_dialog = None;
+                self.move_rows.clear();
+                match self.folders.get(index).cloned() {
+                    Some(destination) => self.move_conversation_to(destination),
+                    None => Task::none(),
+                }
+            }
+            Message::FolderDialogCancelled => {
+                self.folder_dialog = None;
+                self.move_rows.clear();
+                Task::none()
+            }
+            Message::FolderDialogConfirmed => self.confirm_folder_dialog(),
+            Message::FolderOpFinished(result) => match *result {
+                Ok(status) => {
+                    self.status = Some(status);
+                    // The folder list is the server's; the sync is what makes
+                    // the change visible.
+                    self.sync_now()
+                }
+                Err(why) => {
+                    self.status = Some(why);
+                    Task::none()
+                }
+            },
+
             Message::DraftOpened(id) => self.open_draft(&id),
             Message::DraftDeleted(id) => {
                 if let Some(connection) = self.connection.as_ref()
@@ -1829,15 +1960,20 @@ impl AppModel {
     /// "archive" means the exchange is finished with, and leaving four of its
     /// six messages in the inbox is not what anybody meant.
     fn move_selected(&mut self, role: SpecialUse) -> Task<Message> {
+        let Some(destination) = mail::special(&self.folders, role).cloned() else {
+            self.status = Some(fl!("no-archive-folder"));
+            return Task::none();
+        };
+        self.move_conversation_to(destination)
+    }
+
+    /// Moves the selected conversation to `destination`, with undo.
+    fn move_conversation_to(&mut self, destination: Folder) -> Task<Message> {
         let (Some(connection), Some(folder), Some(index)) = (
             self.connection.clone(),
             self.current_folder().cloned(),
             self.selected_conversation,
         ) else {
-            return Task::none();
-        };
-        let Some(destination) = mail::special(&self.folders, role).cloned() else {
-            self.status = Some(fl!("no-archive-folder"));
             return Task::none();
         };
         if destination.wire_name == folder.wire_name {
@@ -2024,6 +2160,116 @@ impl AppModel {
             .unwrap_or_else(|why| Err(why.to_string()));
             Message::AttachmentSaved(result)
         })
+    }
+
+    /// The selected folder, if renaming or deleting it is a thing that can be
+    /// offered — with the reason in the status line when it cannot.
+    ///
+    /// Special-use folders are refused: INBOX cannot be deleted at all, and a
+    /// deleted Trash or Sent breaks every verb that files into it. The server
+    /// would refuse some of these anyway; refusing them all here means the
+    /// refusal comes with words rather than a server error code.
+    fn actionable_folder(&mut self) -> Option<Folder> {
+        let Some(folder) = self.current_folder().cloned() else {
+            self.status = Some(fl!("no-folder-selected"));
+            return None;
+        };
+        if folder.special_use.is_some() || folder.wire_name.eq_ignore_ascii_case("INBOX") {
+            self.status = Some(fl!("folder-is-special", name = folder.display_name));
+            return None;
+        }
+        Some(folder)
+    }
+
+    /// Recomputes what the move picker shows for its current query.
+    fn refresh_move_rows(&mut self) {
+        let Some(FolderDialog::Move { query, .. }) = self.folder_dialog.as_ref() else {
+            self.move_rows.clear();
+            return;
+        };
+        let current = self.current_folder().map(|f| f.wire_name.clone());
+        self.move_rows = self
+            .folders
+            .iter()
+            .enumerate()
+            .filter(|(_, folder)| {
+                // Not the folder the message is in — moving there is staying —
+                // and not a container the server refuses to SELECT.
+                !folder.no_select
+                    && Some(&folder.wire_name) != current.as_ref()
+                    && actions::label_matches(query, &folder.display_name)
+            })
+            .map(|(index, _)| index)
+            .collect();
+    }
+
+    /// Runs whichever folder dialog is open, on the worker.
+    fn confirm_folder_dialog(&mut self) -> Task<Message> {
+        let Some(dialog) = self.folder_dialog.take() else {
+            return Task::none();
+        };
+        // Read before the rows are cleared: the picker's selection is an index
+        // into them.
+        let picked = if let FolderDialog::Move { selected, .. } = &dialog {
+            self.move_rows.get(*selected).copied()
+        } else {
+            None
+        };
+        self.move_rows.clear();
+        let Some(connection) = self.connection.clone() else {
+            return Task::none();
+        };
+
+        match dialog {
+            FolderDialog::Create { name } => {
+                let status = fl!("folder-created", name = name.clone());
+                cosmic::task::future(async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        mail::create_folder(&connection, &name).map(|()| status)
+                    })
+                    .await
+                    .unwrap_or_else(|why| Err(why.to_string()));
+                    Message::FolderOpFinished(Box::new(result))
+                })
+            }
+            FolderDialog::Rename { name } => {
+                let Some(folder) = self.current_folder().cloned() else {
+                    return Task::none();
+                };
+                let status = fl!("folder-renamed", name = name.clone());
+                cosmic::task::future(async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        mail::rename_folder(&connection, &folder, &name).map(|()| status)
+                    })
+                    .await
+                    .unwrap_or_else(|why| Err(why.to_string()));
+                    Message::FolderOpFinished(Box::new(result))
+                })
+            }
+            FolderDialog::Delete => {
+                let Some(folder) = self.current_folder().cloned() else {
+                    return Task::none();
+                };
+                // The view must not keep showing a mailbox that is going away.
+                self.selected_folder = None;
+                self.conversations.clear();
+                self.selected_conversation = None;
+                self.opened = None;
+                let status = fl!("folder-deleted", name = folder.display_name.clone());
+                cosmic::task::future(async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        mail::delete_folder(&connection, &folder).map(|()| status)
+                    })
+                    .await
+                    .unwrap_or_else(|why| Err(why.to_string()));
+                    Message::FolderOpFinished(Box::new(result))
+                })
+            }
+            FolderDialog::Move { .. } => match picked.and_then(|i| self.folders.get(i)).cloned() {
+                Some(destination) => self.move_conversation_to(destination),
+                None => Task::none(),
+            },
+        }
     }
 
     /// Recomputes what the palette shows for its current query.
@@ -2257,6 +2503,23 @@ impl AppModel {
             }
         }
 
+        // The move picker's arrows, same mechanism as the palette's below.
+        if let Some(FolderDialog::Move { selected, .. }) = self.folder_dialog.as_mut() {
+            use cosmic::iced::keyboard::key::Named;
+            let last = self.move_rows.len().saturating_sub(1);
+            match key {
+                cosmic::iced::keyboard::Key::Named(Named::ArrowDown) => {
+                    *selected = (*selected + 1).min(last);
+                    return Task::none();
+                }
+                cosmic::iced::keyboard::Key::Named(Named::ArrowUp) => {
+                    *selected = selected.saturating_sub(1);
+                    return Task::none();
+                }
+                _ => {}
+            }
+        }
+
         // The palette's arrows, while it is open. Its input has focus, so
         // these arrive here only because a single-line input ignores vertical
         // arrows — which is exactly the gap that makes this work.
@@ -2355,6 +2618,30 @@ impl AppModel {
                 Task::none()
             }
 
+            Action::MoveToFolder => {
+                if self.selected_conversation.is_none() {
+                    return Task::none();
+                }
+                self.update(Message::FolderDialogOpened(FolderDialog::Move {
+                    query: String::new(),
+                    selected: 0,
+                }))
+            }
+            Action::NewFolder => self.update(Message::FolderDialogOpened(FolderDialog::Create {
+                name: String::new(),
+            })),
+            Action::RenameFolder => match self.actionable_folder() {
+                Some(folder) => {
+                    let name = folder.leaf_name().to_owned();
+                    self.update(Message::FolderDialogOpened(FolderDialog::Rename { name }))
+                }
+                None => Task::none(),
+            },
+            Action::DeleteFolder => match self.actionable_folder() {
+                Some(_) => self.update(Message::FolderDialogOpened(FolderDialog::Delete)),
+                None => Task::none(),
+            },
+
             Action::Palette => {
                 if self.palette.take().is_some() {
                     self.palette_rows.clear();
@@ -2426,6 +2713,10 @@ impl AppModel {
     /// composer, not the window, and Escape with nothing open clears the
     /// search.
     fn escape(&mut self) -> Task<Message> {
+        if self.folder_dialog.take().is_some() {
+            self.move_rows.clear();
+            return Task::none();
+        }
         if self.palette.take().is_some() {
             self.palette_rows.clear();
             return Task::none();

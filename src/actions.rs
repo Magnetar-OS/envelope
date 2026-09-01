@@ -55,6 +55,12 @@ pub enum Action {
     GoSent,
     GoArchive,
 
+    /// Move the open conversation to a folder chosen from a picker.
+    MoveToFolder,
+    NewFolder,
+    RenameFolder,
+    DeleteFolder,
+
     ImportMbox,
     Palette,
     Shortcuts,
@@ -88,6 +94,10 @@ impl Action {
             Self::GoOutbox => fl!("go-outbox"),
             Self::GoSent => fl!("go-sent"),
             Self::GoArchive => fl!("go-archive"),
+            Self::MoveToFolder => fl!("move-to-folder"),
+            Self::NewFolder => fl!("new-folder"),
+            Self::RenameFolder => fl!("rename-folder"),
+            Self::DeleteFolder => fl!("delete-folder"),
             Self::ImportMbox => fl!("import-mbox"),
             Self::Palette => fl!("command-palette"),
             Self::Shortcuts => fl!("shortcuts"),
@@ -110,10 +120,12 @@ impl Action {
             | Self::Delete
             | Self::ToggleRead
             | Self::ToggleFlagged
+            | Self::MoveToFolder
             | Self::Undo => Group::Reading,
             Self::GoInbox | Self::GoDrafts | Self::GoOutbox | Self::GoSent | Self::GoArchive => {
                 Group::Going
             }
+            Self::NewFolder | Self::RenameFolder | Self::DeleteFolder => Group::Folders,
             Self::Search
             | Self::Sync
             | Self::Escape
@@ -142,6 +154,7 @@ impl Action {
                 | Self::Delete
                 | Self::ToggleRead
                 | Self::ToggleFlagged
+                | Self::MoveToFolder
         )
     }
 }
@@ -152,6 +165,7 @@ pub enum Group {
     Reading,
     Writing,
     Going,
+    Folders,
     Application,
 }
 
@@ -162,11 +176,18 @@ impl Group {
             Self::Reading => fl!("group-reading"),
             Self::Writing => fl!("group-writing"),
             Self::Going => fl!("group-going"),
+            Self::Folders => fl!("group-folders"),
             Self::Application => fl!("group-application"),
         }
     }
 
-    pub const ALL: [Self; 4] = [Self::Reading, Self::Writing, Self::Going, Self::Application];
+    pub const ALL: [Self; 5] = [
+        Self::Reading,
+        Self::Writing,
+        Self::Going,
+        Self::Folders,
+        Self::Application,
+    ];
 }
 
 /// A key that can be pressed on its own.
@@ -383,6 +404,32 @@ pub fn bindings() -> Vec<Binding> {
         Binding {
             action: Action::GoArchive,
             bare: Some(Bare::Chord('g', 'a')),
+            combination: None,
+            handled_by_framework: false,
+        },
+        // Folders
+        Binding {
+            // Gmail's key for it, same as the rest of the single letters.
+            action: Action::MoveToFolder,
+            bare: Some(Bare::Key('v')),
+            combination: None,
+            handled_by_framework: false,
+        },
+        Binding {
+            action: Action::NewFolder,
+            bare: None,
+            combination: None,
+            handled_by_framework: false,
+        },
+        Binding {
+            action: Action::RenameFolder,
+            bare: None,
+            combination: None,
+            handled_by_framework: false,
+        },
+        Binding {
+            action: Action::DeleteFolder,
+            bare: None,
             combination: None,
             handled_by_framework: false,
         },

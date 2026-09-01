@@ -4,6 +4,7 @@
 
 pub mod accounts;
 pub mod composer;
+pub mod folders;
 pub mod list;
 pub mod palette;
 pub mod reader;
@@ -55,6 +56,11 @@ pub fn relative_date(date: Option<DateTime<Utc>>) -> String {
 /// The palette's input, so opening it can focus it.
 pub static PALETTE_ID: std::sync::LazyLock<cosmic::widget::Id> =
     std::sync::LazyLock::new(|| cosmic::widget::Id::new("palette"));
+
+/// The folder dialogs' input — the name field, and the move picker's query —
+/// so opening either can focus it.
+pub static FOLDER_NAME_ID: std::sync::LazyLock<cosmic::widget::Id> =
+    std::sync::LazyLock::new(|| cosmic::widget::Id::new("folder-name"));
 
 /// A byte count as a person reads one.
 ///

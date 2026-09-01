@@ -200,3 +200,22 @@ crashed-last-time = Envelope crashed last time. What happened is in { $path }
 
 # Drafts mirror
 draft-sync-failed = Drafts could not reach the server: { $reason }
+
+# Folders
+move-to-folder = Move to folder…
+new-folder = New folder…
+rename-folder = Rename folder…
+delete-folder = Delete folder…
+group-folders = Folders
+folder-name-placeholder = Folder name
+move-placeholder = Type a folder name
+move-nothing = No folder matches.
+create = Create
+rename = Rename
+folder-created = { $name } created.
+folder-renamed = Renamed to { $name }.
+folder-deleted = { $name } deleted.
+delete-folder-title = Delete { $name }?
+delete-folder-warning = The folder and every message in it will be deleted on the server. This cannot be undone.
+folder-is-special = { $name } has a role the server relies on, so it stays as it is.
+no-folder-selected = Select a folder first.
