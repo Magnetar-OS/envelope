@@ -8,6 +8,7 @@ pub mod folders;
 pub mod list;
 pub mod palette;
 pub mod reader;
+pub mod rules;
 pub mod settings;
 pub mod shortcuts;
 pub mod sidebar;

@@ -219,3 +219,29 @@ delete-folder-title = Delete { $name }?
 delete-folder-warning = The folder and every message in it will be deleted on the server. This cannot be undone.
 folder-is-special = { $name } has a role the server relies on, so it stays as it is.
 no-folder-selected = Select a folder first.
+
+# Rules
+rules = Filter rules
+rules-active = Rules
+rules-none = No rules yet. Mail arrives untouched until you add one.
+rules-add = Add a rule
+rule-name-placeholder = Name (optional)
+rule-contains-placeholder = contains…
+rule-field-sender = Sender
+rule-field-recipients = Recipients
+rule-field-subject = Subject
+rule-field-list = Mailing list
+rule-mark-read = Mark read
+rule-star = Star
+rule-delete = Delete
+rule-delete-hint = Moves the message to Trash, the same as the Delete key.
+rule-move = Move to
+rule-move-none = —
+rule-add = Add rule
+rule-summary-match = { $field } contains “{ $text }”
+rule-summary-move = move to { $folder }
+rules-applied = { $count ->
+        [one] A rule filed one message.
+       *[other] Rules filed { $count } messages.
+    }
+rule-failed = The rule “{ $rule }” could not run: { $reason }

@@ -87,6 +87,14 @@ pub struct AppModel {
     /// The folders the move picker is showing, as indices into `folders`.
     /// Held in the model because `dialog()` hands out borrows.
     move_rows: Vec<usize>,
+    /// The account's filter rules, as loaded for the Rules page.
+    rules: Vec<cosmic_pim_mail::rules::Rule>,
+    rule_form: RuleForm,
+    /// The move dropdown's rows: labels for the view, wire names to store.
+    /// Index 0 is "no move". Held in the model because dropdown labels must
+    /// outlive the view.
+    rule_move_labels: Vec<String>,
+    rule_move_wires: Vec<String>,
     /// What can be taken back, newest last. Capped, because each move entry
     /// holds its messages' bytes.
     undo_stack: Vec<UndoEntry>,
@@ -541,6 +549,20 @@ pub enum Message {
     AttachFile,
     FilePicked(Result<Vec<std::path::PathBuf>, String>),
     AttachmentRemoved(usize),
+    /// A rule's enabled toggle.
+    RuleToggled(usize, bool),
+    RuleDeleted(usize),
+    RuleFormNameChanged(String),
+    RuleFormFieldSelected(usize),
+    RuleFormContainsChanged(String),
+    RuleFormMarkRead(bool),
+    RuleFormStar(bool),
+    RuleFormDelete(bool),
+    RuleFormMoveSelected(usize),
+    RuleFormSubmitted,
+    /// A rules pass ran after a sync; `Ok(None)` means nothing to do.
+    RulesApplied(Box<Result<Option<mail::RulesReport>, String>>),
+
     /// One of the folder dialogs was asked for.
     FolderDialogOpened(FolderDialog),
     /// The create/rename dialog's name field changed.
@@ -573,6 +595,23 @@ pub enum ContextPage {
     Accounts,
     Settings,
     Shortcuts,
+    Rules,
+}
+
+/// The add-a-rule form, as typed so far.
+///
+/// Indices rather than values for the two dropdowns, because a dropdown
+/// speaks in rows: `field` indexes [`crate::ui::rules::FIELDS`], `move_to`
+/// indexes the labels built beside `rule_move_wires` (0 is "no move").
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuleForm {
+    pub name: String,
+    pub field: usize,
+    pub contains: String,
+    pub mark_read: bool,
+    pub star: bool,
+    pub delete: bool,
+    pub move_to: usize,
 }
 
 /// The menu's entries are registry actions, so a menu item and the keystroke
@@ -655,6 +694,10 @@ impl cosmic::Application for AppModel {
             palette: None,
             folder_dialog: None,
             move_rows: Vec::new(),
+            rules: Vec::new(),
+            rule_form: RuleForm::default(),
+            rule_move_labels: Vec::new(),
+            rule_move_wires: Vec::new(),
             palette_rows: Vec::new(),
             undo_stack: Vec::new(),
             drafts: Vec::new(),
@@ -745,6 +788,7 @@ impl cosmic::Application for AppModel {
                         item(Action::Search),
                         item(Action::Sync),
                         menu::Item::Divider,
+                        item(Action::Rules),
                         item(Action::Shortcuts),
                         item(Action::Settings),
                         item(Action::Accounts),
@@ -968,6 +1012,17 @@ impl cosmic::Application for AppModel {
                 Message::ToggleContextPage(ContextPage::Shortcuts),
             )
             .title(fl!("shortcuts")),
+            ContextPage::Rules => context_drawer::context_drawer(
+                crate::ui::rules::Rules {
+                    rules: &self.rules,
+                    form: &self.rule_form,
+                    move_labels: &self.rule_move_labels,
+                    folders: &self.folders,
+                }
+                .view(),
+                Message::ToggleContextPage(ContextPage::Rules),
+            )
+            .title(fl!("rules")),
         })
     }
 
@@ -1114,6 +1169,8 @@ impl cosmic::Application for AppModel {
                             // server's Drafts folder on the same schedule as
                             // every other queued write.
                             self.sweep_drafts_now(),
+                            // Filters run over what the pass just brought in.
+                            self.apply_rules_now(),
                             // The first successful sync proves the connection
                             // works; that is the moment to park the watch.
                             self.start_watch(),
@@ -1668,6 +1725,118 @@ impl cosmic::Application for AppModel {
                 Task::none()
             }
 
+            Message::RuleToggled(index, on) => {
+                if let Some(rule) = self.rules.get_mut(index) {
+                    rule.enabled = on;
+                    self.save_rules_now();
+                }
+                Task::none()
+            }
+            Message::RuleDeleted(index) => {
+                if index < self.rules.len() {
+                    self.rules.remove(index);
+                    self.save_rules_now();
+                }
+                Task::none()
+            }
+            Message::RuleFormNameChanged(name) => {
+                self.rule_form.name = name;
+                Task::none()
+            }
+            Message::RuleFormFieldSelected(index) => {
+                self.rule_form.field = index;
+                Task::none()
+            }
+            Message::RuleFormContainsChanged(text) => {
+                self.rule_form.contains = text;
+                Task::none()
+            }
+            Message::RuleFormMarkRead(on) => {
+                self.rule_form.mark_read = on;
+                Task::none()
+            }
+            Message::RuleFormStar(on) => {
+                self.rule_form.star = on;
+                Task::none()
+            }
+            Message::RuleFormDelete(on) => {
+                self.rule_form.delete = on;
+                Task::none()
+            }
+            Message::RuleFormMoveSelected(index) => {
+                self.rule_form.move_to = index;
+                Task::none()
+            }
+            Message::RuleFormSubmitted => {
+                use cosmic_pim_mail::rules::{Actions, Condition, Rule};
+                let contains = self.rule_form.contains.trim().to_owned();
+                if contains.is_empty() {
+                    return Task::none();
+                }
+                let field = crate::ui::rules::FIELDS
+                    .get(self.rule_form.field)
+                    .copied()
+                    .unwrap_or(cosmic_pim_mail::rules::Field::Sender);
+                // Index 0 of the dropdown is "no move"; the wires start at 1.
+                let move_to = self
+                    .rule_form
+                    .move_to
+                    .checked_sub(1)
+                    .and_then(|index| self.rule_move_wires.get(index).cloned());
+                let name = if self.rule_form.name.trim().is_empty() {
+                    // A rule needs a name for its row; the pattern is the
+                    // honest default.
+                    contains.clone()
+                } else {
+                    self.rule_form.name.trim().to_owned()
+                };
+                self.rules.push(Rule {
+                    name,
+                    conditions: vec![Condition { field, contains }],
+                    actions: Actions {
+                        move_to,
+                        mark_read: self.rule_form.mark_read,
+                        star: self.rule_form.star,
+                        delete: self.rule_form.delete,
+                    },
+                    ..Rule::default()
+                });
+                self.rule_form = RuleForm::default();
+                self.save_rules_now();
+                Task::none()
+            }
+            Message::RulesApplied(result) => {
+                match *result {
+                    Ok(Some(report)) => {
+                        if let Some((rule, why)) = report.failures.first() {
+                            self.status = Some(fl!(
+                                "rule-failed",
+                                rule = rule.clone(),
+                                reason = why.clone()
+                            ));
+                        } else if report.matched > 0 {
+                            self.status = Some(fl!("rules-applied", count = report.matched));
+                        }
+                        if report.matched > 0 {
+                            // Rules moved or reflagged messages after the
+                            // post-sync reload; show the result, not the
+                            // moment before it.
+                            return Task::batch([
+                                self.reload_conversations(),
+                                if self.showing_unified {
+                                    self.reload_unified()
+                                } else {
+                                    Task::none()
+                                },
+                            ]);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(why) => self.status = Some(why),
+                }
+                Task::none()
+            }
+
             Message::FolderDialogOpened(dialog) => {
                 // One overlay at a time; a picker under a palette is neither.
                 self.palette = None;
@@ -2162,6 +2331,45 @@ impl AppModel {
         })
     }
 
+    /// Writes the rules as shown back to disk, saying so if it fails.
+    fn save_rules_now(&mut self) {
+        if let Some(connection) = self.connection.as_ref()
+            && let Err(why) = mail::save_rules(connection, &self.rules)
+        {
+            self.status = Some(why);
+        }
+    }
+
+    /// Loads the rules and rebuilds the move dropdown before the page shows.
+    fn open_rules_page(&mut self) {
+        if let Some(connection) = self.connection.as_ref() {
+            match mail::load_rules(connection) {
+                Ok(rules) => self.rules = rules,
+                Err(why) => self.status = Some(why),
+            }
+        }
+        let movable: Vec<&Folder> = self.folders.iter().filter(|f| !f.no_select).collect();
+        self.rule_move_labels = std::iter::once(fl!("rule-move-none"))
+            .chain(movable.iter().map(|f| f.display_name.clone()))
+            .collect();
+        self.rule_move_wires = movable.iter().map(|f| f.wire_name.clone()).collect();
+    }
+
+    /// Runs the rules over newly arrived mail, on the worker.
+    fn apply_rules_now(&self) -> Task<Message> {
+        let Some(connection) = self.connection.clone() else {
+            return Task::none();
+        };
+        let folders = self.folders.clone();
+        cosmic::task::future(async move {
+            let result =
+                tokio::task::spawn_blocking(move || mail::apply_rules(&connection, &folders))
+                    .await
+                    .unwrap_or_else(|why| Err(why.to_string()));
+            Message::RulesApplied(Box::new(result))
+        })
+    }
+
     /// The selected folder, if renaming or deleting it is a thing that can be
     /// offered — with the reason in the status line when it cannot.
     ///
@@ -2650,6 +2858,10 @@ impl AppModel {
                 self.palette = Some((String::new(), 0));
                 self.refresh_palette_rows();
                 cosmic::widget::text_input::focus(crate::ui::PALETTE_ID.clone())
+            }
+            Action::Rules => {
+                self.open_rules_page();
+                self.update(Message::ToggleContextPage(ContextPage::Rules))
             }
             Action::Shortcuts => self.update(Message::ToggleContextPage(ContextPage::Shortcuts)),
             Action::Settings => self.update(Message::ToggleContextPage(ContextPage::Settings)),

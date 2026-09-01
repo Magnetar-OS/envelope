@@ -1116,6 +1116,163 @@ pub fn special(folders: &[Folder], role: SpecialUse) -> Option<&Folder> {
     folders.iter().find(|f| f.special_use == Some(role))
 }
 
+/// This account's filter rules, as stored.
+pub fn load_rules(connection: &Connection) -> Result<Vec<cosmic_pim_mail::rules::Rule>, String> {
+    cosmic_pim_mail::rules::Rules::open(connection.root.join(&connection.account_id))
+        .map(|store| store.rules)
+        .map_err(|why| why.to_string())
+}
+
+/// Writes the account's rules back.
+pub fn save_rules(
+    connection: &Connection,
+    rules: &[cosmic_pim_mail::rules::Rule],
+) -> Result<(), String> {
+    let mut store =
+        cosmic_pim_mail::rules::Rules::open(connection.root.join(&connection.account_id))
+            .map_err(|why| why.to_string())?;
+    store.rules = rules.to_vec();
+    store.save().map_err(|why| why.to_string())
+}
+
+/// What one rules pass did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RulesReport {
+    /// Messages at least one rule acted on.
+    pub matched: usize,
+    /// Rules that asked for something the account cannot do — a move to a
+    /// folder that is gone, a delete with no Trash. `(rule name, why)`.
+    pub failures: Vec<(String, String)>,
+}
+
+/// Where the rules pass keeps its high-water mark, per mailbox.
+///
+/// Client state in the same sense as `.imap-state.json`: derived from
+/// nothing, rebuildable by accepting a one-time re-run, dot-prefixed so no
+/// maildir walker adopts it.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct RulesState {
+    /// Highest UID already offered to the rules, by wire name.
+    #[serde(default)]
+    processed: HashMap<String, u32>,
+}
+
+/// Applies the account's rules to mail that arrived since the last pass.
+///
+/// The inbox only — rules are about arriving mail, and everything arrives in
+/// INBOX. The first pass with rules present records the high-water mark and
+/// processes nothing: rules act on what arrives after they exist, not on ten
+/// years of archive the moment one is written.
+///
+/// Blocking, for a worker thread, after a sync pass. Returns `None` when
+/// there are no rules or nothing new.
+pub fn apply_rules(
+    connection: &Connection,
+    folders: &[Folder],
+) -> Result<Option<RulesReport>, String> {
+    let rules = load_rules(connection)?;
+    if rules.iter().all(|rule| !rule.enabled) {
+        return Ok(None);
+    }
+
+    let inbox = special(folders, SpecialUse::Inbox)
+        .cloned()
+        .unwrap_or_else(|| cosmic_pim_mail::folder::from_list_entry("INBOX", Some('/'), &[]));
+    let store =
+        MaildirStore::open(connection.mailbox_path(&inbox)).map_err(|why| why.to_string())?;
+    let entries = store.state().map_err(|why| why.to_string())?.entries;
+    let newest = entries.keys().max().copied().unwrap_or(0);
+
+    let state_path = connection
+        .root
+        .join(&connection.account_id)
+        .join(".rules-state.json");
+    let mut state: RulesState = std::fs::read_to_string(&state_path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+
+    let Some(&mark) = state.processed.get(&inbox.wire_name) else {
+        // First pass: record where "new" starts and touch nothing.
+        state.processed.insert(inbox.wire_name.clone(), newest);
+        write_rules_state(&state_path, &state)?;
+        return Ok(None);
+    };
+
+    let fresh: Vec<u32> = entries.keys().copied().filter(|uid| *uid > mark).collect();
+    if fresh.is_empty() {
+        return Ok(None);
+    }
+
+    let mut report = RulesReport::default();
+    for uid in &fresh {
+        let Ok(Some(raw)) = store.raw(*uid) else {
+            continue;
+        };
+        let Some(message) = Message::parse(&raw) else {
+            continue;
+        };
+        let plan = cosmic_pim_mail::rules::evaluate(&rules, &message);
+        if plan.is_empty() {
+            continue;
+        }
+        report.matched += 1;
+
+        if plan.mark_read || plan.star {
+            let (mark_read, star) = (plan.mark_read, plan.star);
+            set_flags(connection, &inbox, &[*uid], move |flags| Flags {
+                seen: flags.seen || mark_read,
+                flagged: flags.flagged || star,
+                ..flags
+            })?;
+        }
+        // Deletion means Trash, the same as the Delete key: a rule is
+        // automation of a verb the user has, not a stronger one.
+        let destination = if plan.delete {
+            match special(folders, SpecialUse::Trash) {
+                Some(trash) => Some(trash.clone()),
+                None => {
+                    report.failures.push((
+                        plan.matched.join(", "),
+                        "this account has no Trash folder to delete into".into(),
+                    ));
+                    None
+                }
+            }
+        } else if let Some(wire) = &plan.move_to {
+            match folders.iter().find(|f| &f.wire_name == wire) {
+                Some(folder) => Some(folder.clone()),
+                None => {
+                    report.failures.push((
+                        plan.matched.join(", "),
+                        format!("{wire} is no longer a folder on this account"),
+                    ));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(destination) = destination {
+            move_to(connection, &inbox, &destination, &[*uid])?;
+        }
+    }
+
+    state.processed.insert(inbox.wire_name.clone(), newest);
+    write_rules_state(&state_path, &state)?;
+    Ok(Some(report))
+}
+
+fn write_rules_state(path: &std::path::Path, state: &RulesState) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(state).map_err(|why| why.to_string())?;
+    // Write-then-rename, so a crash mid-write cannot leave a torn file. A
+    // torn file here would silently re-initialise the high-water mark and
+    // skip a window of mail the rules were supposed to see.
+    let temp = path.with_extension("json.new");
+    std::fs::write(&temp, json).map_err(|why| why.to_string())?;
+    std::fs::rename(&temp, path).map_err(|why| why.to_string())
+}
+
 /// A session for a one-off folder operation. IMAP only: the label-shaped
 /// engines manage folders through their own APIs, which are not wired yet.
 fn folder_session(connection: &Connection) -> Result<Session, String> {

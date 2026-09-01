@@ -62,6 +62,8 @@ pub enum Action {
     DeleteFolder,
 
     ImportMbox,
+    /// The filter-rules page.
+    Rules,
     Palette,
     Shortcuts,
     Settings,
@@ -99,6 +101,7 @@ impl Action {
             Self::RenameFolder => fl!("rename-folder"),
             Self::DeleteFolder => fl!("delete-folder"),
             Self::ImportMbox => fl!("import-mbox"),
+            Self::Rules => fl!("rules"),
             Self::Palette => fl!("command-palette"),
             Self::Shortcuts => fl!("shortcuts"),
             Self::Settings => fl!("settings"),
@@ -130,6 +133,7 @@ impl Action {
             | Self::Sync
             | Self::Escape
             | Self::ImportMbox
+            | Self::Rules
             | Self::Palette
             | Self::Shortcuts
             | Self::Settings
@@ -454,6 +458,12 @@ pub fn bindings() -> Vec<Binding> {
         },
         Binding {
             action: Action::ImportMbox,
+            bare: None,
+            combination: None,
+            handled_by_framework: false,
+        },
+        Binding {
+            action: Action::Rules,
             bare: None,
             combination: None,
             handled_by_framework: false,

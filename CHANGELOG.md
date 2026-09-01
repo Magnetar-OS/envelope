@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Filter rules: match arriving mail on sender, recipients, subject, or
+  mailing list, and file, read, star, or delete it — automation of the verbs
+  you already have. Edited on the Filter rules page or by hand in the
+  account's `.rules.toml`; rules act on mail that arrives after they exist,
+  never retroactively on the archive.
 - Server-side drafts: a saved draft now appears in the account's Drafts
   folder, edits replace the server copy rather than accumulating beside it,
   and a discard retires it — including discards made offline. Opening a
