@@ -276,3 +276,7 @@ aliases-hint = Other addresses this account may send as. Your provider has to ac
 alias-placeholder = Name <address@example.com>
 alias-add = Add
 alias-needs-address = An alias needs an address with an @ in it.
+
+# Delivery failures
+bounce-notice = Could not be delivered to { $recipient }: { $reason }
+bounce-arrived = A message to { $recipient } could not be delivered.

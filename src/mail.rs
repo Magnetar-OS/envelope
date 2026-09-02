@@ -55,6 +55,10 @@ pub struct Opened {
     /// The `Authentication-Results` rollup, or empty when the message carried
     /// none.
     pub auth: &'static str,
+    /// When this message is a bounce: `(recipient, reason)` per failed
+    /// delivery, so the reader can say what happened instead of showing raw
+    /// MTA prose as if it were correspondence.
+    pub bounces: Vec<(String, String)>,
 }
 
 /// What one sync pass did, as the status line reports it.
@@ -1036,10 +1040,43 @@ pub fn open(connection: &Connection, folder: &Folder, uid: u32) -> Result<Opened
 
     Ok(Opened {
         auth: cosmic_pim_mail::auth::rollup(&message.auth),
+        bounces: bounces_in(&raw, &message),
         uid,
         message,
         flags,
     })
+}
+
+/// The delivery failures a message reports, as `(recipient, reason)` lines.
+///
+/// Structured reports first, the loose Postfix-style prose bounce as the
+/// fallback. Delayed notifications are kept — "still trying" is worth a
+/// line — and complaints are not: an ARF report in a personal inbox is the
+/// list operator's business.
+fn bounces_in(raw: &[u8], message: &Message) -> Vec<(String, String)> {
+    use cosmic_pim_mail::dsn::{self, BounceKind};
+    let records = dsn::parse_report(raw).or_else(|| {
+        let from = message
+            .sender()
+            .map(|m| m.address.as_str())
+            .unwrap_or_default();
+        dsn::parse_loose(from, &message.subject, &message.body.text).map(|record| vec![record])
+    });
+    records
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|record| record.kind != BounceKind::Complaint)
+        .map(|record| {
+            let mut reason = record.status_code;
+            if !record.diagnostic.is_empty() {
+                if !reason.is_empty() {
+                    reason.push_str(" — ");
+                }
+                reason.push_str(&record.diagnostic);
+            }
+            (record.recipient, reason)
+        })
+        .collect()
 }
 
 /// Applies a flag change locally and queues it for the server.
@@ -1369,6 +1406,10 @@ pub struct RulesReport {
     /// Rules that asked for something the account cannot do — a move to a
     /// folder that is gone, a delete with no Trash. `(rule name, why)`.
     pub failures: Vec<(String, String)>,
+    /// Bounces among the new arrivals: `(recipient, reason)`. Collected here
+    /// because this pass is already parsing exactly the messages that just
+    /// arrived, and a delivery failure is news worth a status line.
+    pub bounces: Vec<(String, String)>,
 }
 
 /// Where the rules pass keeps its high-water mark, per mailbox.
@@ -1397,9 +1438,6 @@ pub fn apply_rules(
     folders: &[Folder],
 ) -> Result<Option<RulesReport>, String> {
     let rules = load_rules(connection)?;
-    if rules.iter().all(|rule| !rule.enabled) {
-        return Ok(None);
-    }
 
     let inbox = special(folders, SpecialUse::Inbox)
         .cloned()
@@ -1438,6 +1476,8 @@ pub fn apply_rules(
         let Some(message) = Message::parse(&raw) else {
             continue;
         };
+        report.bounces.extend(bounces_in(&raw, &message));
+
         let plan = cosmic_pim_mail::rules::evaluate(&rules, &message);
         if plan.is_empty() {
             continue;

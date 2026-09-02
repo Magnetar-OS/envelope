@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Bounces read as reports, not correspondence: a delivery failure arriving in
+  the inbox is announced in the status line, and opening one shows who could
+  not be reached and the server's reason — with the classification that
+  matters (a DMARC or quota failure is your provider's problem, not a dead
+  address; a full mailbox is not a gone correspondent).
 - Send-as aliases: add the other addresses your provider accepts on the
   Accounts page, and the composer grows a From picker. A reply goes out as
   the address the original was sent to, drafts keep the identity they were

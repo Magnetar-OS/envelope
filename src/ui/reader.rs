@@ -198,6 +198,17 @@ impl<'a> Reader<'a> {
     fn notices(&self, opened: &'a Opened) -> Vec<Element<'a, Message>> {
         let mut notices: Vec<Element<'a, Message>> = Vec::new();
 
+        // A bounce read as correspondence is MTA prose; read as a report it
+        // is one line per failed recipient, in words. The raw text stays
+        // below for the diagnosis the line cannot carry.
+        for (recipient, reason) in &opened.bounces {
+            notices.push(crate::ui::destructive(fl!(
+                "bounce-notice",
+                recipient = recipient.clone(),
+                reason = reason.clone()
+            )));
+        }
+
         match opened.auth {
             "fail" => notices.push(crate::ui::destructive(fl!(
                 "auth-fail",

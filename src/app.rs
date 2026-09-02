@@ -1960,7 +1960,12 @@ impl cosmic::Application for AppModel {
             Message::RulesApplied(result) => {
                 match *result {
                     Ok(Some(report)) => {
-                        if let Some((rule, why)) = report.failures.first() {
+                        // A delivery failure outranks "rules filed n": one is
+                        // news about the user's own words not arriving.
+                        if let Some((recipient, _)) = report.bounces.first() {
+                            self.status =
+                                Some(fl!("bounce-arrived", recipient = recipient.clone()));
+                        } else if let Some((rule, why)) = report.failures.first() {
                             self.status = Some(fl!(
                                 "rule-failed",
                                 rule = rule.clone(),
