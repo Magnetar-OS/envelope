@@ -8,6 +8,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Calendar invitations hand off to the calendar: a message carrying a
+  `text/calendar` part with a METHOD grows an "Open in calendar" button that
+  hands the invitation, byte-for-byte, to Slate when it is running — the
+  accept/decline decision happens there. In return, Envelope accepts
+  scheduling replies from Slate and sends them through the durable outbox.
+  Neither app launches the other; without Slate, the .ics saves like any
+  attachment.
 - Bounces read as reports, not correspondence: a delivery failure arriving in
   the inbox is announced in the status line, and opening one shows who could
   not be reached and the server's reason — with the classification that

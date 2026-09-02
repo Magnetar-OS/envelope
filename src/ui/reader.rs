@@ -70,6 +70,24 @@ impl<'a> Reader<'a> {
             column = column.push(notice);
         }
 
+        // The iMIP hand-off. The decision about an invitation belongs in the
+        // calendar; this button only moves the payload there. When Slate is
+        // not running the press says so, and the part is still saveable below
+        // like any attachment — degradation is part of the contract.
+        if opened.invitation.is_some() {
+            column = column.push(
+                widget::row::with_capacity(2)
+                    .align_y(Alignment::Center)
+                    .spacing(spacing.space_xxs)
+                    .push(widget::text::caption(fl!("invitation-notice")).width(Length::Fill))
+                    .push(
+                        widget::button::text(fl!("open-in-calendar"))
+                            .class(cosmic::theme::Button::Suggested)
+                            .on_press(Message::OpenInCalendar),
+                    ),
+            );
+        }
+
         if !message.attachments.is_empty() {
             column = column.push(self.attachments(opened));
         }

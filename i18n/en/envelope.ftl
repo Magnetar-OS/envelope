@@ -280,3 +280,13 @@ alias-needs-address = An alias needs an address with an @ in it.
 # Delivery failures
 bounce-notice = Could not be delivered to { $recipient }: { $reason }
 bounce-arrived = A message to { $recipient } could not be delivered.
+
+# Calendar invitations (the iMIP hand-off)
+invitation-notice = This message carries a calendar invitation.
+open-in-calendar = Open in calendar
+invitation-in-calendar = The invitation is in your calendar — decide there.
+invitation-refused = The calendar declined the invitation payload.
+calendar-not-running = The calendar app is not running. You can save the .ics file below instead.
+invitation-failed = The invitation could not be handed to the calendar: { $reason }
+scheduling-reply-subject = Reply to a calendar invitation
+scheduling-reply-body = This message carries a reply to a calendar invitation.

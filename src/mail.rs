@@ -59,6 +59,10 @@ pub struct Opened {
     /// delivery, so the reader can say what happened instead of showing raw
     /// MTA prose as if it were correspondence.
     pub bounces: Vec<(String, String)>,
+    /// The scheduling payload, when the message carries one — a
+    /// `text/calendar` part with a METHOD. What the reader's "Open in
+    /// calendar" hands to Slate, verbatim.
+    pub invitation: Option<cosmic_pim_mail::calendar::Invitation>,
 }
 
 /// What one sync pass did, as the status line reports it.
@@ -1041,6 +1045,7 @@ pub fn open(connection: &Connection, folder: &Folder, uid: u32) -> Result<Opened
     Ok(Opened {
         auth: cosmic_pim_mail::auth::rollup(&message.auth),
         bounces: bounces_in(&raw, &message),
+        invitation: cosmic_pim_mail::calendar::invitation(&raw),
         uid,
         message,
         flags,

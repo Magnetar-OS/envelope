@@ -141,6 +141,11 @@ pub struct AppModel {
     watch_generation: u64,
     /// Whether a watch task is currently parked, so exactly one exists.
     watching: bool,
+    /// The session bus connection libcosmic owns for single-instance, once
+    /// handed over. What the iMIP hand-off calls Slate on; `None` before the
+    /// runtime connects, in which case the hand-off degrades to the save
+    /// affordance like any other absence.
+    dbus: Option<zbus::Connection>,
 
     /// What is in the search box. Empty means the box is closed.
     search: String,
@@ -515,6 +520,11 @@ pub enum Message {
     ConversationSelected(usize),
     MessageOpened(Box<Result<Opened, String>>),
 
+    /// Hand the open message's calendar part to Slate.
+    OpenInCalendar,
+    /// The hand-off came back — accepted, refused, or no calendar running.
+    InvitationDelivered(Result<crate::scheduling::Delivered, String>),
+
     ToggleRead,
     ToggleFlagged,
     Archive,
@@ -791,6 +801,7 @@ impl cosmic::Application for AppModel {
             send_delay: String::new(),
             watch_generation: 0,
             watching: false,
+            dbus: None,
             config: cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
                 .map(|context| match Config::get_entry(&context) {
                     Ok(config) => config,
@@ -1024,6 +1035,29 @@ impl cosmic::Application for AppModel {
             // has already done.
             cosmic::dbus_activation::Details::Activate => Task::none(),
         }
+    }
+
+    /// The runtime's session-bus connection, which owns this app's
+    /// single-instance name.
+    ///
+    /// Two uses, both the iMIP hand-off: outgoing calls to Slate ride it, and
+    /// the mailer side of the contract — `SendSchedulingReply`, the method
+    /// Slate calls to queue a reply — is exported here, on the name the
+    /// connection already owns. An export that fails leaves Envelope a mailer
+    /// without the hand-off, which is the degraded mode the contract already
+    /// allows for; it is logged, not fatal.
+    fn dbus_connection(&mut self, conn: zbus::Connection) -> Task<Self::Message> {
+        self.dbus = Some(conn.clone());
+        cosmic::iced::Task::future(async move {
+            if let Err(why) = conn
+                .object_server()
+                .at(crate::scheduling::ENVELOPE_PATH, crate::scheduling::Scheduling)
+                .await
+            {
+                tracing::warn!(%why, "the scheduling interface could not be exported");
+            }
+        })
+        .discard()
     }
 
     fn dialog(&self) -> Option<Element<'_, Self::Message>> {
@@ -1332,6 +1366,43 @@ impl cosmic::Application for AppModel {
                 // restored the moment the reader is not showing.
                 self.reader_error = None;
                 self.open_selected()
+            }
+
+            Message::OpenInCalendar => {
+                let Some(invitation) = self.opened.as_ref().and_then(|o| o.invitation.clone())
+                else {
+                    return Task::none();
+                };
+                let Some(account_id) = self
+                    .connection
+                    .as_ref()
+                    .map(|connection| connection.account_id.clone())
+                else {
+                    return Task::none();
+                };
+                let Some(conn) = self.dbus.clone() else {
+                    self.status = Some(fl!("calendar-not-running"));
+                    return Task::none();
+                };
+                cosmic::task::future(async move {
+                    Message::InvitationDelivered(
+                        crate::scheduling::deliver_invitation(&conn, invitation.ics, account_id)
+                            .await,
+                    )
+                })
+            }
+
+            Message::InvitationDelivered(result) => {
+                use crate::scheduling::Delivered;
+                self.status = Some(match result {
+                    Ok(Delivered::Accepted) => fl!("invitation-in-calendar"),
+                    Ok(Delivered::Refused) => fl!("invitation-refused"),
+                    // Absence, not an error: the part is still saveable from
+                    // the attachment list, and the status says so.
+                    Ok(Delivered::NoCalendar) => fl!("calendar-not-running"),
+                    Err(why) => fl!("invitation-failed", reason = why),
+                });
+                Task::none()
             }
 
             Message::MessageOpened(result) => {

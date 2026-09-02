@@ -215,9 +215,12 @@ also of little use without a send path, so it belongs after SMTP, not before.
   reader already has the address; this is small and blocked only on Circle's
   read path being exposed the way the sender lookup wants.
 - **Last-contact hook** for Circle's CRM layer (03).
-- **iMIP handoff to Slate** — the one cross-process contract in the suite.
-  Needs the scheduling module in 01 and a send path here, so it stays at suite
-  step 7.
+- **iMIP handoff to Slate** — **done on Envelope's side**, to the contract in
+  cosmic-pim's ARCHITECTURE.md: the reader offers "Open in calendar" on a
+  `text/calendar` part with a METHOD and hands the verbatim bytes to Slate's
+  `Scheduling1` (no `StartServiceByName`; absence degrades to save-the-file),
+  and Envelope exports `SendSchedulingReply` on its own name, queueing the
+  REPLY into the durable outbox. Waits only on Slate exporting its half.
 - **`mailto:` registration**, so Circle's compose actions and Slate's attendee
   links have a target. Needs the composer.
 - **envelope-launcher**, mirroring slate-launcher, over the tantivy index.

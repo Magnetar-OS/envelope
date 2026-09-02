@@ -20,6 +20,7 @@ pub mod flags;
 pub mod i18n;
 pub mod mail;
 pub mod mailto;
+pub mod scheduling;
 pub mod ui;
 
 /// Runs the application.
