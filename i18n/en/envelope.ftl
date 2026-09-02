@@ -269,3 +269,10 @@ send-already-gone = It already went — there is nothing to take back.
 undo-send-desc = Queued send
 send-delay = Wait before sending
 send-delay-hint = Seconds a sent message can still be taken back with z. 0 sends immediately.
+
+# Aliases
+aliases = Send-as aliases
+aliases-hint = Other addresses this account may send as. Your provider has to accept them.
+alias-placeholder = Name <address@example.com>
+alias-add = Add
+alias-needs-address = An alias needs an address with an @ in it.

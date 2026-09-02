@@ -87,6 +87,10 @@ pub struct AppModel {
     /// The folders the move picker is showing, as indices into `folders`.
     /// Held in the model because `dialog()` hands out borrows.
     move_rows: Vec<usize>,
+    /// The composer's From choices, as dropdown labels. Rebuilt with the
+    /// connection; held in the model because dropdown labels must outlive
+    /// the view.
+    identity_labels: Vec<String>,
     /// The account's filter rules, as loaded for the Rules page.
     rules: Vec<cosmic_pim_mail::rules::Rule>,
     rule_form: RuleForm,
@@ -273,6 +277,10 @@ pub struct MailForm {
     /// Empty means "the login, if it is an address".
     pub from_address: String,
     pub from_name: String,
+    /// The additional addresses this account may send as.
+    pub aliases: Vec<cosmic_pim_accounts::Alias>,
+    /// The alias being typed, as `Name <address>` or a bare address.
+    pub alias_input: String,
     /// Which protocol reads this account's mail.
     pub protocol: MailProtocol,
     /// The JMAP session resource. Meaningful only when the protocol is JMAP,
@@ -302,6 +310,8 @@ impl MailForm {
             smtp_transport: mail.map(|m| m.smtp_transport).unwrap_or_default(),
             from_address: mail.map(|m| m.from_address.clone()).unwrap_or_default(),
             from_name: mail.map(|m| m.from_name.clone()).unwrap_or_default(),
+            aliases: mail.map(|m| m.aliases.clone()).unwrap_or_default(),
+            alias_input: String::new(),
             protocol: mail.map(|m| m.protocol).unwrap_or_default(),
             jmap_url: mail
                 .and_then(|m| m.jmap_session_url.clone())
@@ -527,6 +537,9 @@ pub enum Message {
     MailFormSmtpTransportChanged(Transport),
     MailFormFromAddressChanged(String),
     MailFormFromNameChanged(String),
+    MailFormAliasInputChanged(String),
+    MailFormAliasAdded,
+    MailFormAliasRemoved(usize),
     MailFormCancel,
     MailFormSave,
     MailFormDiscover,
@@ -543,6 +556,8 @@ pub enum Message {
         all: bool,
     },
     Forward,
+    /// The composer's From dropdown.
+    ComposeFromSelected(usize),
     ComposeToChanged(String),
     ComposeCcChanged(String),
     ComposeBccChanged(String),
@@ -757,6 +772,7 @@ impl cosmic::Application for AppModel {
             palette: None,
             folder_dialog: None,
             move_rows: Vec::new(),
+            identity_labels: Vec::new(),
             rules: Vec::new(),
             rule_form: RuleForm::default(),
             rule_move_labels: Vec::new(),
@@ -1121,7 +1137,18 @@ impl cosmic::Application for AppModel {
         // extra steps: the list stays where it was, so the message being
         // answered is still one click away.
         let right = match self.composer.as_ref() {
-            Some(composer) => crate::ui::composer::view(composer),
+            Some(composer) => {
+                let selected = self
+                    .connection
+                    .as_ref()
+                    .and_then(|c| {
+                        c.identities.iter().position(|m| {
+                            m.address.eq_ignore_ascii_case(&composer.draft.from.address)
+                        })
+                    })
+                    .unwrap_or(0);
+                crate::ui::composer::view(composer, &self.identity_labels, selected)
+            }
             None => crate::ui::reader::Reader {
                 opened: self.opened.as_ref(),
                 error: self.reader_error.as_deref(),
@@ -1433,6 +1460,46 @@ impl cosmic::Application for AppModel {
                 })
             }
             Message::MailFormFromNameChanged(name) => self.with_form(|form| form.from_name = name),
+            Message::MailFormAliasInputChanged(text) => {
+                self.with_form(|form| form.alias_input = text)
+            }
+            Message::MailFormAliasAdded => {
+                // Not through with_form: that helper clears the error after
+                // the edit, and "that is not an address" must survive it.
+                if let Some(form) = self.mail_form.as_mut() {
+                    // `Name <address>` or a bare address; the substrate fills
+                    // a missing name in with the primary's when it lists
+                    // identities.
+                    let input = form.alias_input.trim();
+                    let (name, address) = match (input.rfind('<'), input.rfind('>')) {
+                        (Some(open), Some(close)) if open < close => (
+                            input[..open].trim().to_owned(),
+                            input[open + 1..close].trim().to_owned(),
+                        ),
+                        _ => (String::new(), input.to_owned()),
+                    };
+                    if !address.contains('@') {
+                        form.error = Some(fl!("alias-needs-address"));
+                    } else if form
+                        .aliases
+                        .iter()
+                        .any(|alias| alias.address.eq_ignore_ascii_case(&address))
+                    {
+                        form.alias_input.clear();
+                    } else {
+                        form.aliases
+                            .push(cosmic_pim_accounts::Alias { name, address });
+                        form.alias_input.clear();
+                        form.error = None;
+                    }
+                }
+                Task::none()
+            }
+            Message::MailFormAliasRemoved(index) => self.with_form(|form| {
+                if index < form.aliases.len() {
+                    form.aliases.remove(index);
+                }
+            }),
             Message::PaletteQueryChanged(query) => {
                 if let Some((text, selected)) = self.palette.as_mut() {
                     *text = query;
@@ -1498,16 +1565,27 @@ impl cosmic::Application for AppModel {
             }
             Message::MailFormSave => self.save_form(),
 
-            Message::Compose => self.compose(|_, from| cosmic_pim_mail::Draft::new(from)),
-            Message::Reply { all } => self.compose(move |opened, from| match opened {
+            Message::Compose => self.compose(false, |_, from| cosmic_pim_mail::Draft::new(from)),
+            Message::Reply { all } => self.compose(true, move |opened, from| match opened {
                 Some(opened) => cosmic_pim_mail::Draft::reply(&opened.message, from, all),
                 None => cosmic_pim_mail::Draft::new(from),
             }),
-            Message::Forward => self.compose(|opened, from| match opened {
+            Message::Forward => self.compose(true, |opened, from| match opened {
                 Some(opened) => cosmic_pim_mail::Draft::forward(&opened.message, from),
                 None => cosmic_pim_mail::Draft::new(from),
             }),
 
+            Message::ComposeFromSelected(index) => {
+                if let Some(from) = self
+                    .connection
+                    .as_ref()
+                    .and_then(|c| c.identities.get(index))
+                    .cloned()
+                {
+                    return self.with_composer(|c| c.draft.from = from);
+                }
+                Task::none()
+            }
             Message::ComposeToChanged(text) => self.with_composer(|c| c.to = text),
             Message::ComposeCcChanged(text) => self.with_composer(|c| c.cc = text),
             Message::ComposeBccChanged(text) => self.with_composer(|c| c.bcc = text),
@@ -2116,7 +2194,14 @@ impl AppModel {
             }
         };
         match Connection::for_account(&store, &account) {
-            Ok(Some(connection)) => self.connection = Some(connection),
+            Ok(Some(connection)) => {
+                self.identity_labels = connection
+                    .identities
+                    .iter()
+                    .map(|identity| identity.display().to_owned())
+                    .collect();
+                self.connection = Some(connection);
+            }
             Ok(None) => self.status = Some(fl!("no-mail-account")),
             Err(why) => self.status = Some(why),
         }
@@ -2427,9 +2512,10 @@ impl AppModel {
     /// Opens the composer with a draft built from the current state.
     fn compose(
         &mut self,
+        match_recipient: bool,
         build: impl FnOnce(Option<&Opened>, cosmic_pim_mail::Mailbox) -> cosmic_pim_mail::Draft,
     ) -> Task<Message> {
-        let Some(identity) = self
+        let Some(mut identity) = self
             .connection
             .as_ref()
             .and_then(|c| c.submission.as_ref())
@@ -2442,6 +2528,28 @@ impl AppModel {
             self.core.window.show_context = true;
             return Task::none();
         };
+
+        // A reply goes out as the identity the original was addressed to —
+        // answering mail sent to an alias from the primary address outs the
+        // alias. A fresh compose stays on the primary, whatever is open.
+        if match_recipient
+            && let (Some(connection), Some(opened)) =
+                (self.connection.as_ref(), self.opened.as_ref())
+            && let Some(matched) =
+                opened
+                    .message
+                    .to
+                    .iter()
+                    .chain(&opened.message.cc)
+                    .find_map(|recipient| {
+                        connection
+                            .identities
+                            .iter()
+                            .find(|m| m.address.eq_ignore_ascii_case(&recipient.address))
+                    })
+        {
+            identity = matched.clone();
+        }
 
         // A reply marks the message it answers — but only once it is actually
         // away, so a cancelled reply leaves no trace.
@@ -3531,6 +3639,7 @@ impl AppModel {
             jmap_session_url: Some(form.jmap_url.trim().to_owned()).filter(|u| !u.is_empty()),
             from_address: form.from_address.trim().to_owned(),
             from_name: form.from_name.trim().to_owned(),
+            aliases: form.aliases.clone(),
             ..MailEndpoint::tls(form.host.trim())
         };
         if form.protocol == MailProtocol::Pop3 {

@@ -85,6 +85,9 @@ pub struct Connection {
     /// composer that cannot send, and offering one anyway wastes what the user
     /// typed.
     pub submission: Option<Submission>,
+    /// Every identity mail may go out as — the primary first. The composer's
+    /// From choices.
+    pub identities: Vec<Mailbox>,
     /// A password today; OAuth when the app grows a token flow. The substrate
     /// already speaks both, which is why this is the typed form rather than a
     /// string.
@@ -164,10 +167,20 @@ impl Connection {
             },
         });
 
+        let identities = account
+            .identities()
+            .into_iter()
+            .map(|(name, address)| Mailbox {
+                name: Some(name).filter(|n| !n.trim().is_empty()),
+                address,
+            })
+            .collect();
+
         Ok(Some(Self {
             account: account.clone(),
             account_id: account.id.clone(),
             submission,
+            identities,
             endpoint: Endpoint {
                 host: mail.imap_host.clone(),
                 port: mail.imap_port,
@@ -482,12 +495,24 @@ pub fn edit_server_draft(
 
     // One of ours? The mirror's Message-ID carries the record's id.
     if let Some(id) = message.message_id.as_deref().and_then(own_draft_id)
-        && let Ok(Some(draft)) = drafts_store.load(id, identity.clone())
+        && let Ok(Some(draft)) = load_draft(connection, id)
     {
         return Ok((id.to_owned(), draft));
     }
 
-    // Another device's. Adopt it: editable here, replaced there on save.
+    // Another device's. Adopt it: editable here, replaced there on save —
+    // keeping the alias it was being written as, when it is one of ours.
+    let identity = message
+        .from
+        .first()
+        .and_then(|from| {
+            connection
+                .identities
+                .iter()
+                .find(|m| m.address.eq_ignore_ascii_case(&from.address))
+        })
+        .cloned()
+        .unwrap_or(identity);
     let draft = Draft::from_mirror(&message, &raw, identity);
     let id = drafts::new_id(now_ms());
     let uid_validity = store
@@ -534,13 +559,29 @@ pub fn list_drafts(connection: &Connection) -> Result<Vec<Saved>, String> {
 }
 
 /// Reopens one draft for editing.
+///
+/// The stored From survives when it is still one of the account's
+/// identities — somebody who chose an alias should not find the primary
+/// swapped in behind their back — and falls back to the current primary when
+/// it is not, which is the reason the fallback exists at all.
 pub fn load_draft(connection: &Connection, id: &str) -> Result<Option<Draft>, String> {
     let Some(identity) = connection.submission.as_ref().map(|s| s.identity.clone()) else {
         return Err("this account has no From address".into());
     };
-    drafts(connection)?
-        .load(id, identity)
-        .map_err(|why| why.to_string())
+    let Some(mut draft) = drafts(connection)?
+        .peek(id)
+        .map_err(|why| why.to_string())?
+    else {
+        return Ok(None);
+    };
+    if !connection
+        .identities
+        .iter()
+        .any(|m| m.address.eq_ignore_ascii_case(&draft.from.address))
+    {
+        draft.from = identity;
+    }
+    Ok(Some(draft))
 }
 
 pub fn delete_draft(connection: &Connection, id: &str) -> Result<(), String> {

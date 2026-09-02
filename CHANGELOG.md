@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Send-as aliases: add the other addresses your provider accepts on the
+  Accounts page, and the composer grows a From picker. A reply goes out as
+  the address the original was sent to, drafts keep the identity they were
+  written as, and a missing alias name borrows the account's.
 - Undo send: a sent message waits a configurable grace (10 seconds by
   default, in Settings) in the outbox, where `z` takes it back into the
   composer. Send later queues it for later today, tomorrow morning, or next

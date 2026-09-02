@@ -14,7 +14,11 @@ use cosmic::widget;
 use crate::app::{Composer, Message};
 use crate::fl;
 
-pub fn view(composer: &Composer) -> Element<'_, Message> {
+pub fn view<'a>(
+    composer: &'a Composer,
+    identities: &'a [String],
+    selected_identity: usize,
+) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
 
     let fields = widget::column::with_capacity(4)
@@ -36,7 +40,17 @@ pub fn view(composer: &Composer) -> Element<'_, Message> {
                 .align_y(Alignment::Center)
                 .spacing(spacing.space_xxs)
                 .push(widget::text::title3(fl!("compose")).width(Length::Fill))
-                .push(widget::text::caption(from_line(composer))),
+                // One identity is a fact and shows as one; several are a
+                // choice and show as a dropdown.
+                .push(if identities.len() > 1 {
+                    Element::from(widget::dropdown(
+                        identities,
+                        Some(selected_identity),
+                        Message::ComposeFromSelected,
+                    ))
+                } else {
+                    Element::from(widget::text::caption(from_line(composer)))
+                }),
         )
         .push(fields)
         .push(
@@ -181,9 +195,9 @@ fn field(
         .into()
 }
 
-/// Who this is going out as. Shown rather than editable: an account has one
-/// From identity, set in the Accounts page, and a picker here would be a second
-/// place to change the same thing.
+/// Who this is going out as, when the account has only one identity — a fact
+/// worth showing, not a control. With aliases configured the caption becomes
+/// the dropdown above.
 fn from_line(composer: &Composer) -> String {
     match &composer.draft.from.name {
         Some(name) => format!("{name} <{}>", composer.draft.from.address),

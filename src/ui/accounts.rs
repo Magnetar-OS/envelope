@@ -217,6 +217,7 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                     .width(Length::Fixed(220.0)),
             ),
         )
+        .add(aliases(form))
         .add(
             widget::settings::item::builder(fl!("smtp-host"))
                 .description(fl!("smtp-host-hint"))
@@ -297,6 +298,50 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                     }
                 }),
         )
+        .into()
+}
+
+/// The send-as aliases: what is configured, and a field to add one.
+fn aliases(form: &MailForm) -> Element<'_, Message> {
+    let spacing = cosmic::theme::spacing();
+    let mut column = widget::column::with_capacity(form.aliases.len() + 2)
+        .spacing(spacing.space_xxs)
+        .push(
+            widget::row::with_capacity(2)
+                .align_y(cosmic::iced::Alignment::Center)
+                .spacing(spacing.space_xxs)
+                .push(
+                    widget::text_input(fl!("alias-placeholder"), &form.alias_input)
+                        .on_input(Message::MailFormAliasInputChanged)
+                        .on_submit(|_| Message::MailFormAliasAdded)
+                        .on_focus(Message::TextFocused)
+                        .on_unfocus(Message::TextUnfocused)
+                        .width(Length::Fill),
+                )
+                .push(widget::button::standard(fl!("alias-add")).on_press_maybe(
+                    (!form.alias_input.trim().is_empty()).then_some(Message::MailFormAliasAdded),
+                )),
+        );
+    for (index, alias) in form.aliases.iter().enumerate() {
+        let label = if alias.name.trim().is_empty() {
+            alias.address.clone()
+        } else {
+            format!("{} <{}>", alias.name, alias.address)
+        };
+        column = column.push(
+            widget::row::with_capacity(2)
+                .align_y(cosmic::iced::Alignment::Center)
+                .spacing(spacing.space_xxs)
+                .push(widget::text::caption(label).width(Length::Fill))
+                .push(
+                    widget::button::icon(widget::icon::from_name("edit-delete-symbolic"))
+                        .on_press(Message::MailFormAliasRemoved(index)),
+                ),
+        );
+    }
+    widget::settings::item::builder(fl!("aliases"))
+        .description(fl!("aliases-hint"))
+        .control(column)
         .into()
 }
 

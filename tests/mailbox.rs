@@ -54,6 +54,10 @@ fn connection(root: &std::path::Path) -> Connection {
                 address: "me@example.com".into(),
             },
         }),
+        identities: vec![cosmic_pim_mail::Mailbox {
+            name: Some("Me".into()),
+            address: "me@example.com".into(),
+        }],
         credentials: cosmic_pim_mail::sasl::Credentials::Password(String::new()),
         root: root.to_path_buf(),
         // Per-test, so tests neither collide on one file nor see each other's
