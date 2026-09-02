@@ -44,20 +44,20 @@ single gap and the only one that touches an architectural position.
 
 Unblocks everything else; most items are small.
 
-- [ ] **Meltemi licence declaration** — the publishing gate for
+- [x] **Meltemi licence declaration** — the publishing gate for
       `cosmic-pim-mail`. One commit in the donor repo; until it lands, nothing
       ships beyond a git checkout.
-- [ ] **`rust-toolchain.toml` + `rustfmt.toml`** (`imports_granularity =
+- [x] **`rust-toolchain.toml` + `rustfmt.toml`** (`imports_granularity =
       "Module"`), agreeing with `rust-version` — the convention the rest of the
       ecosystem holds.
-- [ ] **Server zoo in CI.** `tests/live_dovecot.rs` found two real bugs on its
+- [x] **Server zoo in CI.** *(Dovecot leg live; real-provider legs need credentials and stay manual.)* `tests/live_dovecot.rs` found two real bugs on its
       first run; that argument settles the investment. Add scripted/containered
       runs against Gmail-IMAP, Outlook.com/Exchange, Fastmail (JMAP), iCloud,
       and Yahoo, each feeding the **quirks table** (Dovecot 2.4's missing
       HIGHESTMODSEQ is entry #1).
-- [ ] **Packaging**: `debian/`, Flatpak manifest, `just vendor` kept working,
+- [ ] **Packaging** *(deb/rpm/arch ship via the release kit; Flatpak and per-size icons still open)*: `debian/`, Flatpak manifest, `just vendor` kept working,
       per-size icons alongside the scalable one.
-- [ ] **Crash and error surfacing** — a panic hook that writes a report file
+- [x] **Crash and error surfacing** — a panic hook that writes a report file
       and says so on next launch. A client trusted with mail cannot fail
       silently.
 
@@ -66,28 +66,28 @@ Unblocks everything else; most items are small.
 The verbs daily users miss first, in the order they miss them
 (from `04-envelope.md`, confirmed against the Thunderbird checklist):
 
-- [ ] **Server-side drafts.** UIDPLUS where offered, `Message-ID` match where
+- [x] **Server-side drafts.** UIDPLUS where offered, `Message-ID` match where
       not, reconciliation for servers that mangle both. Already specified;
       "worth building, not worth shipping half of" now comes due.
 - [ ] **Labels / keywords.** IMAP custom keywords via the `dovecot-keywords`
       mapping (the interoperable route already identified), surfaced as Gmail
       labels on the Gmail engine. Coloured chips in list and reader; label
       filter in search (`label:`).
-- [ ] **Rules / filters.** Client-side first (on-sync: move, label, mark,
+- [x] **Rules / filters.** Client-side first (on-sync: move, label, mark,
       delete), stored in the suite's config; ManageSieve for server-side rules
       later. Rules compose from the same action registry the palette reads.
-- [ ] **Snooze.** The keyword scheme Meltemi used exists in the donor;
+- [x] **Snooze.** The keyword scheme Meltemi used exists in the donor;
       snoozed mail leaves the inbox and returns through the poll.
-- [ ] **Folder management.** Create, rename, delete, subscribe; drag a
+- [x] **Folder management.** *(drag still open; create/rename/delete/move-picker shipped)* Create, rename, delete, subscribe; drag a
       conversation to a folder; the tree stops being read-only.
-- [ ] **Multiple identities / aliases** per account, with reply-from-the-
+- [x] **Multiple identities / aliases** per account, with reply-from-the-
       address-it-was-sent-to as the default.
-- [ ] **Undo send** — a configurable delay before the SMTP conversation
+- [x] **Undo send** — a configurable delay before the SMTP conversation
       starts, which is the only honest implementation. **Scheduled send**
       rides the same outbox.
-- [ ] **mbox import** (export exists via `.eml`); import from Thunderbird and
+- [ ] **mbox import** *(done; Thunderbird/Geary profile import still open)* (export exists via `.eml`); import from Thunderbird and
       Geary profiles is the migration story.
-- [ ] **DSN ingestion** — bounce parsing wired to the outbox, so a failed
+- [x] **DSN ingestion** — bounce parsing wired to the outbox, so a failed
       delivery is a state on the message, not a mystery mail from MAILER-DAEMON.
 
 ## Phase 2 — The reader
