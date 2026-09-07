@@ -317,3 +317,11 @@ remove-account-title = Remove { $name }?
 remove-account-warning = The account and its stored password are removed from this device. Mail already downloaded stays on disk, and nothing is deleted on the server.
 delete-rule-title = Delete { $name }?
 delete-rule-warning = The rule stops running. Mail it has already filed stays where it put it.
+
+# OpenPGP
+pgp-invalid = The signature does not match this message — it was altered after signing.
+pgp-mismatch = Signed by { $signer }, which is not who this message says it is from.
+pgp-unknown = Carries a signature from a key this device does not hold.
+pgp-encrypted = Encrypted with OpenPGP. Decryption is not set up yet, so the sealed form is shown below.
+pgp-import-key = Import key
+pgp-key-imported = Key imported for { $address }. Their signed mail can now be verified.

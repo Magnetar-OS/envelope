@@ -43,9 +43,7 @@ pub fn confirm_dialog<'a>(title: String, body: String, verb: String) -> Element<
     widget::dialog()
         .title(title)
         .body(body)
-        .primary_action(
-            widget::button::destructive(verb).on_press(Message::FolderDialogConfirmed),
-        )
+        .primary_action(widget::button::destructive(verb).on_press(Message::FolderDialogConfirmed))
         .secondary_action(
             widget::button::standard(fl!("cancel")).on_press(Message::FolderDialogCancelled),
         )

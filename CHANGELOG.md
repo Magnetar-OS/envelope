@@ -25,6 +25,16 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- OpenPGP, the read half: signed mail is verified against the stored bytes —
+  the verbatim original, the only thing a signature can be checked against —
+  with honest states: a broken signature is loud, a signer this device holds
+  no key for is a quiet note, a good signature bound to a different address
+  says exactly that, and a verified one says nothing at all. Encrypted mail
+  is declared as encrypted (decryption comes later). Keys arrive the way
+  they are actually sent: an `application/pgp-keys` attachment grows an
+  Import key button, binding the key to the sender's address in a
+  plain-files keyring (`.keys/<address>.asc`) beside the account's mail.
+
 - Labels: `l` opens a picker that applies, clears, filters, and creates
   labels on a conversation; chips show in the list and the reader, and
   `label:` (also `tag:`, `keyword:`) narrows search. Stored as IMAP custom

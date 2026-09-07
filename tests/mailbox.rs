@@ -1221,3 +1221,76 @@ fn a_label_becomes_a_chip_a_queued_write_and_a_search_filter() {
     let (_, labels) = mail::conversations(&connection, &inbox()).expect("read again");
     assert!(labels[index].is_empty(), "the label did not come off");
 }
+
+#[test]
+fn plain_mail_gets_a_quiet_pgp_verdict_and_a_bad_key_never_enters_the_ring() {
+    use cosmic_pim_mail::pgp::Verdict;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let connection = connection(root);
+
+    // A message with a pgp-keys attachment that is not actually a key.
+    let raw = "Message-ID: <k@x>\r\n\
+From: Ada <ada@example.com>\r\n\
+Subject: my key\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: multipart/mixed; boundary=\"b\"\r\n\
+\r\n\
+--b\r\n\
+Content-Type: text/plain\r\n\
+\r\n\
+attached\r\n\
+--b\r\n\
+Content-Type: application/pgp-keys\r\n\
+Content-Disposition: attachment; filename=\"ada.asc\"\r\n\
+\r\n\
+this is not an armored key\r\n\
+--b--\r\n";
+    deliver(root, &[(1, raw, Flags::default())]);
+
+    // Unsigned plain mail says nothing.
+    let opened = mail::open(&connection, &inbox(), 1).expect("open");
+    assert_eq!(opened.pgp.verdict, Verdict::Unsigned);
+    assert!(!opened.pgp.encrypted);
+
+    // The invalid key is refused at the door, and the ring stays empty —
+    // a keyring file that will not parse is a keyring that silently stops
+    // verifying.
+    let error = mail::import_pgp_key(&connection, &inbox(), 1, 0).expect_err("not a key");
+    assert!(error.contains("public key"), "{error}");
+    assert!(
+        !root
+            .join(ACCOUNT)
+            .join(".keys")
+            .join("ada@example.com.asc")
+            .exists(),
+        "an unparseable key was written to the ring"
+    );
+}
+
+#[test]
+fn an_encrypted_message_is_said_to_be_encrypted_not_unsigned() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    let raw = "Message-ID: <e@x>\r\n\
+From: Ada <ada@example.com>\r\n\
+Subject: sealed\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: multipart/encrypted; protocol=\"application/pgp-encrypted\"; boundary=\"EE\"\r\n\
+\r\n\
+--EE\r\n\
+Content-Type: application/pgp-encrypted\r\n\
+\r\n\
+Version: 1\r\n\
+--EE\r\n\
+Content-Type: application/octet-stream\r\n\
+\r\n\
+-----BEGIN PGP MESSAGE-----\r\n\r\nAAAA\r\n-----END PGP MESSAGE-----\r\n\
+--EE--\r\n";
+    deliver(root, &[(1, raw, Flags::default())]);
+
+    let opened = mail::open(&connection(root), &inbox(), 1).expect("open");
+    assert!(opened.pgp.encrypted, "the sealed message read as plain");
+}

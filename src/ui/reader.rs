@@ -109,7 +109,9 @@ impl<'a> Reader<'a> {
         column = column.push(widget::divider::horizontal::default()).push(
             widget::selectable_text(message.body.text.clone())
                 .size(14.0)
-                .line_height(cosmic::iced::widget::text::LineHeight::Absolute(21.0.into()))
+                .line_height(cosmic::iced::widget::text::LineHeight::Absolute(
+                    21.0.into(),
+                ))
                 .font(cosmic::font::default())
                 .wrapping(cosmic::iced::core::text::Wrapping::Word),
         );
@@ -233,6 +235,30 @@ impl<'a> Reader<'a> {
     fn notices(&self, opened: &'a Opened) -> Vec<Element<'a, Message>> {
         let mut notices: Vec<Element<'a, Message>> = Vec::new();
 
+        // The OpenPGP contract: a broken signature is loud, an unknown or
+        // mis-bound signer is a caption, a good signature from the sender is
+        // quiet — a tick on every verified message trains people to ignore
+        // it. Encryption is stated whatever the verdict, because it changes
+        // what a reply may safely quote.
+        {
+            use cosmic_pim_mail::pgp::Verdict;
+            match &opened.pgp.verdict {
+                Verdict::Invalid => {
+                    notices.push(crate::ui::destructive(fl!("pgp-invalid")));
+                }
+                Verdict::SignerMismatch { signer } => notices.push(
+                    widget::text::caption(fl!("pgp-mismatch", signer = signer.clone())).into(),
+                ),
+                Verdict::UnknownSigner if !opened.pgp.encrypted => {
+                    notices.push(widget::text::caption(fl!("pgp-unknown")).into());
+                }
+                Verdict::UnknownSigner | Verdict::Unsigned | Verdict::Verified { .. } => {}
+            }
+            if opened.pgp.encrypted {
+                notices.push(widget::text::caption(fl!("pgp-encrypted")).into());
+            }
+        }
+
         // A bounce read as correspondence is MTA prose; read as a report it
         // is one line per failed recipient, in words. The raw text stays
         // below for the diagnosis the line cannot carry.
@@ -297,10 +323,17 @@ impl<'a> Reader<'a> {
             // Saved on request, never opened for the user. An attachment that
             // opens itself is the oldest delivery mechanism there is, and the
             // one step between "saved" and "ran" is the whole defence.
+            let importable = attachment
+                .mime_type
+                .eq_ignore_ascii_case("application/pgp-keys");
             column = column.push(
-                widget::row::with_capacity(2)
+                widget::row::with_capacity(3)
                     .align_y(Alignment::Center)
                     .spacing(spacing.space_xxs)
+                    .push_maybe(importable.then(|| {
+                        widget::button::text(fl!("pgp-import-key"))
+                            .on_press(Message::PgpKeyImport(index))
+                    }))
                     .push(
                         widget::text::caption(format!(
                             "{} · {} · {}",

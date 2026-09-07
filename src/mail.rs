@@ -1225,8 +1225,7 @@ pub fn import_pgp_key(
         .join(&connection.account_id)
         .join(KEYS_DIRECTORY);
     std::fs::create_dir_all(&dir).map_err(|why| why.to_string())?;
-    std::fs::write(dir.join(format!("{address}.asc")), armored)
-        .map_err(|why| why.to_string())?;
+    std::fs::write(dir.join(format!("{address}.asc")), armored).map_err(|why| why.to_string())?;
     Ok(address)
 }
 

@@ -142,7 +142,9 @@ impl<'a> List<'a> {
             .spacing(spacing.space_xxxs)
             .push(heading)
             .push(subject_line)
-            .push(one_line(widget::text::caption(conversation.snippet.clone())));
+            .push(one_line(widget::text::caption(
+                conversation.snippet.clone(),
+            )));
 
         widget::button::custom(body)
             .width(Length::Fill)
@@ -397,9 +399,11 @@ pub fn unified(entries: &[crate::mail::UnifiedConversation]) -> Element<'_, Mess
             .align_y(Alignment::Center)
             .spacing(spacing.space_xxs)
             .push(if conversation.unread {
-                one_line(widget::text::heading(conversation.participants.join(", "))).width(Length::Fill)
+                one_line(widget::text::heading(conversation.participants.join(", ")))
+                    .width(Length::Fill)
             } else {
-                one_line(widget::text::body(conversation.participants.join(", "))).width(Length::Fill)
+                one_line(widget::text::body(conversation.participants.join(", ")))
+                    .width(Length::Fill)
             });
         heading = heading.push(widget::text::caption(crate::ui::relative_date_ms(
             conversation.date_ms,
@@ -418,7 +422,10 @@ pub fn unified(entries: &[crate::mail::UnifiedConversation]) -> Element<'_, Mess
             .push(
                 widget::row::with_capacity(2)
                     .spacing(spacing.space_xxs)
-                    .push(one_line(widget::text::caption(conversation.snippet.clone())).width(Length::Fill))
+                    .push(
+                        one_line(widget::text::caption(conversation.snippet.clone()))
+                            .width(Length::Fill),
+                    )
                     // Whose inbox this came from is half of what a merged row
                     // has to say.
                     .push(widget::text::caption(entry.account_name.clone())),

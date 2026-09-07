@@ -668,6 +668,9 @@ pub enum Message {
     HitOpened(usize),
 
     SaveAttachment(usize),
+    /// Import an `application/pgp-keys` attachment as the sender's key.
+    PgpKeyImport(usize),
+    PgpKeyImported(Box<Result<String, String>>),
     ExportMessage,
     ImportMbox,
     MboxPicked(Option<std::path::PathBuf>),
@@ -1152,13 +1155,11 @@ impl cosmic::Application for AppModel {
                         fl!("remove"),
                     ))
                 }
-                FolderDialog::DeleteRule { name, .. } => {
-                    Some(crate::ui::folders::confirm_dialog(
-                        fl!("delete-rule-title", name = name.clone()),
-                        fl!("delete-rule-warning"),
-                        fl!("delete"),
-                    ))
-                }
+                FolderDialog::DeleteRule { name, .. } => Some(crate::ui::folders::confirm_dialog(
+                    fl!("delete-rule-title", name = name.clone()),
+                    fl!("delete-rule-warning"),
+                    fl!("delete"),
+                )),
                 FolderDialog::Snooze => Some(crate::ui::folders::snooze_dialog()),
                 FolderDialog::Label { query, selected } => Some(
                     crate::ui::folders::LabelPicker {
@@ -1989,6 +1990,35 @@ impl cosmic::Application for AppModel {
                     Ok(()) => fl!("unsubscribed"),
                     Err(why) => fl!("unsubscribe-failed", reason = why),
                 });
+                Task::none()
+            }
+            Message::PgpKeyImport(index) => {
+                let (Some(connection), Some(folder), Some(uid)) = (
+                    self.connection.clone(),
+                    self.current_folder().cloned(),
+                    self.opened.as_ref().map(|o| o.uid),
+                ) else {
+                    return Task::none();
+                };
+                cosmic::task::future(async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        mail::import_pgp_key(&connection, &folder, uid, index)
+                    })
+                    .await
+                    .unwrap_or_else(|why| Err(why.to_string()));
+                    Message::PgpKeyImported(Box::new(result))
+                })
+            }
+            Message::PgpKeyImported(result) => {
+                match *result {
+                    Ok(address) => {
+                        self.status = Some(fl!("pgp-key-imported", address = address));
+                        // The verdict may have just changed from "unknown
+                        // signer" to "verified"; reopen so the reader says so.
+                        return self.open_selected();
+                    }
+                    Err(why) => self.status = Some(why),
+                }
                 Task::none()
             }
             Message::SaveAttachment(index) => self.save_attachment(index),
@@ -4318,7 +4348,10 @@ mod tests {
     fn a_modifier_stops_a_letter_from_firing_its_bare_shortcut() {
         use cosmic::iced::keyboard::Modifiers;
 
-        assert!(bare(&Modifiers::empty()), "an unmodified letter is a shortcut");
+        assert!(
+            bare(&Modifiers::empty()),
+            "an unmodified letter is a shortcut"
+        );
         // Shift is how the punctuation shortcuts are typed at all.
         assert!(bare(&Modifiers::SHIFT), "shift is part of typing `?`");
 
@@ -4326,7 +4359,10 @@ mod tests {
         // the copy key opens the composer.
         assert!(!bare(&Modifiers::CTRL), "ctrl+c must not compose");
         assert!(!bare(&Modifiers::ALT), "alt+j must not move the selection");
-        assert!(!bare(&Modifiers::LOGO), "super+k must not move the selection");
+        assert!(
+            !bare(&Modifiers::LOGO),
+            "super+k must not move the selection"
+        );
         assert!(!bare(&(Modifiers::CTRL | Modifiers::SHIFT)));
     }
 
