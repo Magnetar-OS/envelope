@@ -40,14 +40,21 @@ impl<'a> Sidebar<'a> {
     pub fn view(&self) -> Element<'a, Message> {
         let spacing = cosmic::theme::spacing();
 
-        widget::column::with_capacity(3)
+        widget::column::with_capacity(5)
             .spacing(spacing.space_s)
             .push(self.unified_row())
             .push(self.account_picker())
             .push(self.drafts_row())
             .push(self.outbox_row())
-            .push(self.folder_list())
-            .push(widget::Space::new().height(Length::Fill))
+            // Scrolls, and takes the space the rows above it did not. A plain
+            // column made every folder past the window's edge unreachable —
+            // an ordinary Gmail label set is longer than a sidebar — and it
+            // is what libcosmic's own nav bar wraps its content in.
+            .push(
+                self.folder_list()
+                    .apply(widget::scrollable)
+                    .height(Length::Fill),
+            )
             .padding(GUTTER)
             .apply(widget::container)
             // Wears the desktop's own nav-bar surface, so it matches the

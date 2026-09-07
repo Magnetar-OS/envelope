@@ -102,8 +102,15 @@ impl<'a> Reader<'a> {
             column = column.push(self.attachments(opened));
         }
 
+        // Selectable, so the text of a message can be copied out of it. The
+        // size and line height repeat `widget::text::body`'s preset because
+        // the pinned libcosmic has no selectable equivalent of it; if that
+        // revision moves forward, this collapses back to the preset.
         column = column.push(widget::divider::horizontal::default()).push(
-            widget::text::body(message.body.text.clone())
+            widget::selectable_text(message.body.text.clone())
+                .size(14.0)
+                .line_height(cosmic::iced::widget::text::LineHeight::Absolute(21.0.into()))
+                .font(cosmic::font::default())
                 .wrapping(cosmic::iced::core::text::Wrapping::Word),
         );
 

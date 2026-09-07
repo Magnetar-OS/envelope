@@ -6,6 +6,7 @@
 //! that shows twelve rows for one back-and-forth is showing the transport
 //! rather than the content.
 
+use cosmic::iced::core::text::{Ellipsize, EllipsizeHeightLimit, Wrapping};
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget;
 use cosmic::{Apply as _, Element};
@@ -13,6 +14,19 @@ use cosmic::{Apply as _, Element};
 use crate::app::Message;
 use crate::fl;
 use crate::mail::Conversation;
+
+/// One line, clipped with an ellipsis rather than wrapped onto a second.
+///
+/// A row whose height depends on how long its subject happens to be makes the
+/// list jump about as it scrolls, and costs the eye the column it was reading
+/// down. This is the treatment libcosmic gives its own header-bar title, and
+/// what every official COSMIC list does to its rows.
+fn one_line(
+    text: widget::Text<'_, cosmic::Theme, cosmic::Renderer>,
+) -> widget::Text<'_, cosmic::Theme, cosmic::Renderer> {
+    text.wrapping(Wrapping::None)
+        .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)))
+}
 
 pub struct List<'a> {
     pub conversations: &'a [Conversation],
@@ -76,9 +90,9 @@ impl<'a> List<'a> {
         // glance where a marker has to be looked for.
         let participants = conversation.participants.join(", ");
         heading = heading.push(if conversation.unread {
-            widget::text::heading(participants).width(Length::Fill)
+            one_line(widget::text::heading(participants)).width(Length::Fill)
         } else {
-            widget::text::body(participants).width(Length::Fill)
+            one_line(widget::text::body(participants)).width(Length::Fill)
         });
 
         if conversation.flagged {
@@ -102,9 +116,9 @@ impl<'a> List<'a> {
             .align_y(Alignment::Center)
             .spacing(spacing.space_xxs)
             .push(if conversation.unread {
-                widget::text::heading(subject).width(Length::Fill)
+                one_line(widget::text::heading(subject)).width(Length::Fill)
             } else {
-                widget::text::body(subject).width(Length::Fill)
+                one_line(widget::text::body(subject)).width(Length::Fill)
             });
 
         if conversation.uids.len() > 1 {
@@ -128,7 +142,7 @@ impl<'a> List<'a> {
             .spacing(spacing.space_xxxs)
             .push(heading)
             .push(subject_line)
-            .push(widget::text::caption(conversation.snippet.clone()));
+            .push(one_line(widget::text::caption(conversation.snippet.clone())));
 
         widget::button::custom(body)
             .width(Length::Fill)
@@ -182,12 +196,12 @@ pub fn drafts(saved: &[cosmic_pim_mail::drafts::Saved]) -> Element<'_, Message> 
                 widget::row::with_capacity(2)
                     .align_y(Alignment::Center)
                     .spacing(spacing.space_xxs)
-                    .push(widget::text::body(subject).width(Length::Fill))
+                    .push(one_line(widget::text::body(subject)).width(Length::Fill))
                     .push(widget::text::caption(crate::ui::relative_date_ms(
                         draft.saved_ms,
                     ))),
             )
-            .push(widget::text::caption(draft.to.clone()));
+            .push(one_line(widget::text::caption(draft.to.clone())));
 
         column = column.push(
             widget::row::with_capacity(2)
@@ -258,7 +272,7 @@ pub fn results<'a>(
         let mut heading = widget::row::with_capacity(3)
             .align_y(Alignment::Center)
             .spacing(spacing.space_xxs)
-            .push(widget::text::body(hit.from_display().to_owned()).width(Length::Fill));
+            .push(one_line(widget::text::body(hit.from_display().to_owned())).width(Length::Fill));
 
         if hit.has_attachments {
             heading = heading.push(widget::icon::from_name("mail-attachment-symbolic").size(12));
@@ -270,11 +284,11 @@ pub fn results<'a>(
         let body = widget::column::with_capacity(3)
             .spacing(spacing.space_xxxs)
             .push(heading)
-            .push(widget::text::body(hit.subject.clone()))
+            .push(one_line(widget::text::body(hit.subject.clone())))
             .push(
                 widget::row::with_capacity(2)
                     .spacing(spacing.space_xxs)
-                    .push(widget::text::caption(hit.snippet.clone()).width(Length::Fill))
+                    .push(one_line(widget::text::caption(hit.snippet.clone())).width(Length::Fill))
                     .push(widget::text::caption(fl!(
                         "in-folder",
                         folder = folder.to_owned()
@@ -322,7 +336,7 @@ pub fn outbox(queued: &[cosmic_pim_mail::outbox::Queued]) -> Element<'_, Message
     for message in queued {
         let mut body = widget::column::with_capacity(3)
             .spacing(spacing.space_xxxs)
-            .push(widget::text::body(message.describe()));
+            .push(one_line(widget::text::body(message.describe())));
 
         // A stopped message says so, in the theme's alarming colour: one
         // sitting in a queue the user thinks is working is the worst thing an
@@ -383,9 +397,9 @@ pub fn unified(entries: &[crate::mail::UnifiedConversation]) -> Element<'_, Mess
             .align_y(Alignment::Center)
             .spacing(spacing.space_xxs)
             .push(if conversation.unread {
-                widget::text::heading(conversation.participants.join(", ")).width(Length::Fill)
+                one_line(widget::text::heading(conversation.participants.join(", "))).width(Length::Fill)
             } else {
-                widget::text::body(conversation.participants.join(", ")).width(Length::Fill)
+                one_line(widget::text::body(conversation.participants.join(", "))).width(Length::Fill)
             });
         heading = heading.push(widget::text::caption(crate::ui::relative_date_ms(
             conversation.date_ms,
@@ -400,11 +414,11 @@ pub fn unified(entries: &[crate::mail::UnifiedConversation]) -> Element<'_, Mess
         let body = widget::column::with_capacity(3)
             .spacing(spacing.space_xxxs)
             .push(heading)
-            .push(widget::text::body(subject))
+            .push(one_line(widget::text::body(subject)))
             .push(
                 widget::row::with_capacity(2)
                     .spacing(spacing.space_xxs)
-                    .push(widget::text::caption(conversation.snippet.clone()).width(Length::Fill))
+                    .push(one_line(widget::text::caption(conversation.snippet.clone())).width(Length::Fill))
                     // Whose inbox this came from is half of what a merged row
                     // has to say.
                     .push(widget::text::caption(entry.account_name.clone())),

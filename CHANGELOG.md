@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The folder list scrolls. An account with more folders than fit the window
+  had the rest simply unreachable.
+- Message text can be selected and copied.
+- List rows keep a fixed height: a long subject or a crowd of recipients is
+  clipped with an ellipsis instead of wrapping onto a second line and making
+  the list jump as it scrolls.
+
 ### Added
 
 - Labels: `l` opens a picker that applies, clears, filters, and creates
