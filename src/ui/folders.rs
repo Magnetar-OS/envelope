@@ -141,7 +141,7 @@ impl<'a> MovePicker<'a> {
             let Some(folder) = self.folders.get(*folder_index) else {
                 continue;
             };
-            let indent = u16::try_from(folder.depth()).unwrap_or(0) * u16::from(spacing.space_s);
+            let indent = u16::try_from(folder.depth()).unwrap_or(0) * spacing.space_s;
             let line = widget::row::with_capacity(2)
                 .align_y(Alignment::Center)
                 .push(widget::Space::new().width(Length::Fixed(f32::from(indent))))
