@@ -33,23 +33,34 @@ pub fn name_dialog<'a>(title: String, confirm: String, name: &'a str) -> Element
         .into()
 }
 
-/// The delete confirmation. The body says the part that matters: the messages
-/// go with the folder.
+/// A confirmation for something that cannot be taken back.
+///
+/// The title names the thing, the body says what is actually lost, and the
+/// destructive verb is on the button rather than in the body — so the answer
+/// is readable from the buttons alone.
 #[must_use]
-pub fn delete_dialog<'a>(folder: &Folder) -> Element<'a, Message> {
+pub fn confirm_dialog<'a>(title: String, body: String, verb: String) -> Element<'a, Message> {
     widget::dialog()
-        .title(fl!(
-            "delete-folder-title",
-            name = folder.display_name.clone()
-        ))
-        .body(fl!("delete-folder-warning"))
+        .title(title)
+        .body(body)
         .primary_action(
-            widget::button::destructive(fl!("delete")).on_press(Message::FolderDialogConfirmed),
+            widget::button::destructive(verb).on_press(Message::FolderDialogConfirmed),
         )
         .secondary_action(
             widget::button::standard(fl!("cancel")).on_press(Message::FolderDialogCancelled),
         )
         .into()
+}
+
+/// The folder delete confirmation. The body says the part that matters: the
+/// messages go with the folder.
+#[must_use]
+pub fn delete_dialog<'a>(folder: &Folder) -> Element<'a, Message> {
+    confirm_dialog(
+        fl!("delete-folder-title", name = folder.display_name.clone()),
+        fl!("delete-folder-warning"),
+        fl!("delete"),
+    )
 }
 
 /// The snooze presets: three moments people actually mean, not a calendar

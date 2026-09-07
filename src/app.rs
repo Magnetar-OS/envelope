@@ -495,6 +495,16 @@ pub enum FolderDialog {
     },
     /// The send-later presets — the same moments, a different verb.
     SendLater,
+    /// Removing an account, which forgets its password.
+    RemoveAccount {
+        id: String,
+        name: String,
+    },
+    /// Deleting a filter rule.
+    DeleteRule {
+        index: usize,
+        name: String,
+    },
     /// The move picker: its query, and which row is highlighted.
     Move {
         query: String,
@@ -1135,6 +1145,20 @@ impl cosmic::Application for AppModel {
                 FolderDialog::Delete => {
                     self.current_folder().map(crate::ui::folders::delete_dialog)
                 }
+                FolderDialog::RemoveAccount { name, .. } => {
+                    Some(crate::ui::folders::confirm_dialog(
+                        fl!("remove-account-title", name = name.clone()),
+                        fl!("remove-account-warning"),
+                        fl!("remove"),
+                    ))
+                }
+                FolderDialog::DeleteRule { name, .. } => {
+                    Some(crate::ui::folders::confirm_dialog(
+                        fl!("delete-rule-title", name = name.clone()),
+                        fl!("delete-rule-warning"),
+                        fl!("delete"),
+                    ))
+                }
                 FolderDialog::Snooze => Some(crate::ui::folders::snooze_dialog()),
                 FolderDialog::Label { query, selected } => Some(
                     crate::ui::folders::LabelPicker {
@@ -1698,7 +1722,17 @@ impl cosmic::Application for AppModel {
             Message::AddFormDiscovered(result) => {
                 self.add_account(result.map(|found| mail::endpoint_of(&found)))
             }
-            Message::AccountRemove(id) => self.remove_account(&id),
+            Message::AccountRemove(id) => {
+                let name = self
+                    .accounts
+                    .iter()
+                    .find(|account| account.id == id)
+                    .map_or_else(|| id.clone(), |account| account.display_name.clone());
+                self.update(Message::FolderDialogOpened(FolderDialog::RemoveAccount {
+                    id,
+                    name,
+                }))
+            }
             Message::SignInStarted(provider_id) => self.sign_in(&provider_id),
             Message::SignInFinished(result) => {
                 self.signing_in = false;
@@ -2057,11 +2091,14 @@ impl cosmic::Application for AppModel {
                 Task::none()
             }
             Message::RuleDeleted(index) => {
-                if index < self.rules.len() {
-                    self.rules.remove(index);
-                    self.save_rules_now();
-                }
-                Task::none()
+                let Some(rule) = self.rules.get(index) else {
+                    return Task::none();
+                };
+                let name = rule.name.clone();
+                self.update(Message::FolderDialogOpened(FolderDialog::DeleteRule {
+                    index,
+                    name,
+                }))
             }
             Message::RuleFormNameChanged(name) => {
                 self.rule_form.name = name;
@@ -3031,6 +3068,26 @@ impl AppModel {
             None
         };
         self.move_rows.clear();
+
+        // Handled before the connection guard below: neither of these touches
+        // a server, and an account with no working mail endpoint is exactly
+        // the one a user is most likely to be removing.
+        match &dialog {
+            FolderDialog::RemoveAccount { id, .. } => {
+                let id = id.clone();
+                return self.remove_account(&id);
+            }
+            FolderDialog::DeleteRule { index, .. } => {
+                let index = *index;
+                if index < self.rules.len() {
+                    self.rules.remove(index);
+                    self.save_rules_now();
+                }
+                return Task::none();
+            }
+            _ => {}
+        }
+
         let Some(connection) = self.connection.clone() else {
             return Task::none();
         };
@@ -3081,6 +3138,9 @@ impl AppModel {
                 })
             }
             FolderDialog::Snooze | FolderDialog::SendLater => Task::none(),
+            // Both returned above, before the connection guard — neither needs
+            // a server.
+            FolderDialog::RemoveAccount { .. } | FolderDialog::DeleteRule { .. } => Task::none(),
             FolderDialog::Label { query, selected } => {
                 // Enter toggles the highlighted row; with no row and a typed
                 // name, it creates the label and applies it.

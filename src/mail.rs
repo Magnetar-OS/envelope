@@ -66,6 +66,10 @@ pub struct Opened {
     pub invitation: Option<cosmic_pim_mail::calendar::Invitation>,
     /// The labels on this message, named through the mailbox's table.
     pub labels: Vec<String>,
+    /// The message's OpenPGP state, examined against the account's keyring
+    /// and the stored bytes — the verbatim original, which is the only thing
+    /// a signature can be checked against.
+    pub pgp: cosmic_pim_mail::pgp::Examined,
 }
 
 /// What one sync pass did, as the status line reports it.
@@ -1153,6 +1157,79 @@ fn display_labels(table: &[String], bits: u32) -> Vec<String> {
         .collect()
 }
 
+/// The keyring directory, beside the account's maildirs: one armored public
+/// key per file, `<address>.asc`, the address it is bound to as the stem.
+/// Files-as-truth — `gpg --import`-able, droppable, diffable.
+const KEYS_DIRECTORY: &str = ".keys";
+
+/// Every public key held for this account, bound to the address its
+/// filename names.
+fn keyring(connection: &Connection) -> Vec<cosmic_pim_mail::pgp::Certificate> {
+    let dir = connection
+        .root
+        .join(&connection.account_id)
+        .join(KEYS_DIRECTORY);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let address = path.file_stem()?.to_str()?.to_lowercase();
+            let armored = std::fs::read_to_string(&path).ok()?;
+            let certificate = cosmic_pim_mail::pgp::Certificate::from_armored(&address, &armored);
+            if certificate.is_none() {
+                tracing::warn!(path = %path.display(), "a keyring file is not an armored key");
+            }
+            certificate
+        })
+        .collect()
+}
+
+/// Imports a public key a message carries (`application/pgp-keys`), binding
+/// it to the **sender's** address — that binding is what turns "someone
+/// signed this" into "the sender signed this", so it is never taken from the
+/// key's own self-description.
+pub fn import_pgp_key(
+    connection: &Connection,
+    folder: &Folder,
+    uid: u32,
+    index: usize,
+) -> Result<String, String> {
+    let store =
+        MaildirStore::open(connection.mailbox_path(folder)).map_err(|why| why.to_string())?;
+    let raw = store
+        .raw(uid)
+        .map_err(|why| why.to_string())?
+        .ok_or_else(|| "that message is no longer in this mailbox".to_string())?;
+    let message =
+        Message::parse(&raw).ok_or_else(|| "that message could not be read".to_string())?;
+    let address = message
+        .sender()
+        .map(|from| from.address.clone())
+        .filter(|address| address.contains('@') && !address.contains(['/', '\\']))
+        .ok_or_else(|| "this message does not say who it is from".to_string())?;
+
+    let bytes = attachment::bytes_of(&raw, index).map_err(|why| why.to_string())?;
+    let armored = String::from_utf8(bytes)
+        .map_err(|_| "that attachment is not an armored key".to_string())?;
+    // Validated before it is written: a keyring file that will not parse is
+    // a keyring that silently stops verifying.
+    if cosmic_pim_mail::pgp::Certificate::from_armored(&address, &armored).is_none() {
+        return Err("that attachment is not an OpenPGP public key".to_string());
+    }
+
+    let dir = connection
+        .root
+        .join(&connection.account_id)
+        .join(KEYS_DIRECTORY);
+    std::fs::create_dir_all(&dir).map_err(|why| why.to_string())?;
+    std::fs::write(dir.join(format!("{address}.asc")), armored)
+        .map_err(|why| why.to_string())?;
+    Ok(address)
+}
+
 /// Every label this folder's mailbox can offer.
 pub fn labels(connection: &Connection, folder: &Folder) -> Result<Vec<String>, String> {
     let store =
@@ -1207,6 +1284,7 @@ pub fn open(connection: &Connection, folder: &Folder, uid: u32) -> Result<Opened
         bounces: bounces_in(&raw, &message),
         invitation: cosmic_pim_mail::calendar::invitation(&raw),
         labels: display_labels(&store.keywords(), flags.keywords),
+        pgp: cosmic_pim_mail::pgp::examine(&raw, &keyring(connection)),
         uid,
         message,
         flags,

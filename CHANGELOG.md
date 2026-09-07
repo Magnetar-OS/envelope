@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Removing an account or deleting a filter rule asks first. Both went
+  through on a single misclick, with nothing to undo them — while deleting a
+  folder had asked all along.
 - Single-letter shortcuts keep working. Using the command palette once left
   every one of them dead for the rest of the session, with nothing on screen
   to say why.

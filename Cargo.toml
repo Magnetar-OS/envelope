@@ -29,9 +29,9 @@ open = "5.4"
 tokio = { version = "1.53", features = ["full"] }
 # The bus: the iMIP hand-off to the calendar rides the same connection
 # libcosmic already owns for single-instance. Version pinned to libcosmic's.
-zbus = { version = "5.15", default-features = false, features = ["tokio"] }
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 
-dirs = "6"
+dirs = "7"
 chrono = { version = "0.4.45", features = ["clock", "serde"] }
 thiserror = "2"
 tracing = "0.1"
