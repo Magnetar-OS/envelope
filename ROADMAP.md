@@ -69,10 +69,10 @@ The verbs daily users miss first, in the order they miss them
 - [x] **Server-side drafts.** UIDPLUS where offered, `Message-ID` match where
       not, reconciliation for servers that mangle both. Already specified;
       "worth building, not worth shipping half of" now comes due.
-- [ ] **Labels / keywords.** IMAP custom keywords via the `dovecot-keywords`
-      mapping (the interoperable route already identified), surfaced as Gmail
-      labels on the Gmail engine. Coloured chips in list and reader; label
-      filter in search (`label:`).
+- [x] **Labels / keywords.** *(shipped over the dovecot-keywords mapping:
+      chips in list and reader, an `l` picker that creates/applies/clears,
+      `label:` in search, live-Dovecot round trip. Still open: chips on the
+      Gmail engine's label folders, per-label colours.)*
 - [x] **Rules / filters.** Client-side first (on-sync: move, label, mark,
       delete), stored in the suite's config; ManageSieve for server-side rules
       later. Rules compose from the same action registry the palette reads.
