@@ -31,6 +31,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- The sidebar can be hidden: the header's toggle, `F9`, the menu, and the
+  palette all flip it, over the desktop's own show/hide state — so in a
+  narrow window it overlays the list, as in the other COSMIC apps.
 - OpenPGP, the read half: signed mail is verified against the stored bytes —
   the verbatim original, the only thing a signature can be checked against —
   with honest states: a broken signature is loud, a signer this device holds

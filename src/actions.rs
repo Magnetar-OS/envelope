@@ -50,6 +50,8 @@ pub enum Action {
     Undo,
     Search,
     Sync,
+    /// Show or hide the folder sidebar.
+    ToggleSidebar,
     /// Leave whatever is open — the composer, the search, a context page.
     Escape,
 
@@ -96,6 +98,7 @@ impl Action {
             Self::Undo => fl!("undo"),
             Self::Search => fl!("search"),
             Self::Sync => fl!("sync-now"),
+            Self::ToggleSidebar => fl!("toggle-sidebar"),
             Self::Escape => fl!("close"),
             Self::GoInbox => fl!("go-inbox"),
             Self::GoDrafts => fl!("go-drafts"),
@@ -139,6 +142,7 @@ impl Action {
             Self::NewFolder | Self::RenameFolder | Self::DeleteFolder => Group::Folders,
             Self::Search
             | Self::Sync
+            | Self::ToggleSidebar
             | Self::Escape
             | Self::ImportMbox
             | Self::Rules
@@ -481,6 +485,14 @@ pub fn bindings() -> Vec<Binding> {
             handled_by_framework: true,
         },
         Binding {
+            // F9 is the desktop's key for a side pane; no bare letter, because
+            // the ones a sidebar could plausibly take are Gmail's already.
+            action: Action::ToggleSidebar,
+            bare: None,
+            combination: Some(named(Named::F9)),
+            handled_by_framework: false,
+        },
+        Binding {
             action: Action::ImportMbox,
             bare: None,
             combination: None,
@@ -716,6 +728,13 @@ mod tests {
             matched(Modifiers::default(), Key::Character("n".into())),
             None,
             "a bare letter must not fire a combination"
+        );
+        assert_eq!(
+            matched(
+                Modifiers::default(),
+                Key::Named(cosmic::iced::keyboard::key::Named::F9)
+            ),
+            Some(Action::ToggleSidebar)
         );
     }
 

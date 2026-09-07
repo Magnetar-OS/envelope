@@ -145,7 +145,7 @@ from what is on screen rather than from a running count of focused fields: a
 field can be taken off the screen while it has focus, and a count that missed
 one would disable every letter for the rest of the session.
 
-The modifier forms (`Ctrl+N`, `Ctrl+R`, `Ctrl+Shift+R`, `Ctrl+F`, `Escape`, `F5`)
+The modifier forms (`Ctrl+N`, `Ctrl+R`, `Ctrl+Shift+R`, `Ctrl+F`, `Escape`, `F5`, `F9`)
 work regardless, which is the reason for having both.
 
 Bindings match on the **physical key** when the logical one does not, so `j` and

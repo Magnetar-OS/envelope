@@ -149,6 +149,7 @@ go-drafts = Drafts
 go-outbox = Outbox
 go-sent = Sent
 go-archive = Archive
+toggle-sidebar = Show or hide the sidebar
 shortcuts = Keyboard shortcuts
 group-reading = Reading
 group-writing = Writing

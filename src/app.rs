@@ -948,6 +948,13 @@ impl cosmic::Application for AppModel {
 
     fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
         vec![
+            // libcosmic only draws its own toggle when `nav_model` is `Some`,
+            // and ours is not, so the stock button is placed here by hand and
+            // routed through the registry like every other action.
+            widget::nav_bar_toggle()
+                .active(self.core().nav_bar_active())
+                .on_toggle(Message::Act(Action::ToggleSidebar))
+                .into(),
             menu::bar(vec![menu::Tree::with_children(
                 menu::root(fl!("app-title")).apply(Element::from),
                 menu::items(
@@ -965,6 +972,7 @@ impl cosmic::Application for AppModel {
                         menu::Item::Divider,
                         item(Action::Search),
                         item(Action::Sync),
+                        item(Action::ToggleSidebar),
                         menu::Item::Divider,
                         item(Action::Rules),
                         item(Action::Shortcuts),
@@ -1810,9 +1818,7 @@ impl cosmic::Application for AppModel {
             Message::ComposeCcChanged(text) => self.with_composer(|c| c.cc = text),
             Message::ComposeBccChanged(text) => self.with_composer(|c| c.bcc = text),
             Message::ComposeSubjectChanged(text) => self.with_composer(|c| c.draft.subject = text),
-            Message::ComposeBodyAction(action) => {
-                self.with_composer(|c| c.body.perform(*action))
-            }
+            Message::ComposeBodyAction(action) => self.with_composer(|c| c.body.perform(*action)),
             Message::ComposeCancel => self.close_composer(true),
             Message::ComposeDiscard => self.close_composer(false),
             Message::DraftsLoaded(drafts) => {
@@ -3655,6 +3661,18 @@ impl AppModel {
             Action::Rules => {
                 self.open_rules_page();
                 self.update(Message::ToggleContextPage(ContextPage::Rules))
+            }
+            Action::ToggleSidebar => {
+                // The shell keeps two flags: one for a window wide enough to
+                // hold the sidebar beside the content, one for a narrow window
+                // where it overlays the content instead. Its own header button
+                // flips whichever applies, and so does this.
+                if self.core().is_condensed() {
+                    self.core_mut().nav_bar_toggle_condensed();
+                } else {
+                    self.core_mut().nav_bar_toggle();
+                }
+                Task::none()
             }
             Action::Shortcuts => self.update(Message::ToggleContextPage(ContextPage::Shortcuts)),
             Action::Settings => self.update(Message::ToggleContextPage(ContextPage::Settings)),
