@@ -58,6 +58,32 @@ pub fn relative_date(date: Option<DateTime<Utc>>) -> String {
 pub static PALETTE_ID: std::sync::LazyLock<cosmic::widget::Id> =
     std::sync::LazyLock::new(|| cosmic::widget::Id::new("palette"));
 
+/// One label, as a small chip.
+///
+/// Hand-rolled: libcosmic has no chip widget (verified against the whole
+/// ecosystem), and the idiomatic composition is a captioned container on a
+/// soft accent ground.
+#[must_use]
+pub fn label_chip<'a, M: 'a>(name: String) -> cosmic::Element<'a, M> {
+    let spacing = cosmic::theme::spacing();
+    cosmic::widget::container(cosmic::widget::text::caption(name))
+        .padding([0, spacing.space_xxs])
+        .class(cosmic::theme::Container::custom(|theme| {
+            let cosmic = theme.cosmic();
+            let mut accent = cosmic.accent_color();
+            accent.alpha = 0.16;
+            cosmic::widget::container::Style {
+                background: Some(cosmic::iced::Background::Color(accent.into())),
+                border: cosmic::iced::Border {
+                    radius: cosmic.corner_radii.radius_s.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        }))
+        .into()
+}
+
 /// The folder dialogs' input — the name field, and the move picker's query —
 /// so opening either can focus it.
 pub static FOLDER_NAME_ID: std::sync::LazyLock<cosmic::widget::Id> =

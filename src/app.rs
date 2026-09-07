@@ -87,6 +87,13 @@ pub struct AppModel {
     /// The folders the move picker is showing, as indices into `folders`.
     /// Held in the model because `dialog()` hands out borrows.
     move_rows: Vec<usize>,
+    /// Each conversation's label chips, parallel to `conversations`.
+    conversation_labels: Vec<Vec<String>>,
+    /// Every label the open folder knows, for the picker.
+    known_labels: Vec<String>,
+    /// What the label picker shows: `(name, applied to the selection)`.
+    /// Held in the model because `dialog()` hands out borrows.
+    label_rows: Vec<(String, bool)>,
     /// The composer's From choices, as dropdown labels. Rebuilt with the
     /// connection; held in the model because dropdown labels must outlive
     /// the view.
@@ -481,6 +488,11 @@ pub enum FolderDialog {
     Delete,
     /// The snooze presets.
     Snooze,
+    /// The label picker: its query, and which row is highlighted.
+    Label {
+        query: String,
+        selected: usize,
+    },
     /// The send-later presets — the same moments, a different verb.
     SendLater,
     /// The move picker: its query, and which row is highlighted.
@@ -544,7 +556,7 @@ pub enum Message {
     SyncFinished(Box<Result<SyncReport, String>>),
 
     FolderSelected(usize),
-    ConversationsLoaded(Result<Vec<Conversation>, String>),
+    ConversationsLoaded(Result<(Vec<Conversation>, Vec<Vec<String>>), String>),
     ConversationSelected(usize),
     MessageOpened(Box<Result<Opened, String>>),
 
@@ -674,6 +686,11 @@ pub enum Message {
 
     /// A snooze duration was chosen.
     SnoozePicked(SnoozePreset),
+    /// The folder's label table arrived for the picker.
+    LabelRowsLoaded(Box<Result<Vec<String>, String>>),
+    LabelQueryChanged(String),
+    /// Apply or clear one label on the selected conversation.
+    LabelToggled(String, bool),
     /// The composer's Send later button.
     SendLater,
     /// A send-later moment was chosen.
@@ -817,6 +834,9 @@ impl cosmic::Application for AppModel {
             palette: None,
             folder_dialog: None,
             move_rows: Vec::new(),
+            conversation_labels: Vec::new(),
+            known_labels: Vec::new(),
+            label_rows: Vec::new(),
             identity_labels: Vec::new(),
             rules: Vec::new(),
             rule_form: RuleForm::default(),
@@ -911,6 +931,7 @@ impl cosmic::Application for AppModel {
                         item(Action::ImportMbox),
                         menu::Item::Divider,
                         item(Action::Snooze),
+                        item(Action::Label),
                         item(Action::MoveToFolder),
                         item(Action::NewFolder),
                         item(Action::RenameFolder),
@@ -1115,6 +1136,14 @@ impl cosmic::Application for AppModel {
                     self.current_folder().map(crate::ui::folders::delete_dialog)
                 }
                 FolderDialog::Snooze => Some(crate::ui::folders::snooze_dialog()),
+                FolderDialog::Label { query, selected } => Some(
+                    crate::ui::folders::LabelPicker {
+                        query,
+                        rows: &self.label_rows,
+                        selected: *selected,
+                    }
+                    .view(),
+                ),
                 FolderDialog::SendLater => Some(crate::ui::folders::send_later_dialog()),
                 FolderDialog::Move { query, selected } => Some(
                     crate::ui::folders::MovePicker {
@@ -1197,6 +1226,7 @@ impl cosmic::Application for AppModel {
         } else {
             crate::ui::list::List {
                 conversations: &self.conversations,
+                labels: &self.conversation_labels,
                 selected: self.selected_conversation,
                 loading: self.loading_conversations,
                 error: self.list_error.as_deref(),
@@ -1374,7 +1404,7 @@ impl cosmic::Application for AppModel {
             Message::ConversationsLoaded(result) => {
                 self.loading_conversations = false;
                 match result {
-                    Ok(conversations) => {
+                    Ok((conversations, labels)) => {
                         self.list_error = None;
                         if let Some(folder) = self.current_folder() {
                             self.unread.insert(
@@ -1383,6 +1413,7 @@ impl cosmic::Application for AppModel {
                             );
                         }
                         self.conversations = conversations;
+                        self.conversation_labels = labels;
                         // The selection is an index into a list that just
                         // changed underneath it; keeping it would open an
                         // unrelated conversation.
@@ -1390,6 +1421,7 @@ impl cosmic::Application for AppModel {
                     }
                     Err(why) => {
                         self.conversations.clear();
+                        self.conversation_labels.clear();
                         self.list_error = Some(why);
                     }
                 }
@@ -2134,6 +2166,49 @@ impl cosmic::Application for AppModel {
                 Task::none()
             }
 
+            Message::LabelRowsLoaded(result) => {
+                match *result {
+                    Ok(names) => {
+                        self.known_labels = names;
+                        self.refresh_label_rows();
+                    }
+                    Err(why) => self.status = Some(why),
+                }
+                Task::none()
+            }
+            Message::LabelQueryChanged(query) => {
+                if let Some(FolderDialog::Label {
+                    query: field,
+                    selected,
+                }) = self.folder_dialog.as_mut()
+                {
+                    *field = query;
+                    *selected = 0;
+                }
+                self.refresh_label_rows();
+                Task::none()
+            }
+            Message::LabelToggled(name, on) => {
+                // Optimistically flip the row so the picker answers the
+                // click; the reload that follows makes it true.
+                if let Some(row) = self
+                    .label_rows
+                    .iter_mut()
+                    .find(|(existing, _)| existing.eq_ignore_ascii_case(&name))
+                {
+                    row.1 = on;
+                } else if on {
+                    self.label_rows.push((name.clone(), true));
+                }
+                if !self
+                    .known_labels
+                    .iter()
+                    .any(|existing| existing.eq_ignore_ascii_case(&name))
+                {
+                    self.known_labels.push(name.clone());
+                }
+                self.set_label_on_selection(name, on)
+            }
             Message::SnoozePicked(preset) => {
                 self.folder_dialog = None;
                 self.snooze_selected(preset.until_ms())
@@ -2865,6 +2940,62 @@ impl AppModel {
         Some(folder)
     }
 
+    /// Recomputes what the label picker shows for its current query.
+    fn refresh_label_rows(&mut self) {
+        let Some(FolderDialog::Label { query, .. }) = self.folder_dialog.as_ref() else {
+            self.label_rows.clear();
+            return;
+        };
+        let applied = self
+            .selected_conversation
+            .and_then(|index| self.conversation_labels.get(index))
+            .cloned()
+            .unwrap_or_default();
+        self.label_rows = self
+            .known_labels
+            .iter()
+            .filter(|name| actions::label_matches(query, name))
+            .map(|name| {
+                let on = applied
+                    .iter()
+                    .any(|carried| carried.eq_ignore_ascii_case(name));
+                (name.clone(), on)
+            })
+            .collect();
+    }
+
+    /// Applies or clears one label on the selected conversation, with undo.
+    fn set_label_on_selection(&mut self, name: String, on: bool) -> Task<Message> {
+        let (Some(connection), Some(folder), Some(index)) = (
+            self.connection.clone(),
+            self.current_folder().cloned(),
+            self.selected_conversation,
+        ) else {
+            return Task::none();
+        };
+        let Some(uids) = self.conversations.get(index).map(|c| c.uids.clone()) else {
+            return Task::none();
+        };
+        let description = if on {
+            fl!("undo-labelled", label = name.clone())
+        } else {
+            fl!("undo-unlabelled", label = name.clone())
+        };
+        cosmic::task::future(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                mail::set_label(&connection, &folder, &uids, &name, on).map(|previous| {
+                    (!previous.is_empty()).then_some(UndoEntry {
+                        description,
+                        reverse: Reverse::Flags { folder, previous },
+                    })
+                })
+            })
+            .await
+            .unwrap_or_else(|why| Err(why.to_string()));
+            Message::Mutated(result)
+        })
+    }
+
     /// Recomputes what the move picker shows for its current query.
     fn refresh_move_rows(&mut self) {
         let Some(FolderDialog::Move { query, .. }) = self.folder_dialog.as_ref() else {
@@ -2950,6 +3081,26 @@ impl AppModel {
                 })
             }
             FolderDialog::Snooze | FolderDialog::SendLater => Task::none(),
+            FolderDialog::Label { query, selected } => {
+                // Enter toggles the highlighted row; with no row and a typed
+                // name, it creates the label and applies it.
+                if let Some((name, on)) = self.label_rows.get(selected).cloned() {
+                    // Reopen the dialog: labelling is often several labels.
+                    self.folder_dialog = Some(FolderDialog::Label { query, selected });
+                    self.refresh_label_rows();
+                    return self.update(Message::LabelToggled(name, !on));
+                }
+                let name = query.trim().to_owned();
+                if name.is_empty() {
+                    return Task::none();
+                }
+                self.folder_dialog = Some(FolderDialog::Label {
+                    query: String::new(),
+                    selected: 0,
+                });
+                self.refresh_label_rows();
+                self.update(Message::LabelToggled(name, true))
+            }
             FolderDialog::Move { .. } => match picked.and_then(|i| self.folders.get(i)).cloned() {
                 Some(destination) => self.move_conversation_to(destination),
                 None => Task::none(),
@@ -3192,10 +3343,20 @@ impl AppModel {
             }
         }
 
-        // The move picker's arrows, same mechanism as the palette's below.
-        if let Some(FolderDialog::Move { selected, .. }) = self.folder_dialog.as_mut() {
+        // The move and label pickers' arrows, same mechanism as the
+        // palette's below.
+        let picker_rows = match self.folder_dialog.as_ref() {
+            Some(FolderDialog::Label { .. }) => Some(self.label_rows.len()),
+            Some(FolderDialog::Move { .. }) => Some(self.move_rows.len()),
+            _ => None,
+        };
+        if let (
+            Some(rows),
+            Some(FolderDialog::Move { selected, .. } | FolderDialog::Label { selected, .. }),
+        ) = (picker_rows, self.folder_dialog.as_mut())
+        {
             use cosmic::iced::keyboard::key::Named;
-            let last = self.move_rows.len().saturating_sub(1);
+            let last = rows.saturating_sub(1);
             match key {
                 cosmic::iced::keyboard::Key::Named(Named::ArrowDown) => {
                     *selected = (*selected + 1).min(last);
@@ -3312,6 +3473,28 @@ impl AppModel {
                     return Task::none();
                 }
                 self.update(Message::FolderDialogOpened(FolderDialog::Snooze))
+            }
+            Action::Label => {
+                if self.selected_conversation.is_none() {
+                    return Task::none();
+                }
+                let task = self.update(Message::FolderDialogOpened(FolderDialog::Label {
+                    query: String::new(),
+                    selected: 0,
+                }));
+                // The folder's table loads on the worker while the dialog is
+                // already up.
+                let load = match (self.connection.clone(), self.current_folder().cloned()) {
+                    (Some(connection), Some(folder)) => cosmic::task::future(async move {
+                        let result =
+                            tokio::task::spawn_blocking(move || mail::labels(&connection, &folder))
+                                .await
+                                .unwrap_or_else(|why| Err(why.to_string()));
+                        Message::LabelRowsLoaded(Box::new(result))
+                    }),
+                    _ => Task::none(),
+                };
+                Task::batch([task, load])
             }
             Action::MoveToFolder => {
                 if self.selected_conversation.is_none() {

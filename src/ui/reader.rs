@@ -66,6 +66,16 @@ impl<'a> Reader<'a> {
             .push(self.header(opened))
             .push(self.actions(opened));
 
+        if !opened.labels.is_empty() {
+            let mut chips = widget::row::with_capacity(opened.labels.len())
+                .spacing(spacing.space_xxs)
+                .align_y(cosmic::iced::Alignment::Center);
+            for name in &opened.labels {
+                chips = chips.push(crate::ui::label_chip(name.clone()));
+            }
+            column = column.push(chips);
+        }
+
         for notice in self.notices(opened) {
             column = column.push(notice);
         }

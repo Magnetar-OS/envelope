@@ -8,6 +8,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Labels: `l` opens a picker that applies, clears, filters, and creates
+  labels on a conversation; chips show in the list and the reader, and
+  `label:` (also `tag:`, `keyword:`) narrows search. Stored as IMAP custom
+  keywords through Dovecot's `dovecot-keywords` mapping — the same letters
+  and mapping file `mbsync`, `notmuch`, and Dovecot itself read — so labels
+  set here appear in other clients and vice versa. Undoable, offline-safe,
+  synced by name to the server.
+
 - Accounts are added in Envelope itself: Accounts → Add account takes a
   name, an address, and a password, and finds the servers from the address —
   provider registry, built-in table, autoconfig, probe — so IMAP, JMAP, and

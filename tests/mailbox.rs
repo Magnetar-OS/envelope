@@ -148,7 +148,9 @@ fn a_mailbox_reads_back_as_conversations_newest_first() {
         ],
     );
 
-    let conversations = mail::conversations(&connection(root), &inbox()).expect("read the mailbox");
+    let conversations = mail::conversations(&connection(root), &inbox())
+        .expect("read the mailbox")
+        .0;
 
     assert_eq!(conversations.len(), 2, "the reply did not join its parent");
     assert_eq!(
@@ -176,8 +178,9 @@ fn an_empty_or_missing_folder_is_not_an_error() {
     // The sidebar lists folders the server has; the user clicks one before it
     // has ever been synced. That must show an empty list, not a failure.
     let dir = tempfile::tempdir().expect("tempdir");
-    let conversations =
-        mail::conversations(&connection(dir.path()), &archive()).expect("no maildir yet");
+    let conversations = mail::conversations(&connection(dir.path()), &archive())
+        .expect("no maildir yet")
+        .0;
     assert!(conversations.is_empty());
 }
 
@@ -309,7 +312,7 @@ fn archiving_a_conversation_takes_all_of_it_and_queues_the_move() {
     );
 
     let connection = connection(root);
-    let conversation = mail::conversations(&connection, &inbox()).expect("read")[0].clone();
+    let conversation = mail::conversations(&connection, &inbox()).expect("read").0[0].clone();
     assert_eq!(conversation.uids.len(), 2);
 
     mail::move_to(&connection, &inbox(), &archive(), &conversation.uids).expect("move");
@@ -360,7 +363,9 @@ fn a_message_with_no_date_sorts_last_rather_than_first() {
         ],
     );
 
-    let conversations = mail::conversations(&connection(root), &inbox()).expect("read");
+    let conversations = mail::conversations(&connection(root), &inbox())
+        .expect("read")
+        .0;
     assert_eq!(conversations.len(), 2);
     assert_eq!(conversations[0].subject, "Dated");
     assert_eq!(conversations[1].subject, "Undated");
@@ -403,11 +408,13 @@ fn the_index_is_a_cache_and_deleting_it_costs_only_a_rescan() {
     );
 
     let connection = connection(root);
-    let before = mail::conversations(&connection, &inbox()).expect("read");
+    let before = mail::conversations(&connection, &inbox()).expect("read").0;
     assert_eq!(before.len(), 1);
 
     std::fs::remove_file(&connection.index_path).expect("delete the cache");
-    let after = mail::conversations(&connection, &inbox()).expect("read again");
+    let after = mail::conversations(&connection, &inbox())
+        .expect("read again")
+        .0;
     assert_eq!(
         after, before,
         "the mailbox did not survive losing its cache"
@@ -1136,4 +1143,81 @@ fn deliver_as(root: &std::path::Path, account: &str, uid: u32, subject: &str) {
             internal_date_ms: 0,
         })
         .expect("deliver");
+}
+
+#[test]
+fn a_label_becomes_a_chip_a_queued_write_and_a_search_filter() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let connection = connection(root);
+
+    deliver(
+        root,
+        &[
+            (
+                1,
+                &message(
+                    "trip@x",
+                    "",
+                    "Flights",
+                    "Ada <ada@example.com>",
+                    "Mon, 3 Feb 2025 09:00:00 +0000",
+                    "Booked the flights.",
+                ),
+                Flags::default(),
+            ),
+            (
+                2,
+                &message(
+                    "other@x",
+                    "",
+                    "Unrelated",
+                    "Bob <bob@example.net>",
+                    "Mon, 3 Feb 2025 10:00:00 +0000",
+                    "Something else.",
+                ),
+                Flags::default(),
+            ),
+        ],
+    );
+
+    // Label the first conversation.
+    let previous = mail::set_label(&connection, &inbox(), &[1], "Travel", true).expect("label it");
+    assert_eq!(previous.len(), 1, "nothing was labelled");
+
+    // The chip comes back with the list, named.
+    let (conversations, labels) = mail::conversations(&connection, &inbox()).expect("read");
+    let index = conversations
+        .iter()
+        .position(|c| c.subject == "Flights")
+        .expect("the labelled thread");
+    assert_eq!(labels[index], vec!["Travel"]);
+    let other = conversations
+        .iter()
+        .position(|c| c.subject == "Unrelated")
+        .expect("the other thread");
+    assert!(labels[other].is_empty(), "the label leaked to another row");
+
+    // The write is queued for the server, carrying the keyword bit.
+    let store =
+        MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox())).expect("maildir");
+    let pending = store.pending();
+    assert_eq!(pending.len(), 1, "no write reached the queue");
+    assert_eq!(store.keywords(), vec!["Travel"]);
+
+    // The reader names it too.
+    let opened = mail::open(&connection, &inbox(), 1).expect("open");
+    assert_eq!(opened.labels, vec!["Travel"]);
+
+    // And label: filters search to exactly the labelled conversation.
+    let folders = vec![inbox()];
+    let hits = mail::search(&connection, &folders, "label:travel flights", 50).expect("search");
+    assert_eq!(hits.len(), 1, "label: did not narrow the search: {hits:?}");
+    let none = mail::search(&connection, &folders, "label:travel unrelated", 50).expect("search");
+    assert!(none.is_empty(), "an unlabelled hit passed the label filter");
+
+    // Taking the label off through the same verb clears the chip.
+    mail::set_label(&connection, &inbox(), &[1], "travel", false).expect("unlabel");
+    let (_, labels) = mail::conversations(&connection, &inbox()).expect("read again");
+    assert!(labels[index].is_empty(), "the label did not come off");
 }

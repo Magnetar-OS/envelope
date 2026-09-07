@@ -301,3 +301,12 @@ calendar-not-running = The calendar app is not running. You can save the .ics fi
 invitation-failed = The invitation could not be handed to the calendar: { $reason }
 scheduling-reply-subject = Reply to a calendar invitation
 scheduling-reply-body = This message carries a reply to a calendar invitation.
+
+# Labels
+label = Label…
+label-title = Labels
+label-placeholder = Type to filter, or to name a new label
+label-create = Create “{ $name }”
+label-none = No labels yet. Type a name and press Enter.
+undo-labelled = Labelled { $label }
+undo-unlabelled = Removed { $label }

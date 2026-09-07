@@ -64,6 +64,8 @@ pub struct Opened {
     /// `text/calendar` part with a METHOD. What the reader's "Open in
     /// calendar" hands to Slate, verbatim.
     pub invitation: Option<cosmic_pim_mail::calendar::Invitation>,
+    /// The labels on this message, named through the mailbox's table.
+    pub labels: Vec<String>,
 }
 
 /// What one sync pass did, as the status line reports it.
@@ -732,16 +734,16 @@ pub fn search(
         .search(&connection.account_id, None, &query, limit)
         .map_err(|why| why.to_string())?;
 
-    if !query.unread && !query.starred {
+    if !query.unread && !query.starred && query.labels.is_empty() {
         return Ok(hits);
     }
 
     // Only the mailboxes the hits are actually in get opened, and each one only
     // once: a flag filter must not cost a walk of every folder on the server.
-    let mut flags: HashMap<String, BTreeMap<u32, Flags>> = HashMap::new();
+    let mut flags: HashMap<String, (BTreeMap<u32, Flags>, Vec<String>)> = HashMap::new();
     let mut kept = Vec::with_capacity(hits.len());
     for hit in hits {
-        let entry = match flags.get(&hit.mailbox) {
+        let (entry, table) = match flags.get(&hit.mailbox) {
             Some(entry) => entry,
             None => {
                 let Some(folder) = folders.iter().find(|f| f.wire_name == hit.mailbox) else {
@@ -750,8 +752,11 @@ pub fn search(
                     continue;
                 };
                 let loaded = MaildirStore::open(connection.mailbox_path(folder))
-                    .and_then(|store| store.state())
-                    .map(|state| state.entries)
+                    .map(|store| {
+                        let table = store.keywords();
+                        let entries = store.state().map(|state| state.entries).unwrap_or_default();
+                        (entries, table)
+                    })
                     .unwrap_or_default();
                 flags.entry(hit.mailbox.clone()).or_insert(loaded)
             }
@@ -759,6 +764,16 @@ pub fn search(
         let hit_flags = entry.get(&hit.uid).copied().unwrap_or_default();
         if (query.unread && hit_flags.seen) || (query.starred && !hit_flags.flagged) {
             continue;
+        }
+        if !query.labels.is_empty() {
+            let named = display_labels(table, hit_flags.keywords);
+            let carries_all = query
+                .labels
+                .iter()
+                .all(|wanted| named.iter().any(|name| name.eq_ignore_ascii_case(wanted)));
+            if !carries_all {
+                continue;
+            }
         }
         kept.push(hit);
     }
@@ -913,11 +928,13 @@ pub fn unified_inbox(connections: &[Connection]) -> Result<Vec<UnifiedConversati
     let mut merged = Vec::new();
     for connection in connections {
         match conversations(connection, &inbox) {
-            Ok(list) => merged.extend(list.into_iter().map(|conversation| UnifiedConversation {
-                account_id: connection.account_id.clone(),
-                account_name: connection.account.display_name.clone(),
-                conversation,
-            })),
+            Ok((list, _labels)) => {
+                merged.extend(list.into_iter().map(|conversation| UnifiedConversation {
+                    account_id: connection.account_id.clone(),
+                    account_name: connection.account.display_name.clone(),
+                    conversation,
+                }))
+            }
             Err(why) => {
                 // Logged, not fatal: one account's unreadable index must not
                 // empty the merged view of the others.
@@ -1086,10 +1103,10 @@ pub fn cached_folders(connection: &Connection, folders: &[Folder]) -> Vec<Folder
 pub fn conversations(
     connection: &Connection,
     folder: &Folder,
-) -> Result<Vec<Conversation>, String> {
+) -> Result<(Vec<Conversation>, Vec<Vec<String>>), String> {
     let path = connection.mailbox_path(folder);
     if !path.join("cur").is_dir() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let store = MaildirStore::open(&path).map_err(|why| why.to_string())?;
     let flags = store.state().map_err(|why| why.to_string())?.entries;
@@ -1098,9 +1115,74 @@ pub fn conversations(
     index
         .sync_mailbox(&connection.account_id, &folder.wire_name, &store)
         .map_err(|why| why.to_string())?;
-    index
+    let conversations = index
         .conversations(&connection.account_id, &folder.wire_name, &flags)
-        .map_err(|why| why.to_string())
+        .map_err(|why| why.to_string())?;
+
+    // The chips each row shows: the union of its messages' keywords, named
+    // through the mailbox's table. Computed here because the table and the
+    // flags are both already in hand.
+    let table = store.keywords();
+    let labels = conversations
+        .iter()
+        .map(|conversation| {
+            let bits = conversation
+                .uids
+                .iter()
+                .filter_map(|uid| flags.get(uid))
+                .fold(0u32, |acc, f| acc | f.keywords);
+            display_labels(&table, bits)
+        })
+        .collect();
+    Ok((conversations, labels))
+}
+
+/// The names a keyword bitmask displays as: table rows for set bits, minus
+/// gap rows and the `$`-prefixed conventions ($Forwarded, $MDNSent, …) that
+/// are bookkeeping between servers, not something a person filed.
+fn display_labels(table: &[String], bits: u32) -> Vec<String> {
+    let flags = Flags {
+        keywords: bits,
+        ..Flags::default()
+    };
+    flags
+        .keyword_bits()
+        .filter_map(|bit| table.get(usize::from(bit)))
+        .filter(|name| !name.is_empty() && !name.starts_with('$'))
+        .cloned()
+        .collect()
+}
+
+/// Every label this folder's mailbox can offer.
+pub fn labels(connection: &Connection, folder: &Folder) -> Result<Vec<String>, String> {
+    let store =
+        MaildirStore::open(connection.mailbox_path(folder)).map_err(|why| why.to_string())?;
+    Ok(store
+        .keywords()
+        .into_iter()
+        .filter(|name| !name.is_empty() && !name.starts_with('$'))
+        .collect())
+}
+
+/// Sets or clears one label on messages — the keyword is interned into the
+/// mailbox's table first, then the change takes the same queued flag path as
+/// read and star, so it works offline and reaches the server by name.
+///
+/// Returns each message's flags as they were, which is what undo needs.
+pub fn set_label(
+    connection: &Connection,
+    folder: &Folder,
+    uids: &[u32],
+    name: &str,
+    on: bool,
+) -> Result<Vec<(u32, Flags)>, String> {
+    let bit = MaildirStore::open(connection.mailbox_path(folder))
+        .map_err(|why| why.to_string())?
+        .intern_keyword(name)
+        .map_err(|why| why.to_string())?;
+    set_flags(connection, folder, uids, move |flags| {
+        flags.with_keyword(bit, on)
+    })
 }
 
 /// Opens one message for the reader.
@@ -1124,6 +1206,7 @@ pub fn open(connection: &Connection, folder: &Folder, uid: u32) -> Result<Opened
         auth: cosmic_pim_mail::auth::rollup(&message.auth),
         bounces: bounces_in(&raw, &message),
         invitation: cosmic_pim_mail::calendar::invitation(&raw),
+        labels: display_labels(&store.keywords(), flags.keywords),
         uid,
         message,
         flags,

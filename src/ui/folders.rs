@@ -107,6 +107,82 @@ pub fn send_later_dialog<'a>() -> Element<'a, Message> {
         .into()
 }
 
+/// The label picker: every label the folder knows, checkable, over a query
+/// box that filters — and names a new label when nothing matches.
+pub struct LabelPicker<'a> {
+    pub query: &'a str,
+    /// `(name, applied to the selection)`, already filtered to the query.
+    pub rows: &'a [(String, bool)],
+    pub selected: usize,
+}
+
+impl<'a> LabelPicker<'a> {
+    #[must_use]
+    pub fn view(self) -> Element<'a, Message> {
+        let spacing = cosmic::theme::spacing();
+
+        let mut column = widget::column::with_capacity(self.rows.len() + 2)
+            .spacing(spacing.space_xxs)
+            .push(
+                widget::text_input(fl!("label-placeholder"), self.query)
+                    .id(super::FOLDER_NAME_ID.clone())
+                    .on_input(Message::LabelQueryChanged)
+                    .on_submit(|_| Message::FolderDialogConfirmed)
+                    .on_focus(Message::TextFocused)
+                    .on_unfocus(Message::TextUnfocused),
+            );
+
+        for (row, (name, applied)) in self.rows.iter().enumerate() {
+            let line = widget::row::with_capacity(2)
+                .align_y(Alignment::Center)
+                .spacing(spacing.space_xxs)
+                .push(widget::checkbox(*applied).on_toggle({
+                    let name = name.clone();
+                    move |on| Message::LabelToggled(name.clone(), on)
+                }))
+                .push(widget::text::body(name.clone()).width(Length::Fill));
+            column = column.push(
+                widget::container(line)
+                    .padding([spacing.space_xxxs, spacing.space_xxs])
+                    .class(if row == self.selected {
+                        cosmic::theme::Container::List
+                    } else {
+                        cosmic::theme::Container::Transparent
+                    }),
+            );
+        }
+
+        // A typed name nothing matches is a label waiting to exist.
+        let typed = self.query.trim();
+        if !typed.is_empty()
+            && !self
+                .rows
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(typed))
+        {
+            column = column.push(
+                widget::button::text(fl!("label-create", name = typed.to_owned()))
+                    .on_press(Message::LabelToggled(typed.to_owned(), true)),
+            );
+        } else if self.rows.is_empty() {
+            column = column.push(widget::text::caption(fl!("label-none")));
+        }
+
+        widget::dialog()
+            .title(fl!("label-title"))
+            .control(
+                column
+                    .padding(spacing.space_s)
+                    .apply(widget::container)
+                    .width(Length::Fixed(420.0)),
+            )
+            .secondary_action(
+                widget::button::standard(fl!("close")).on_press(Message::FolderDialogCancelled),
+            )
+            .into()
+    }
+}
+
 /// The move picker: a query box over the folders that can receive a message,
 /// in the palette's shape because it is the same interaction.
 pub struct MovePicker<'a> {

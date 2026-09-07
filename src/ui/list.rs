@@ -16,6 +16,8 @@ use crate::mail::Conversation;
 
 pub struct List<'a> {
     pub conversations: &'a [Conversation],
+    /// Each conversation's label chips, parallel to `conversations`.
+    pub labels: &'a [Vec<String>],
     pub selected: Option<usize>,
     pub loading: bool,
     /// Set when the folder could not be read at all.
@@ -108,6 +110,18 @@ impl<'a> List<'a> {
         if conversation.uids.len() > 1 {
             subject_line =
                 subject_line.push(widget::text::caption(conversation.uids.len().to_string()));
+        }
+
+        // At most two chips and a count, so a heavily labelled thread cannot
+        // stretch its row.
+        if let Some(labels) = self.labels.get(index).filter(|l| !l.is_empty()) {
+            for name in labels.iter().take(2) {
+                subject_line = subject_line.push(crate::ui::label_chip(name.clone()));
+            }
+            if labels.len() > 2 {
+                subject_line =
+                    subject_line.push(widget::text::caption(format!("+{}", labels.len() - 2)));
+            }
         }
 
         let body = widget::column::with_capacity(3)
