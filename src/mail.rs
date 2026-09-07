@@ -236,6 +236,83 @@ pub fn sign_in_providers() -> Vec<SignInProvider> {
         .collect()
 }
 
+/// What the provider registry says about an address being added.
+///
+/// Enough for the add-account form to say the right thing before anything is
+/// stored: whether this provider's own route is a browser sign-in, whether
+/// that route is actually open on this machine, and the manifest's note —
+/// "create an app password first", most often.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderNote {
+    pub name: String,
+    pub hint: Option<String>,
+    /// The provider signs in with OAuth rather than a password.
+    pub uses_sign_in: bool,
+    /// ...and a client id is configured, so that route can be taken.
+    pub sign_in_ready: bool,
+}
+
+/// The registry's note on an address, by its domain. No network.
+#[must_use]
+pub fn provider_note(email: &str) -> Option<ProviderNote> {
+    let registry = cosmic_pim_accounts::Registry::load();
+    let provider = registry.for_email(email.trim())?;
+    Some(ProviderNote {
+        name: provider.name.clone(),
+        hint: provider.hint.clone(),
+        uses_sign_in: provider.oauth.is_some(),
+        sign_in_ready: provider
+            .oauth
+            .as_ref()
+            .is_some_and(cosmic_pim_accounts::OAuth::is_configured),
+    })
+}
+
+/// The servers a password can drive for an address, without a network.
+///
+/// The registry's endpoint when the provider takes a password — Fastmail's
+/// JMAP, iCloud's IMAP — and the discovery table otherwise. An OAuth
+/// provider's registry entry is skipped on purpose: it names the Gmail or
+/// Graph engine, which a password cannot log in to, whereas the table's IMAP
+/// hosts still take an app password.
+#[must_use]
+pub fn password_settings(email: &str) -> Option<MailEndpoint> {
+    let email = email.trim();
+    let registry = cosmic_pim_accounts::Registry::load();
+    if let Some(provider) = registry.for_email(email)
+        && provider.oauth.is_none()
+        && let Some(mail) = provider.services.mail.as_ref()
+    {
+        return Some(mail.endpoint_for(email));
+    }
+    known_settings(email).map(|found| endpoint_of(&found))
+}
+
+/// A discovered server pair as a storable endpoint — IMAP, since that is all
+/// discovery can find.
+#[must_use]
+pub fn endpoint_of(found: &Discovered) -> MailEndpoint {
+    MailEndpoint {
+        imap_port: found.imap_port,
+        imap_transport: transport_of(found.imap_security),
+        imap_username: Some(found.username.clone()).filter(|u| !u.is_empty()),
+        smtp_host: found.smtp_host.clone(),
+        smtp_port: found.smtp_port,
+        smtp_transport: transport_of(found.smtp_security),
+        ..MailEndpoint::tls(found.imap_host.clone())
+    }
+}
+
+/// The inverse of [`transport`], for what discovery reports.
+#[must_use]
+pub fn transport_of(security: Security) -> Transport {
+    match security {
+        Security::Tls => Transport::Tls,
+        Security::StartTls => Transport::StartTls,
+        Security::Plaintext => Transport::Plaintext,
+    }
+}
+
 /// Runs one OAuth sign-in, start to finish, and stores the account.
 ///
 /// Blocking for up to the flow's five-minute redirect deadline, so strictly a

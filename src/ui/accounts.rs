@@ -1,80 +1,100 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The Accounts context page: point an account at a mail server, and sync.
+//! The Accounts context page: add an account, point one at a mail server,
+//! remove one, and sync.
 //!
-//! Envelope does not *create* accounts. They are the suite's, held in
-//! `$XDG_CONFIG_HOME/cosmic-pim/accounts.toml`, and an account added in Slate
-//! is already here with its password. What is missing on one of those is only
-//! the mail endpoint — a CalDAV URL says nothing about an IMAP host — so that
-//! is the single thing this page asks for.
+//! Accounts are the suite's, held in `$XDG_CONFIG_HOME/cosmic-pim/accounts.toml`,
+//! and an account added in Slate is already here with its password. What is
+//! missing on one of those is only the mail endpoint — a CalDAV URL says
+//! nothing about an IMAP host — so the endpoint form asks for that alone.
+//!
+//! An account added *here* starts from the other end: an address and a
+//! password, with the servers worked out from the address — the provider
+//! registry, then the built-in table, then autoconfig and a probe — and the
+//! browser sign-in for the providers whose route that is. The endpoint form
+//! is the fallback for the domain nothing could find.
 
 use cosmic::Element;
 use cosmic::iced::Length;
 use cosmic::widget;
 use cosmic_pim_accounts::{Account, MailProtocol, Transport};
 
-use crate::app::{MailForm, Message};
+use crate::app::{AddForm, MailForm, Message};
 use crate::fl;
 
 pub fn view<'a>(
     accounts: &'a [Account],
     form: Option<&'a MailForm>,
+    add: Option<&'a AddForm>,
     sign_in: SignIn<'a>,
     syncing: bool,
     status: Option<&'a str>,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
-    let mut column = widget::column::with_capacity(6).spacing(spacing.space_s);
+    let mut column = widget::column::with_capacity(7).spacing(spacing.space_s);
 
     if accounts.is_empty() {
         column = column.push(
             widget::text::body(fl!("no-accounts-description"))
                 .wrapping(cosmic::iced::core::text::Wrapping::Word),
         );
-        column = column.push(sign_in_section(&sign_in));
-        return column.into();
-    }
-
-    let mut section = widget::settings::section().title(fl!("accounts"));
-    for account in accounts {
-        let description = match account.mail.as_ref() {
-            Some(mail) => format!("{}:{}", mail.imap_host, mail.imap_port),
-            None => fl!("no-mail-server"),
-        };
-        section = section.add(
-            widget::settings::item::builder(account.display_name.clone())
-                .description(description)
-                .control(
+    } else {
+        let mut section = widget::settings::section().title(fl!("accounts"));
+        for account in accounts {
+            let description = match account.mail.as_ref() {
+                Some(mail) => format!("{}:{}", mail.imap_host, mail.imap_port),
+                None => fl!("no-mail-server"),
+            };
+            let controls = widget::row::with_capacity(2)
+                .spacing(spacing.space_xxs)
+                .align_y(cosmic::iced::Alignment::Center)
+                .push(
                     widget::button::text(if account.mail.is_some() {
                         fl!("change")
                     } else {
                         fl!("set-up-mail")
                     })
                     .on_press(Message::MailFormStart(account.id.clone())),
-                ),
-        );
+                )
+                .push(
+                    widget::button::icon(widget::icon::from_name("edit-delete-symbolic"))
+                        .on_press(Message::AccountRemove(account.id.clone())),
+                );
+            section = section.add(
+                widget::settings::item::builder(account.display_name.clone())
+                    .description(description)
+                    .control(controls),
+            );
+        }
+        column = column.push(section);
     }
-    column = column.push(section);
 
-    if let Some(form) = form {
-        column = column.push(endpoint_form(form));
+    // One of the two forms at a time: the add form makes an account, the
+    // endpoint form finishes one.
+    match (add, form) {
+        (Some(add), _) => column = column.push(add_form(add, &sign_in)),
+        (None, Some(form)) => column = column.push(endpoint_form(form)),
+        (None, None) => {
+            column = column
+                .push(widget::button::text(fl!("add-account")).on_press(Message::AddFormStart));
+        }
     }
 
-    let label = if syncing {
-        fl!("syncing")
-    } else {
-        fl!("sync-now")
-    };
-    let button = widget::button::text(label);
-    // No `on_press` while a pass is in flight: a second concurrent pass would
-    // race the first one on the same sidecar files.
-    column = column.push(if syncing {
-        button
-    } else {
-        button.on_press(Message::SyncNow)
-    });
-
-    column = column.push(sign_in_section(&sign_in));
+    if !accounts.is_empty() {
+        let label = if syncing {
+            fl!("syncing")
+        } else {
+            fl!("sync-now")
+        };
+        let button = widget::button::text(label);
+        // No `on_press` while a pass is in flight: a second concurrent pass
+        // would race the first one on the same sidecar files.
+        column = column.push(if syncing {
+            button
+        } else {
+            button.on_press(Message::SyncNow)
+        });
+    }
 
     if let Some(status) = status {
         column = column.push(
@@ -86,33 +106,87 @@ pub fn view<'a>(
     column.into()
 }
 
-/// What the sign-in section needs from the model.
+/// What the sign-in rows need from the model.
 pub struct SignIn<'a> {
     pub providers: &'a [crate::mail::SignInProvider],
-    pub email: &'a str,
     pub in_flight: bool,
 }
 
-/// One row per provider a browser sign-in can reach.
+/// The add-account form: a name, an address, a password — and a sign-in
+/// button per provider whose route is the browser instead.
 ///
-/// Absent entirely when no provider has a client id configured: a section
-/// whose every button fails at the provider's "invalid client" page is worse
-/// than no section.
-fn sign_in_section<'a>(sign_in: &SignIn<'a>) -> Element<'a, Message> {
-    if sign_in.providers.is_empty() {
-        return widget::Space::new().height(Length::Fixed(0.0)).into();
+/// The password field steps aside when the address belongs to a provider
+/// whose sign-in is configured: Google issues no password a client could
+/// use, and a field for one would be a field that cannot be filled in right.
+/// The sign-in rows are absent entirely when no provider has a client id — a
+/// button that ends at the provider's "invalid client" page is worse than
+/// none.
+fn add_form<'a>(add: &'a AddForm, sign_in: &SignIn<'a>) -> Element<'a, Message> {
+    let spacing = cosmic::theme::spacing();
+    let wants_sign_in = add.wants_sign_in();
+
+    let mut section = widget::settings::section()
+        .title(fl!("add-account-title"))
+        .add(
+            widget::settings::item::builder(fl!("add-account-name")).control(
+                widget::text_input(String::new(), &add.name)
+                    .on_input(Message::AddFormNameChanged)
+                    .on_focus(Message::TextFocused)
+                    .on_unfocus(Message::TextUnfocused)
+                    .width(Length::Fixed(220.0)),
+            ),
+        )
+        .add(
+            widget::settings::item::builder(fl!("add-account-address")).control(
+                widget::text_input("you@example.com", &add.email)
+                    .on_input(Message::AddFormEmailChanged)
+                    .on_focus(Message::TextFocused)
+                    .on_unfocus(Message::TextUnfocused)
+                    .width(Length::Fixed(220.0)),
+            ),
+        );
+
+    if wants_sign_in {
+        let provider = add
+            .provider
+            .as_ref()
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        section = section.add(
+            widget::text::caption(fl!("provider-uses-sign-in", provider = provider))
+                .wrapping(cosmic::iced::core::text::Wrapping::Word),
+        );
+    } else {
+        // The provider's own note when it has one — "make an app password
+        // first" — and the general one otherwise.
+        let hint = match add.provider.as_ref() {
+            Some(provider) if provider.uses_sign_in => {
+                fl!(
+                    "provider-sign-in-unavailable",
+                    provider = provider.name.clone()
+                )
+            }
+            Some(provider) => provider
+                .hint
+                .clone()
+                .unwrap_or_else(|| fl!("app-password-hint")),
+            None => fl!("app-password-hint"),
+        };
+        section = section.add(
+            widget::settings::item::builder(fl!("password"))
+                .description(hint)
+                .control(
+                    widget::secure_input(fl!("password"), &add.password, None, true)
+                        .on_input(Message::AddFormPasswordChanged)
+                        .on_submit(|_| Message::AddFormConfirm)
+                        .on_focus(Message::TextFocused)
+                        .on_unfocus(Message::TextUnfocused)
+                        .width(Length::Fixed(220.0)),
+                ),
+        );
     }
 
-    let mut section = widget::settings::section().title(fl!("sign-in")).add(
-        widget::settings::item::builder(fl!("sign-in-address")).control(
-            widget::text_input("you@example.com", sign_in.email)
-                .on_input(Message::SignInEmailChanged)
-                .on_focus(Message::TextFocused)
-                .on_unfocus(Message::TextUnfocused)
-                .width(Length::Fixed(220.0)),
-        ),
-    );
-
+    let has_address = add.email.trim().contains('@');
     for provider in sign_in.providers {
         let button = widget::button::text(if sign_in.in_flight {
             fl!("sign-in-waiting")
@@ -120,15 +194,40 @@ fn sign_in_section<'a>(sign_in: &SignIn<'a>) -> Element<'a, Message> {
             fl!("sign-in-with", provider = provider.name.clone())
         });
         section = section.add(
-            widget::settings::item::builder(provider.name.clone()).control(if sign_in.in_flight {
-                button
-            } else {
-                button.on_press(Message::SignInStarted(provider.id.clone()))
-            }),
+            widget::settings::item::builder(provider.name.clone()).control(
+                button.on_press_maybe(
+                    (!sign_in.in_flight && has_address)
+                        .then(|| Message::SignInStarted(provider.id.clone())),
+                ),
+            ),
         );
     }
 
-    section.into()
+    let mut column = widget::column::with_capacity(3)
+        .spacing(spacing.space_s)
+        .push(section);
+
+    if let Some(error) = &add.error {
+        column = column.push(crate::ui::destructive(error.clone()));
+    }
+
+    let mut buttons = widget::row::with_capacity(2)
+        .spacing(spacing.space_xs)
+        .push(widget::button::text(fl!("cancel")).on_press(Message::AddFormCancel));
+    if !wants_sign_in {
+        let label = if add.adding {
+            fl!("adding")
+        } else {
+            fl!("add")
+        };
+        buttons = buttons.push(
+            widget::button::text(label)
+                .class(cosmic::theme::Button::Suggested)
+                .on_press_maybe(add.can_add().then_some(Message::AddFormConfirm)),
+        );
+    }
+
+    column.push(buttons).into()
 }
 
 fn endpoint_form(form: &MailForm) -> Element<'_, Message> {

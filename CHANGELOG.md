@@ -8,6 +8,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Accounts are added in Envelope itself: Accounts → Add account takes a
+  name, an address, and a password, and finds the servers from the address —
+  provider registry, built-in table, autoconfig, probe — so IMAP, JMAP, and
+  POP3 accounts are one form. Addresses at a provider whose browser sign-in
+  is configured get the sign-in button instead of a password field. When no
+  server can be found the account is saved anyway and the server form opens
+  on it with the reason. Accounts can be removed from the same page; the
+  mail already on disk stays.
 - Calendar invitations hand off to the calendar: a message carrying a
   `text/calendar` part with a METHOD grows an "Open in calendar" button that
   hands the invitation, byte-for-byte, to Slate when it is running — the

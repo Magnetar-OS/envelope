@@ -72,8 +72,8 @@ pub struct AppModel {
     /// The providers a browser sign-in can reach, loaded once — the registry
     /// is files on disk and does not change under a running app.
     sign_in_providers: Vec<crate::mail::SignInProvider>,
-    /// The address typed into the sign-in row.
-    sign_in_email: String,
+    /// The add-account form, while it is open.
+    add_form: Option<AddForm>,
     /// A sign-in is in the browser. One at a time: the flow binds a fixed
     /// loopback port, so a second would fail on the bind and confuse the
     /// first.
@@ -350,10 +350,10 @@ impl MailForm {
     fn apply(&mut self, found: &cosmic_pim_mail::Discovered) {
         self.host = found.imap_host.clone();
         self.port = found.imap_port.to_string();
-        self.transport = transport_of(found.imap_security);
+        self.transport = mail::transport_of(found.imap_security);
         self.smtp_host = found.smtp_host.clone();
         self.smtp_port = found.smtp_port.to_string();
-        self.smtp_transport = transport_of(found.smtp_security);
+        self.smtp_transport = mail::transport_of(found.smtp_security);
         self.username = found.username.clone();
         self.discovered_from = Some(match found.source {
             cosmic_pim_mail::discovery::Source::Known => fl!("found-known"),
@@ -383,11 +383,39 @@ impl MailForm {
     }
 }
 
-fn transport_of(security: cosmic_pim_mail::imap::Security) -> Transport {
-    match security {
-        cosmic_pim_mail::imap::Security::Tls => Transport::Tls,
-        cosmic_pim_mail::imap::Security::StartTls => Transport::StartTls,
-        cosmic_pim_mail::imap::Security::Plaintext => Transport::Plaintext,
+/// The add-account form: who you are, and the password. The servers are
+/// worked out from the address.
+///
+/// Envelope's own front door to the suite's account store. An account added
+/// here is the same account Slate and Circle read; what this form has over
+/// theirs is that the mail server is looked up rather than asked for.
+#[derive(Debug, Clone, Default)]
+pub struct AddForm {
+    pub name: String,
+    pub email: String,
+    pub password: String,
+    /// What the registry says about the address, refreshed as it is typed.
+    pub provider: Option<mail::ProviderNote>,
+    /// Discovery is on the network.
+    pub adding: bool,
+    pub error: Option<String>,
+}
+
+impl AddForm {
+    /// The address belongs to a provider that signs in with the browser, and
+    /// that route is open — so a password field would be asking for a thing
+    /// the provider does not issue.
+    #[must_use]
+    pub fn wants_sign_in(&self) -> bool {
+        self.provider
+            .as_ref()
+            .is_some_and(|p| p.uses_sign_in && p.sign_in_ready)
+    }
+
+    /// Whether Add can be pressed: a whole address and a password.
+    #[must_use]
+    pub fn can_add(&self) -> bool {
+        !self.adding && self.email.trim().contains('@') && !self.password.is_empty()
     }
 }
 
@@ -553,7 +581,14 @@ pub enum Message {
     MailFormCancel,
     MailFormSave,
     MailFormDiscover,
-    SignInEmailChanged(String),
+    AddFormStart,
+    AddFormCancel,
+    AddFormNameChanged(String),
+    AddFormEmailChanged(String),
+    AddFormPasswordChanged(String),
+    AddFormConfirm,
+    AddFormDiscovered(Box<Result<cosmic_pim_mail::Discovered, String>>),
+    AccountRemove(String),
     SignInStarted(String),
     SignInFinished(Box<Result<String, String>>),
     PaletteQueryChanged(String),
@@ -777,7 +812,7 @@ impl cosmic::Application for AppModel {
             mail_form: None,
             composer: None,
             sign_in_providers: mail::sign_in_providers(),
-            sign_in_email: String::new(),
+            add_form: None,
             signing_in: false,
             palette: None,
             folder_dialog: None,
@@ -1051,7 +1086,10 @@ impl cosmic::Application for AppModel {
         cosmic::iced::Task::future(async move {
             if let Err(why) = conn
                 .object_server()
-                .at(crate::scheduling::ENVELOPE_PATH, crate::scheduling::Scheduling)
+                .at(
+                    crate::scheduling::ENVELOPE_PATH,
+                    crate::scheduling::Scheduling,
+                )
                 .await
             {
                 tracing::warn!(%why, "the scheduling interface could not be exported");
@@ -1112,9 +1150,9 @@ impl cosmic::Application for AppModel {
                 crate::ui::accounts::view(
                     &self.accounts,
                     self.mail_form.as_ref(),
+                    self.add_form.as_ref(),
                     crate::ui::accounts::SignIn {
                         providers: &self.sign_in_providers,
-                        email: &self.sign_in_email,
                         in_flight: self.signing_in,
                     },
                     self.syncing,
@@ -1475,6 +1513,7 @@ impl cosmic::Application for AppModel {
 
             Message::MailFormStart(id) => {
                 self.mail_form = self.accounts.iter().find(|a| a.id == id).map(MailForm::new);
+                self.add_form = None;
                 self.context_page = ContextPage::Accounts;
                 self.core.window.show_context = true;
                 Task::none()
@@ -1598,23 +1637,53 @@ impl cosmic::Application for AppModel {
                 self.palette = None;
                 self.act(action)
             }
-            Message::SignInEmailChanged(email) => {
-                self.sign_in_email = email;
+            Message::AddFormStart => {
+                self.add_form = Some(AddForm::default());
+                self.mail_form = None;
+                self.context_page = ContextPage::Accounts;
+                self.core.window.show_context = true;
                 Task::none()
             }
+            Message::AddFormCancel => {
+                self.add_form = None;
+                Task::none()
+            }
+            Message::AddFormNameChanged(name) => self.with_add_form(|form| form.name = name),
+            Message::AddFormEmailChanged(email) => {
+                // The registry answers without a network, so the form can say
+                // "this one signs in with the browser" as soon as the domain
+                // is typed.
+                let provider = mail::provider_note(&email);
+                self.with_add_form(|form| {
+                    form.email = email;
+                    form.provider = provider;
+                })
+            }
+            Message::AddFormPasswordChanged(password) => {
+                self.with_add_form(|form| form.password = password)
+            }
+            Message::AddFormConfirm => self.confirm_add(),
+            Message::AddFormDiscovered(result) => {
+                self.add_account(result.map(|found| mail::endpoint_of(&found)))
+            }
+            Message::AccountRemove(id) => self.remove_account(&id),
             Message::SignInStarted(provider_id) => self.sign_in(&provider_id),
             Message::SignInFinished(result) => {
                 self.signing_in = false;
                 match *result {
                     Ok(account_id) => {
-                        self.sign_in_email.clear();
+                        self.add_form = None;
                         self.accounts = load_accounts();
                         // Straight into the new account: the sign-in was the
                         // whole point of the visit.
                         self.update(Message::AccountSelected(account_id))
                     }
                     Err(why) => {
-                        self.status = Some(fl!("sign-in-failed", reason = why));
+                        let why = fl!("sign-in-failed", reason = why);
+                        match self.add_form.as_mut() {
+                            Some(form) => form.error = Some(why),
+                            None => self.status = Some(why),
+                        }
                         Task::none()
                     }
                 }
@@ -2917,10 +2986,14 @@ impl AppModel {
         if self.signing_in {
             return Task::none();
         }
-        let email = self.sign_in_email.trim().to_owned();
-        if email.is_empty() || !email.contains('@') {
-            self.status = Some(fl!("sign-in-needs-address"));
-            return Task::none();
+        // The address is the add form's: the sign-in buttons live on it.
+        let email = self
+            .add_form
+            .as_ref()
+            .map(|form| form.email.trim().to_owned())
+            .unwrap_or_default();
+        if !email.contains('@') {
+            return self.with_add_form(|form| form.error = Some(fl!("sign-in-needs-address")));
         }
         self.signing_in = true;
         self.status = Some(fl!("sign-in-browser"));
@@ -3685,6 +3758,130 @@ impl AppModel {
         Task::none()
     }
 
+    fn with_add_form(&mut self, edit: impl FnOnce(&mut AddForm)) -> Task<Message> {
+        if let Some(form) = self.add_form.as_mut() {
+            edit(form);
+            form.error = None;
+        }
+        Task::none()
+    }
+
+    /// Adds the account the form describes, with a password.
+    ///
+    /// The servers come from the address: the registry and the built-in table
+    /// answer at once, and any other domain goes to the network first.
+    fn confirm_add(&mut self) -> Task<Message> {
+        let Some(form) = self.add_form.as_mut() else {
+            return Task::none();
+        };
+        if form.adding {
+            return Task::none();
+        }
+        let email = form.email.trim().to_owned();
+        if !email.contains('@') {
+            form.error = Some(fl!("add-needs-address"));
+            return Task::none();
+        }
+        if form.password.is_empty() {
+            form.error = Some(fl!("add-needs-password"));
+            return Task::none();
+        }
+        if let Some(endpoint) = mail::password_settings(&email) {
+            return self.add_account(Ok(endpoint));
+        }
+        form.adding = true;
+        form.error = None;
+
+        cosmic::task::future(async move {
+            let found = tokio::task::spawn_blocking(move || mail::discover(&email))
+                .await
+                .unwrap_or_else(|why| Err(why.to_string()));
+            Message::AddFormDiscovered(Box::new(found))
+        })
+    }
+
+    /// Stores the account the add form describes, and opens it.
+    ///
+    /// With no server found it is stored all the same: the address and the
+    /// password are right, and the server form opens on the new account with
+    /// the reason, so the one missing fact is typed where it belongs rather
+    /// than the whole form done over.
+    fn add_account(&mut self, endpoint: Result<MailEndpoint, String>) -> Task<Message> {
+        let Some(form) = self.add_form.take() else {
+            return Task::none();
+        };
+        let (endpoint, problem) = match endpoint {
+            Ok(endpoint) => (Some(endpoint), None),
+            Err(why) => (None, Some(why)),
+        };
+        let account = mail_account(&form.name, &form.email, endpoint);
+        let id = account.id.clone();
+
+        // Written through the shared store, so Slate and Circle see the same
+        // account the moment they next read the file.
+        let stored = AccountStore::open_default()
+            .and_then(|mut store| store.add(account, &form.password).map(|()| store));
+        let store = match stored {
+            Ok(store) => store,
+            Err(why) => {
+                self.add_form = Some(AddForm {
+                    adding: false,
+                    error: Some(why.to_string()),
+                    ..form
+                });
+                return Task::none();
+            }
+        };
+        self.accounts = store.accounts().to_vec();
+        let task = self.update(Message::AccountSelected(id.clone()));
+        if let Some(why) = problem {
+            self.mail_form = self.accounts.iter().find(|a| a.id == id).map(MailForm::new);
+            if let Some(form) = self.mail_form.as_mut() {
+                form.error = Some(fl!("add-no-server", reason = why));
+            }
+        }
+        task
+    }
+
+    /// Forgets an account and its password.
+    ///
+    /// The mail already on disk stays: it is the user's, in maildir, and a
+    /// removed account is not an instruction to delete it.
+    fn remove_account(&mut self, id: &str) -> Task<Message> {
+        let removed =
+            AccountStore::open_default().and_then(|mut store| store.remove(id).map(|()| store));
+        let store = match removed {
+            Ok(store) => store,
+            Err(why) => {
+                self.status = Some(why.to_string());
+                return Task::none();
+            }
+        };
+        self.accounts = store.accounts().to_vec();
+        if self
+            .mail_form
+            .as_ref()
+            .is_some_and(|form| form.account_id == id)
+        {
+            self.mail_form = None;
+        }
+        if self.selected_account.as_deref() != Some(id) {
+            return Task::none();
+        }
+        // The window was showing the account just removed: move to another,
+        // or to nothing.
+        self.selected_account = None;
+        self.watch_generation += 1;
+        self.watching = false;
+        self.undo_stack.clear();
+        self.clear_mailbox_state();
+        if let Some(next) = self.accounts.first().map(|account| account.id.clone()) {
+            return self.update(Message::AccountSelected(next));
+        }
+        self.rebuild_connection();
+        Task::none()
+    }
+
     fn save_form(&mut self) -> Task<Message> {
         let Some(form) = self.mail_form.as_ref() else {
             return Task::none();
@@ -3771,6 +3968,26 @@ fn item(action: Action) -> menu::Item<MenuAction, String> {
     menu::Item::Button(action.label(), None, MenuAction(action))
 }
 
+/// A password account for an address, as the add form describes it.
+///
+/// No `CalDAV` URL: this is a mail account until somebody tells Slate
+/// otherwise. The name typed goes on outgoing mail and names the account in
+/// the sidebar, falling back to the address, which is the only other thing
+/// an account can be called. A login discovery reports as the address itself
+/// is not stored: the account already carries it.
+fn mail_account(name: &str, email: &str, endpoint: Option<MailEndpoint>) -> Account {
+    let email = email.trim();
+    let name = name.trim();
+    let mut account = Account::new(if name.is_empty() { email } else { name }, "", email);
+    account.mail = endpoint.map(|endpoint| MailEndpoint {
+        from_address: email.to_owned(),
+        from_name: name.to_owned(),
+        imap_username: endpoint.imap_username.filter(|login| login != email),
+        ..endpoint
+    });
+    account
+}
+
 fn load_accounts() -> Vec<Account> {
     match AccountStore::open_default() {
         Ok(store) => store.accounts().to_vec(),
@@ -3824,6 +4041,78 @@ fn unescape_local_name(local: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_added_account_is_named_sends_as_its_address_and_has_no_calendar() {
+        let found = cosmic_pim_mail::discovery::known("ada@gmail.com").expect("gmail is known");
+        let account = mail_account("  Ada ", " ada@gmail.com ", Some(mail::endpoint_of(&found)));
+
+        assert_eq!(account.display_name, "Ada");
+        assert_eq!(account.username, "ada@gmail.com");
+        assert_eq!(account.url, "");
+        assert_eq!(account.auth, cosmic_pim_accounts::AuthMethod::Password);
+        assert_eq!(
+            account.from_identity(),
+            Some(("Ada".to_owned(), "ada@gmail.com".to_owned()))
+        );
+        let mail = account.mail.as_ref().expect("the endpoint was given");
+        assert_eq!(mail.imap_host, "imap.gmail.com");
+        assert_eq!(mail.smtp_host, "smtp.gmail.com");
+        // Discovery reports the address as the login; that is the account's
+        // own username and storing it twice would be one more thing to drift.
+        assert_eq!(mail.imap_username, None);
+        assert_eq!(account.mail_username(), "ada@gmail.com");
+    }
+
+    #[test]
+    fn an_added_account_with_no_name_is_called_by_its_address() {
+        let account = mail_account("", "ada@example.org", None);
+        assert_eq!(account.display_name, "ada@example.org");
+        assert!(account.mail.is_none());
+        // Still sends as the address: the login is one.
+        assert_eq!(
+            account.from_identity(),
+            Some(("ada@example.org".to_owned(), "ada@example.org".to_owned()))
+        );
+    }
+
+    #[test]
+    fn the_add_form_needs_a_whole_address_and_a_password() {
+        let mut form = AddForm {
+            email: "ada".to_owned(),
+            password: "hunter2".to_owned(),
+            ..AddForm::default()
+        };
+        assert!(!form.can_add());
+        form.email = "ada@example.org".to_owned();
+        assert!(form.can_add());
+        form.password.clear();
+        assert!(!form.can_add());
+        form.password = "hunter2".to_owned();
+        form.adding = true;
+        assert!(
+            !form.can_add(),
+            "not twice while the first is on the network"
+        );
+    }
+
+    #[test]
+    fn the_add_form_hides_the_password_only_when_a_sign_in_can_actually_happen() {
+        let mut form = AddForm {
+            provider: Some(mail::ProviderNote {
+                name: "Google".to_owned(),
+                hint: None,
+                uses_sign_in: true,
+                sign_in_ready: false,
+            }),
+            ..AddForm::default()
+        };
+        // No client id: the browser route is shut, and an app password over
+        // IMAP is the one way in, so the field has to be there.
+        assert!(!form.wants_sign_in());
+        form.provider.as_mut().unwrap().sign_in_ready = true;
+        assert!(form.wants_sign_in());
+    }
 
     #[test]
     fn maildir_directory_names_round_trip_back_to_wire_names() {

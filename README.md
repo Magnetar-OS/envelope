@@ -20,13 +20,20 @@ the suite's shared account store. Tokens renew themselves; a Google sign-in
 comes out as a Gmail-engine account, not IMAP with a token in the password
 slot.
 
-**Accounts are shared.** Envelope reads
+**Adding an account is an address and a password.** Accounts → Add account
+asks for those and works the servers out from the address rather than asking:
+the provider registry (which knows Fastmail is JMAP), a built-in table for the
+common providers, Mozilla autoconfig for everyone else, and a probed guess as
+a last resort. Only when all of that comes up empty does the server form open,
+on the account already saved. IMAP, JMAP, and POP3 all go this way; Gmail and
+Outlook go through the browser sign-in above when it is configured, and over
+IMAP with an app password when it is not.
+
+**Accounts are shared.** Envelope reads and writes
 `$XDG_CONFIG_HOME/cosmic-pim/accounts.toml`, so an account added in Slate shows
-up here with its password already stored. The one thing it will not have is a
-mail server — a CalDAV URL says nothing about an IMAP host — and Envelope works
-that out from the address rather than asking: a built-in table for the common
-providers, Mozilla autoconfig for everyone else, and a probed guess as a last
-resort.
+up here with its password already stored, and one added here shows up there.
+The one thing a Slate account will not have is a mail server — a CalDAV URL
+says nothing about an IMAP host — and the same discovery fills that in.
 
 [cosmic-pim/ARCHITECTURE.md](https://github.com/entro314-labs/cosmic-pim/blob/main/ARCHITECTURE.md)
 describes how the layers fit and where new code belongs, including the section
