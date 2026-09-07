@@ -64,6 +64,10 @@ pub struct AppModel {
     /// reconciliation can happen on some of them and not all.
     cycle: u64,
     status: Option<String>,
+    /// Transient confirmations, shown over whatever is on screen.
+    toasts: widget::Toasts<Message>,
+    /// What was said this turn, drained into toasts by `update`'s wrapper.
+    pending_toasts: Vec<String>,
     list_error: Option<String>,
     reader_error: Option<String>,
 
@@ -659,6 +663,8 @@ pub enum Message {
     MarkReadOnOpenChanged(bool),
     /// One of the registry's actions, however it was invoked.
     Act(Action),
+    /// A toast expired or was dismissed.
+    ToastClosed(widget::ToastId),
     KeyPressed(
         cosmic::iced::keyboard::Modifiers,
         cosmic::iced::keyboard::Key,
@@ -850,6 +856,8 @@ impl cosmic::Application for AppModel {
             status: crate::crash::take_unreported()
                 .last()
                 .map(|report| fl!("crashed-last-time", path = report.display().to_string())),
+            toasts: widget::Toasts::new(Message::ToastClosed),
+            pending_toasts: Vec::new(),
             list_error: None,
             reader_error: None,
             mail_form: None,
@@ -902,6 +910,11 @@ impl cosmic::Application for AppModel {
             results: Vec::new(),
             searching: false,
         };
+        // The crash notice is a toast as well as a status line: the drawer
+        // is closed on launch, and a notice nobody can see is not a notice.
+        if let Some(text) = model.status.clone() {
+            model.pending_toasts.push(text);
+        }
         // The settings fields show the loaded values from the first frame,
         // not from the first config-change event.
         model.poll_seconds = model.config.poll_seconds.to_string();
@@ -1308,7 +1321,7 @@ impl cosmic::Application for AppModel {
             .view(),
         };
 
-        widget::row::with_capacity(3)
+        let content = widget::row::with_capacity(3)
             .push(
                 widget::container(list)
                     // A fixed list column rather than a proportion: a message
@@ -1323,11 +1336,54 @@ impl cosmic::Application for AppModel {
                 widget::container(right)
                     .width(Length::Fill)
                     .height(Length::Fill),
-            )
-            .into()
+            );
+
+        // The standard chrome: confirmations surface over the content,
+        // wherever the user is looking.
+        widget::toaster(&self.toasts, content)
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
+        let task = self.dispatch(message);
+        // Anything said this turn becomes a toast, so a confirmation is
+        // seen wherever the user is looking — not only inside the
+        // Accounts drawer, which was the one place that rendered the
+        // status line.
+        let announced = self.flush_toasts();
+        Task::batch([task, announced])
+    }
+}
+
+impl AppModel {
+    /// Says something transient to the user, wherever they are looking.
+    ///
+    /// Also mirrors into the status line, which the Accounts drawer still
+    /// renders inline — sync progress reads better as standing text there.
+    fn say(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.status = Some(text.clone());
+        self.pending_toasts.push(text);
+    }
+
+    /// Turns this turn's sayings into toasts, returning the expiry tasks —
+    /// which must reach the runtime, or a toast never leaves on its own.
+    fn flush_toasts(&mut self) -> Task<Message> {
+        let tasks: Vec<Task<Message>> = self
+            .pending_toasts
+            .drain(..)
+            .map(|text| {
+                self.toasts
+                    .push(widget::Toast::new(text))
+                    .map(cosmic::Action::App)
+            })
+            .collect();
+        Task::batch(tasks)
+    }
+
+    /// The message handler proper — `update` wraps it so every status
+    /// write in here is announced exactly once per turn.
+    #[allow(clippy::too_many_lines)]
+    fn dispatch(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::LaunchUrl(url) => {
                 if let Err(why) = open::that_detached(&url) {
@@ -1393,7 +1449,7 @@ impl cosmic::Application for AppModel {
                         // check that overwrites the status line every two
                         // minutes with "0 new" trains the user to ignore it.
                         if report.is_worth_reporting() {
-                            self.status = Some(summarise(&report));
+                            self.say(summarise(&report));
                         }
                         // Folders come from the server, so this is also how a
                         // newly created mailbox appears.
@@ -1425,7 +1481,7 @@ impl cosmic::Application for AppModel {
                         ])
                     }
                     Err(why) => {
-                        self.status = Some(fl!("sync-failed", reason = why));
+                        self.say(fl!("sync-failed", reason = why));
                         Task::none()
                     }
                 }
@@ -1497,7 +1553,7 @@ impl cosmic::Application for AppModel {
                     return Task::none();
                 };
                 let Some(conn) = self.dbus.clone() else {
-                    self.status = Some(fl!("calendar-not-running"));
+                    self.say(fl!("calendar-not-running"));
                     return Task::none();
                 };
                 cosmic::task::future(async move {
@@ -1510,7 +1566,7 @@ impl cosmic::Application for AppModel {
 
             Message::InvitationDelivered(result) => {
                 use crate::scheduling::Delivered;
-                self.status = Some(match result {
+                self.say(match result {
                     Ok(Delivered::Accepted) => fl!("invitation-in-calendar"),
                     Ok(Delivered::Refused) => fl!("invitation-refused"),
                     // Absence, not an error: the part is still saveable from
@@ -1577,14 +1633,14 @@ impl cosmic::Application for AppModel {
                         }
                     }
                     Ok(None) => {}
-                    Err(why) => self.status = Some(why),
+                    Err(why) => self.say(why),
                 }
                 self.reload_conversations()
             }
             Message::Undone(result) => {
                 match result {
-                    Ok(what) => self.status = Some(fl!("undone", what = what)),
-                    Err(why) => self.status = Some(fl!("undo-failed", reason = why)),
+                    Ok(what) => self.say(fl!("undone", what = what)),
+                    Err(why) => self.say(fl!("undo-failed", reason = why)),
                 }
                 self.reload_conversations()
             }
@@ -1770,7 +1826,7 @@ impl cosmic::Application for AppModel {
                         let why = fl!("sign-in-failed", reason = why);
                         match self.add_form.as_mut() {
                             Some(form) => form.error = Some(why),
-                            None => self.status = Some(why),
+                            None => self.say(why),
                         }
                         Task::none()
                     }
@@ -1861,7 +1917,7 @@ impl cosmic::Application for AppModel {
                 if let Some(connection) = self.connection.as_ref()
                     && let Err(why) = mail::retry_queued(connection, &id)
                 {
-                    self.status = Some(why);
+                    self.say(why);
                 }
                 // Due now, so the next check takes it rather than waiting out a
                 // backoff the user has just overridden.
@@ -1871,7 +1927,7 @@ impl cosmic::Application for AppModel {
                 if let Some(connection) = self.connection.as_ref()
                     && let Err(why) = mail::discard_queued(connection, &id)
                 {
-                    self.status = Some(why);
+                    self.say(why);
                 }
                 self.reload_outbox()
             }
@@ -1910,6 +1966,10 @@ impl cosmic::Application for AppModel {
                 self.key_pressed(&modifiers, &key, physical.as_ref())
             }
             Message::Act(action) => self.act(action),
+            Message::ToastClosed(id) => {
+                self.toasts.remove(id);
+                Task::none()
+            }
 
             Message::ShowDrafts => {
                 self.showing_drafts = !self.showing_drafts;
@@ -1955,7 +2015,7 @@ impl cosmic::Application for AppModel {
                 ) else {
                     return Task::none();
                 };
-                self.status = Some(fl!("importing"));
+                self.say(fl!("importing"));
                 cosmic::task::future(async move {
                     let result = tokio::task::spawn_blocking(move || {
                         mail::import_mbox(&connection, &folder, &path)
@@ -1968,7 +2028,7 @@ impl cosmic::Application for AppModel {
             Message::MboxImported(result) => {
                 match result {
                     Ok((imported, skipped)) => {
-                        self.status = Some(if skipped > 0 {
+                        self.say(if skipped > 0 {
                             fl!("imported-some", imported = imported, skipped = skipped)
                         } else {
                             fl!("imported", imported = imported)
@@ -1977,7 +2037,7 @@ impl cosmic::Application for AppModel {
                         // appear.
                         return self.sync_now();
                     }
-                    Err(why) => self.status = Some(why),
+                    Err(why) => self.say(why),
                 }
                 Task::none()
             }
@@ -1999,7 +2059,7 @@ impl cosmic::Application for AppModel {
                 })
             }
             Message::MessageExported(result) => {
-                self.status = Some(match result {
+                self.say(match result {
                     Ok(path) => fl!("attachment-saved", path = path.display().to_string()),
                     Err(why) => fl!("attachment-not-saved", reason = why),
                 });
@@ -2007,7 +2067,7 @@ impl cosmic::Application for AppModel {
             }
             Message::Unsubscribe => self.unsubscribe(),
             Message::Unsubscribed(result) => {
-                self.status = Some(match result {
+                self.say(match result {
                     Ok(()) => fl!("unsubscribed"),
                     Err(why) => fl!("unsubscribe-failed", reason = why),
                 });
@@ -2033,18 +2093,18 @@ impl cosmic::Application for AppModel {
             Message::PgpKeyImported(result) => {
                 match *result {
                     Ok(address) => {
-                        self.status = Some(fl!("pgp-key-imported", address = address));
+                        self.say(fl!("pgp-key-imported", address = address));
                         // The verdict may have just changed from "unknown
                         // signer" to "verified"; reopen so the reader says so.
                         return self.open_selected();
                     }
-                    Err(why) => self.status = Some(why),
+                    Err(why) => self.say(why),
                 }
                 Task::none()
             }
             Message::SaveAttachment(index) => self.save_attachment(index),
             Message::AttachmentSaved(result) => {
-                self.status = Some(match result {
+                self.say(match result {
                     // Where it *landed*: the name is sanitised and a collision
                     // gets a counter, so naming the folder would be unhelpful
                     // if the file is actually `report (3).pdf`.
@@ -2111,10 +2171,10 @@ impl cosmic::Application for AppModel {
                 match *result {
                     Ok(Some(report)) if !report.failed.is_empty() => {
                         let (_, why) = report.failed[0].clone();
-                        self.status = Some(fl!("draft-sync-failed", reason = why));
+                        self.say(fl!("draft-sync-failed", reason = why));
                     }
                     Ok(_) => {}
-                    Err(why) => self.status = Some(fl!("draft-sync-failed", reason = why)),
+                    Err(why) => self.say(fl!("draft-sync-failed", reason = why)),
                 }
                 Task::none()
             }
@@ -2226,13 +2286,13 @@ impl cosmic::Application for AppModel {
                             self.status =
                                 Some(fl!("bounce-arrived", recipient = recipient.clone()));
                         } else if let Some((rule, why)) = report.failures.first() {
-                            self.status = Some(fl!(
+                            self.say(fl!(
                                 "rule-failed",
                                 rule = rule.clone(),
                                 reason = why.clone()
                             ));
                         } else if report.matched > 0 {
-                            self.status = Some(fl!("rules-applied", count = report.matched));
+                            self.say(fl!("rules-applied", count = report.matched));
                         }
                         if report.matched > 0 {
                             // Rules moved or reflagged messages after the
@@ -2249,7 +2309,7 @@ impl cosmic::Application for AppModel {
                         }
                     }
                     Ok(None) => {}
-                    Err(why) => self.status = Some(why),
+                    Err(why) => self.say(why),
                 }
                 Task::none()
             }
@@ -2260,7 +2320,7 @@ impl cosmic::Application for AppModel {
                         self.known_labels = names;
                         self.refresh_label_rows();
                     }
-                    Err(why) => self.status = Some(why),
+                    Err(why) => self.say(why),
                 }
                 Task::none()
             }
@@ -2314,7 +2374,7 @@ impl cosmic::Application for AppModel {
             Message::SendScheduled(result) => match *result {
                 Ok((id, not_before_ms, grace)) => {
                     self.composer = None;
-                    self.status = Some(if grace {
+                    self.say(if grace {
                         fl!(
                             "send-scheduled-grace",
                             seconds = i64::from(self.config.send_delay())
@@ -2354,7 +2414,7 @@ impl cosmic::Application for AppModel {
                         composer.sending = false;
                         composer.error = Some(why);
                     } else {
-                        self.status = Some(why);
+                        self.say(why);
                     }
                     Task::none()
                 }
@@ -2365,10 +2425,10 @@ impl cosmic::Application for AppModel {
                         // The words the user wrote, back where they can be
                         // edited — the entire point of the grace.
                         self.composer = Some(Composer::new(draft, None));
-                        self.status = Some(fl!("send-taken-back"));
+                        self.say(fl!("send-taken-back"));
                     }
-                    Ok(None) => self.status = Some(fl!("send-already-gone")),
-                    Err(why) => self.status = Some(why),
+                    Ok(None) => self.say(fl!("send-already-gone")),
+                    Err(why) => self.say(why),
                 }
                 self.reload_outbox()
             }
@@ -2382,14 +2442,14 @@ impl cosmic::Application for AppModel {
             Message::SnoozeWoken(result) => match *result {
                 Ok(0) => Task::none(),
                 Ok(count) => {
-                    self.status = Some(fl!("snoozed-back", count = count));
+                    self.say(fl!("snoozed-back", count = count));
                     // The messages are back in INBOX on the server; the next
                     // pull files them locally. Ask for one now rather than
                     // waiting out the poll.
                     self.sync_now()
                 }
                 Err(why) => {
-                    self.status = Some(fl!("snooze-failed", reason = why));
+                    self.say(fl!("snooze-failed", reason = why));
                     Task::none()
                 }
             },
@@ -2440,13 +2500,13 @@ impl cosmic::Application for AppModel {
             Message::FolderDialogConfirmed => self.confirm_folder_dialog(),
             Message::FolderOpFinished(result) => match *result {
                 Ok(status) => {
-                    self.status = Some(status);
+                    self.say(status);
                     // The folder list is the server's; the sync is what makes
                     // the change visible.
                     self.sync_now()
                 }
                 Err(why) => {
-                    self.status = Some(why);
+                    self.say(why);
                     Task::none()
                 }
             },
@@ -2456,7 +2516,7 @@ impl cosmic::Application for AppModel {
                 if let Some(connection) = self.connection.as_ref()
                     && let Err(why) = mail::delete_draft(connection, &id)
                 {
-                    self.status = Some(why);
+                    self.say(why);
                 }
                 Task::batch([self.reload_drafts(), self.sweep_drafts_now()])
             }
@@ -2464,9 +2524,7 @@ impl cosmic::Application for AppModel {
             Message::ComposeSent(sent) => self.composer_finished(*sent),
         }
     }
-}
 
-impl AppModel {
     fn account(&self) -> Option<&Account> {
         let id = self.selected_account.as_deref()?;
         self.accounts.iter().find(|a| a.id == id)
@@ -2497,7 +2555,7 @@ impl AppModel {
         let store = match AccountStore::open_default() {
             Ok(store) => store,
             Err(why) => {
-                self.status = Some(why.to_string());
+                self.say(why.to_string());
                 return;
             }
         };
@@ -2510,8 +2568,8 @@ impl AppModel {
                     .collect();
                 self.connection = Some(connection);
             }
-            Ok(None) => self.status = Some(fl!("no-mail-account")),
-            Err(why) => self.status = Some(why),
+            Ok(None) => self.say(fl!("no-mail-account")),
+            Err(why) => self.say(why),
         }
     }
 
@@ -2635,7 +2693,7 @@ impl AppModel {
 
     fn sync_now(&mut self) -> Task<Message> {
         let Some(connection) = self.connection.clone() else {
-            self.status = Some(fl!("no-mail-account"));
+            self.say(fl!("no-mail-account"));
             return Task::none();
         };
         if self.syncing {
@@ -2694,7 +2752,7 @@ impl AppModel {
     /// six messages in the inbox is not what anybody meant.
     fn move_selected(&mut self, role: SpecialUse) -> Task<Message> {
         let Some(destination) = mail::special(&self.folders, role).cloned() else {
-            self.status = Some(fl!("no-archive-folder"));
+            self.say(fl!("no-archive-folder"));
             return Task::none();
         };
         self.move_conversation_to(destination)
@@ -2807,7 +2865,7 @@ impl AppModel {
             .and_then(|c| c.submission.as_ref())
             .map(|s| s.identity.clone())
         else {
-            self.status = Some(fl!("no-from-address"));
+            self.say(fl!("no-from-address"));
             self.context_page = ContextPage::Accounts;
             self.core.window.show_context = true;
             return;
@@ -2831,7 +2889,7 @@ impl AppModel {
         else {
             // Not a silent no-op: without a From address there is nothing to
             // send as, and the user needs to be told where to fix it.
-            self.status = Some(fl!("no-from-address"));
+            self.say(fl!("no-from-address"));
             self.context_page = ContextPage::Accounts;
             self.core.window.show_context = true;
             return Task::none();
@@ -2888,7 +2946,7 @@ impl AppModel {
             if let Some(id) = composer.draft_id.as_deref()
                 && let Err(why) = mail::delete_draft(connection, id)
             {
-                self.status = Some(why);
+                self.say(why);
             }
             // The discard left a tombstone if the draft was mirrored; the
             // sweep retires the server copy now rather than at the next poll.
@@ -2909,7 +2967,7 @@ impl AppModel {
                 // beside the text it lost. Saying so in the status line is the
                 // least bad thing available, and it is why saving is also
                 // possible before closing.
-                self.status = Some(fl!("draft-not-saved", reason = why));
+                self.say(fl!("draft-not-saved", reason = why));
                 Task::none()
             }
         }
@@ -2927,7 +2985,7 @@ impl AppModel {
         };
         match route {
             mail::Unsubscribe::OneClick(url) => {
-                self.status = Some(fl!("unsubscribing"));
+                self.say(fl!("unsubscribing"));
                 cosmic::task::future(async move {
                     let result =
                         tokio::task::spawn_blocking(move || mail::unsubscribe_one_click(&url))
@@ -2944,7 +3002,7 @@ impl AppModel {
             }
             mail::Unsubscribe::Browser(url) => {
                 if let Err(why) = open::that_detached(&url) {
-                    self.status = Some(why.to_string());
+                    self.say(why.to_string());
                 }
                 Task::none()
             }
@@ -2975,7 +3033,7 @@ impl AppModel {
         if let Some(connection) = self.connection.as_ref()
             && let Err(why) = mail::save_rules(connection, &self.rules)
         {
-            self.status = Some(why);
+            self.say(why);
         }
     }
 
@@ -2984,7 +3042,7 @@ impl AppModel {
         if let Some(connection) = self.connection.as_ref() {
             match mail::load_rules(connection) {
                 Ok(rules) => self.rules = rules,
-                Err(why) => self.status = Some(why),
+                Err(why) => self.say(why),
             }
         }
         let movable: Vec<&Folder> = self.folders.iter().filter(|f| !f.no_select).collect();
@@ -3018,11 +3076,11 @@ impl AppModel {
     /// refusal comes with words rather than a server error code.
     fn actionable_folder(&mut self) -> Option<Folder> {
         let Some(folder) = self.current_folder().cloned() else {
-            self.status = Some(fl!("no-folder-selected"));
+            self.say(fl!("no-folder-selected"));
             return None;
         };
         if folder.special_use.is_some() || folder.wire_name.eq_ignore_ascii_case("INBOX") {
-            self.status = Some(fl!("folder-is-special", name = folder.display_name));
+            self.say(fl!("folder-is-special", name = folder.display_name));
             return None;
         }
         Some(folder)
@@ -3258,7 +3316,7 @@ impl AppModel {
             return self.with_add_form(|form| form.error = Some(fl!("sign-in-needs-address")));
         }
         self.signing_in = true;
-        self.status = Some(fl!("sign-in-browser"));
+        self.say(fl!("sign-in-browser"));
         let provider_id = provider_id.to_owned();
 
         cosmic::task::future(async move {
@@ -3684,7 +3742,7 @@ impl AppModel {
     /// Takes back the most recent reversible action.
     fn undo(&mut self) -> Task<Message> {
         let Some(entry) = self.undo_stack.pop() else {
-            self.status = Some(fl!("nothing-to-undo"));
+            self.say(fl!("nothing-to-undo"));
             return Task::none();
         };
         let Some(connection) = self.connection.clone() else {
@@ -3737,7 +3795,7 @@ impl AppModel {
             .iter()
             .position(|folder| folder.special_use == Some(role))
         else {
-            self.status = Some(fl!("no-such-folder"));
+            self.say(fl!("no-such-folder"));
             return Task::none();
         };
         self.update(Message::FolderSelected(index))
@@ -3816,7 +3874,7 @@ impl AppModel {
             .iter()
             .position(|folder| folder.wire_name == hit.mailbox)
         else {
-            self.status = Some(fl!("hit-folder-gone"));
+            self.say(fl!("hit-folder-gone"));
             return Task::none();
         };
 
@@ -3949,8 +4007,8 @@ impl AppModel {
                 composer.draft_id = Some(id.to_owned());
                 self.composer = Some(composer);
             }
-            Ok(None) => self.status = Some(fl!("draft-gone")),
-            Err(why) => self.status = Some(why),
+            Ok(None) => self.say(fl!("draft-gone")),
+            Err(why) => self.say(why),
         }
         Task::none()
     }
@@ -4045,7 +4103,7 @@ impl AppModel {
                 // user wrote would be unforgivable, and is the whole reason the
                 // composer stays open below.
                 self.composer = None;
-                self.status = Some(if filed {
+                self.say(if filed {
                     fl!("sent")
                 } else {
                     fl!("sent-not-filed")
@@ -4057,7 +4115,7 @@ impl AppModel {
                 // Closed, because the message is no longer the user's problem:
                 // it is queued, durable, and will go out on the next check.
                 self.composer = None;
-                self.status = Some(fl!("send-queued"));
+                self.say(fl!("send-queued"));
                 return self.reload_outbox();
             }
             mail::Sent::Failed(why) => {
@@ -4177,7 +4235,7 @@ impl AppModel {
         let store = match removed {
             Ok(store) => store,
             Err(why) => {
-                self.status = Some(why.to_string());
+                self.say(why.to_string());
                 return Task::none();
             }
         };

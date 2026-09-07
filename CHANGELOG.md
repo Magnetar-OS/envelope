@@ -8,6 +8,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- What the app says, you now see. Every confirmation and warning — sent,
+  queued, snoozed mail returning, a rule filing something, a delivery
+  failure, a key imported, last session's crash — was written to a status
+  line that only the Accounts page rendered. They surface as toasts now,
+  over whatever is on screen; the Accounts page keeps its inline line for
+  sync progress.
+
 - The composer writes real messages. Its body was a single-line field, so
   Enter did nothing, a pasted quote arrived stripped of its line breaks, and
   every reply opened with the text it was answering flattened into one line.
