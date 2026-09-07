@@ -53,10 +53,18 @@ pub fn view<'a>(
                 }),
         )
         .push(fields)
+        // A real editor, not a text field. `text_input` is single-line by
+        // construction — it fires `on_submit` for Enter and strips control
+        // characters from every paste — so a body built on it could not hold
+        // a paragraph break, and a reply opened with its quoted text
+        // flattened onto one line. This also brings selection, word motion,
+        // Home/End and a right-click menu, none of which had to be written.
         .push(
-            widget::text_input(String::new(), &composer.draft.body)
-                .on_input(Message::ComposeBodyChanged)
-                .width(Length::Fill),
+            widget::text_editor::text_editor(&composer.body)
+                .placeholder(fl!("compose-body-placeholder"))
+                .height(Length::Fill)
+                .context_menu(true)
+                .on_action(|action| Message::ComposeBodyAction(Box::new(action))),
         );
 
     column = column.push(attachments(composer));

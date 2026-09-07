@@ -179,6 +179,13 @@ static SEARCH_ID: std::sync::LazyLock<cosmic::widget::Id> =
 /// explained.
 pub struct Composer {
     pub draft: cosmic_pim_mail::Draft,
+    /// The body being typed.
+    ///
+    /// Editor content rather than the draft's `String`, because a message is
+    /// prose: it has paragraphs, and it is edited around rather than only
+    /// appended to. The draft keeps the string — it is what gets serialised,
+    /// mirrored and sent — and [`Composer::resolved`] is where the two meet.
+    pub body: widget::text_editor::Content,
     pub to: String,
     pub cc: String,
     pub bcc: String,
@@ -198,6 +205,9 @@ impl Composer {
             to: join(&draft.to),
             cc: join(&draft.cc),
             bcc: join(&draft.bcc),
+            // Seeded from the draft, which is how a reply opens with the
+            // quoted text it was built with — several lines of it.
+            body: widget::text_editor::Content::with_text(&draft.body),
             draft,
             answering,
             draft_id: None,
@@ -212,7 +222,7 @@ impl Composer {
     /// — a Drafts list full of blanks is how the feature stops being useful.
     fn is_worth_saving(&self) -> bool {
         !self.draft.subject.trim().is_empty()
-            || !self.draft.body.trim().is_empty()
+            || !self.body.text().trim().is_empty()
             || !self.to.trim().is_empty()
             || !self.cc.trim().is_empty()
             || !self.bcc.trim().is_empty()
@@ -224,6 +234,7 @@ impl Composer {
         draft.to = parse_addresses(&self.to);
         draft.cc = parse_addresses(&self.cc);
         draft.bcc = parse_addresses(&self.bcc);
+        draft.body = self.body.text();
         draft
     }
 
@@ -629,7 +640,9 @@ pub enum Message {
     ComposeCcChanged(String),
     ComposeBccChanged(String),
     ComposeSubjectChanged(String),
-    ComposeBodyChanged(String),
+    /// One edit in the body: a keystroke, a paste, a selection drag. The
+    /// editor owns the text and reports what happened to it.
+    ComposeBodyAction(Box<widget::text_editor::Action>),
     /// Close and keep what was typed.
     ComposeCancel,
     /// Close and throw it away — the explicit choice, not the default.
@@ -1797,7 +1810,9 @@ impl cosmic::Application for AppModel {
             Message::ComposeCcChanged(text) => self.with_composer(|c| c.cc = text),
             Message::ComposeBccChanged(text) => self.with_composer(|c| c.bcc = text),
             Message::ComposeSubjectChanged(text) => self.with_composer(|c| c.draft.subject = text),
-            Message::ComposeBodyChanged(text) => self.with_composer(|c| c.draft.body = text),
+            Message::ComposeBodyAction(action) => {
+                self.with_composer(|c| c.body.perform(*action))
+            }
             Message::ComposeCancel => self.close_composer(true),
             Message::ComposeDiscard => self.close_composer(false),
             Message::DraftsLoaded(drafts) => {

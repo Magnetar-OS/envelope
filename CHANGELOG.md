@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The composer writes real messages. Its body was a single-line field, so
+  Enter did nothing, a pasted quote arrived stripped of its line breaks, and
+  every reply opened with the text it was answering flattened into one line.
+  It is a proper editor now, which also brings selection, word-by-word
+  movement, Home and End, and a right-click menu.
+
 - Removing an account or deleting a filter rule asks first. Both went
   through on a single misclick, with nothing to undo them — while deleting a
   folder had asked all along.

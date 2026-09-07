@@ -325,3 +325,4 @@ pgp-unknown = Carries a signature from a key this device does not hold.
 pgp-encrypted = Encrypted with OpenPGP. Decryption is not set up yet, so the sealed form is shown below.
 pgp-import-key = Import key
 pgp-key-imported = Key imported for { $address }. Their signed mail can now be verified.
+compose-body-placeholder = Write your message

@@ -140,8 +140,10 @@ attack, and "the field is visible in the composer" is not a defence.
 Single letters are Gmail's, because that is the vocabulary anybody who drives a
 mail client from the keyboard already has; inventing a second one would be
 asking people to learn something for no reason. They fire only when nothing is
-expecting text — pressing `c` in the composer types a `c` — and every text field
-in the application reports its focus so that rule is exact rather than a guess.
+expecting text — pressing `c` in the composer types a `c` — and that is decided
+from what is on screen rather than from a running count of focused fields: a
+field can be taken off the screen while it has focus, and a count that missed
+one would disable every letter for the rest of the session.
 
 The modifier forms (`Ctrl+N`, `Ctrl+R`, `Ctrl+Shift+R`, `Ctrl+F`, `Escape`, `F5`)
 work regardless, which is the reason for having both.
