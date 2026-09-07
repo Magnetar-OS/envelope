@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Single-letter shortcuts keep working. Using the command palette once left
+  every one of them dead for the rest of the session, with nothing on screen
+  to say why.
+- A held modifier no longer fires a bare shortcut: Ctrl+C was reaching the
+  composer, Ctrl+V the folder picker, and Ctrl+S the star.
 - The folder list scrolls. An account with more folders than fit the window
   had the rest simply unreachable.
 - Message text can be selected and copied.

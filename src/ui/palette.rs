@@ -39,9 +39,7 @@ impl<'a> Palette<'a> {
                     // Enter runs the selected row. Through on_submit rather
                     // than the key handler, because the input has focus and
                     // owns the keystroke.
-                    .on_submit(|_| Message::PaletteSubmitted)
-                    .on_focus(Message::TextFocused)
-                    .on_unfocus(Message::TextUnfocused),
+                    .on_submit(|_| Message::PaletteSubmitted),
             );
 
         if self.matches.is_empty() {

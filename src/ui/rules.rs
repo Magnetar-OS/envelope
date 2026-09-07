@@ -79,9 +79,7 @@ impl<'a> Rules<'a> {
             .title(fl!("rules-add"))
             .add(
                 widget::text_input(fl!("rule-name-placeholder"), &self.form.name)
-                    .on_input(Message::RuleFormNameChanged)
-                    .on_focus(Message::TextFocused)
-                    .on_unfocus(Message::TextUnfocused),
+                    .on_input(Message::RuleFormNameChanged),
             )
             .add(
                 widget::row::with_capacity(2)
@@ -95,8 +93,6 @@ impl<'a> Rules<'a> {
                     .push(
                         widget::text_input(fl!("rule-contains-placeholder"), &self.form.contains)
                             .on_input(Message::RuleFormContainsChanged)
-                            .on_focus(Message::TextFocused)
-                            .on_unfocus(Message::TextUnfocused)
                             .width(Length::Fill),
                     ),
             )

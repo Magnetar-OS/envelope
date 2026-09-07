@@ -128,7 +128,7 @@ pub struct AppModel {
     /// unfocus of the one being left can arrive after the focus of the one
     /// being entered. A flag would flicker to false and let a keystroke meant
     /// for a text field fire a shortcut.
-    text_focus: usize,
+    search_focused: bool,
     /// The first key of a chord, waiting for its second.
     pending_chord: Option<char>,
     /// Settings that persist between runs, and are picked up live when another
@@ -641,8 +641,8 @@ pub enum Message {
         cosmic::iced::keyboard::Key,
         Option<cosmic::iced::keyboard::key::Physical>,
     ),
-    TextFocused,
-    TextUnfocused,
+    SearchFocused,
+    SearchUnfocused,
     ShowOutbox,
     ShowUnified,
     UnifiedLoaded(Vec<mail::UnifiedConversation>),
@@ -850,7 +850,7 @@ impl cosmic::Application for AppModel {
             showing_outbox: false,
             unified: Vec::new(),
             showing_unified: false,
-            text_focus: 0,
+            search_focused: false,
             pending_chord: None,
             poll_seconds: String::new(),
             send_delay: String::new(),
@@ -914,8 +914,8 @@ impl cosmic::Application for AppModel {
             .on_clear(Message::SearchCleared)
             // Every text field reports focus, so single-letter shortcuts know
             // to stay out of the way.
-            .on_focus(Message::TextFocused)
-            .on_unfocus(Message::TextUnfocused)
+            .on_focus(Message::SearchFocused)
+            .on_unfocus(Message::SearchUnfocused)
             .width(Length::Fixed(260.0));
         vec![search.into()]
     }
@@ -1842,12 +1842,12 @@ impl cosmic::Application for AppModel {
                 self.remember(|config| config.mark_read_on_open = on);
                 Task::none()
             }
-            Message::TextFocused => {
-                self.text_focus = self.text_focus.saturating_add(1);
+            Message::SearchFocused => {
+                self.search_focused = true;
                 Task::none()
             }
-            Message::TextUnfocused => {
-                self.text_focus = self.text_focus.saturating_sub(1);
+            Message::SearchUnfocused => {
+                self.search_focused = false;
                 Task::none()
             }
             Message::KeyPressed(modifiers, key, physical) => {
@@ -3321,8 +3321,21 @@ impl AppModel {
     /// Single-letter shortcuts must not fire while a text field has focus —
     /// pressing `c` in the composer has to type a `c`. Modifier combinations
     /// are exempt, which is the whole reason they exist alongside the letters.
+    ///
+    /// Derived from what is on screen rather than counted from focus events,
+    /// and that is the whole point. A field removed from the tree never sends
+    /// the unfocus that would balance a count — the palette closing on Enter
+    /// does exactly that — so a counter drifts up and never comes down, and
+    /// every single-letter shortcut stays dead for the rest of the session
+    /// with nothing to show why. The search box in the header is the one
+    /// field that outlives every surface, so it is the one whose focus is
+    /// worth tracking; everything else lives inside something this can see.
     fn typing(&self) -> bool {
-        self.text_focus > 0
+        self.search_focused
+            || self.palette.is_some()
+            || self.composer.is_some()
+            || self.folder_dialog.is_some()
+            || self.core.window.show_context
     }
 
     /// Decides what a key press meant.
@@ -3392,6 +3405,11 @@ impl AppModel {
         if self.typing() {
             // A half-typed chord does not survive somebody clicking into a
             // field and typing; it would fire on whatever they pressed after.
+            self.pending_chord = None;
+            return Task::none();
+        }
+
+        if !bare(modifiers) {
             self.pending_chord = None;
             return Task::none();
         }
@@ -4127,6 +4145,17 @@ impl AppModel {
 /// Where `j` or `k` moves the selection, or `None` when it does not move.
 ///
 /// Clamped rather than wrapped. Wrapping from the end of a hundred-message list
+/// Does this key press carry no modifier a shortcut would have claimed?
+///
+/// Bare keys mean bare. Every binding that wants a modifier is in the key-bind
+/// map and is matched before this; anything still holding one is a combination
+/// this build does not know, and letting it through to the single-letter path
+/// fires the wrong verb — Ctrl+C is the universal copy key, not "compose".
+/// Shift is exempt, because it is how `?` and `#` are typed at all.
+fn bare(modifiers: &cosmic::iced::keyboard::Modifiers) -> bool {
+    !modifiers.control() && !modifiers.alt() && !modifiers.logo()
+}
+
 /// back to its start is never what somebody holding `j` meant, and it is
 /// disorienting in a way a stop at the end is not.
 fn next_selection(current: Option<usize>, len: usize, by: isize) -> Option<usize> {
@@ -4224,6 +4253,22 @@ fn unescape_local_name(local: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_modifier_stops_a_letter_from_firing_its_bare_shortcut() {
+        use cosmic::iced::keyboard::Modifiers;
+
+        assert!(bare(&Modifiers::empty()), "an unmodified letter is a shortcut");
+        // Shift is how the punctuation shortcuts are typed at all.
+        assert!(bare(&Modifiers::SHIFT), "shift is part of typing `?`");
+
+        // The bug this guards: without it, `c` is reached through Ctrl+C and
+        // the copy key opens the composer.
+        assert!(!bare(&Modifiers::CTRL), "ctrl+c must not compose");
+        assert!(!bare(&Modifiers::ALT), "alt+j must not move the selection");
+        assert!(!bare(&Modifiers::LOGO), "super+k must not move the selection");
+        assert!(!bare(&(Modifiers::CTRL | Modifiers::SHIFT)));
+    }
 
     #[test]
     fn an_added_account_is_named_sends_as_its_address_and_has_no_calendar() {

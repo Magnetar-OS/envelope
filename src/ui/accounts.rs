@@ -131,8 +131,6 @@ fn add_form<'a>(add: &'a AddForm, sign_in: &SignIn<'a>) -> Element<'a, Message> 
             widget::settings::item::builder(fl!("add-account-name")).control(
                 widget::text_input(String::new(), &add.name)
                     .on_input(Message::AddFormNameChanged)
-                    .on_focus(Message::TextFocused)
-                    .on_unfocus(Message::TextUnfocused)
                     .width(Length::Fixed(220.0)),
             ),
         )
@@ -140,8 +138,6 @@ fn add_form<'a>(add: &'a AddForm, sign_in: &SignIn<'a>) -> Element<'a, Message> 
             widget::settings::item::builder(fl!("add-account-address")).control(
                 widget::text_input("you@example.com", &add.email)
                     .on_input(Message::AddFormEmailChanged)
-                    .on_focus(Message::TextFocused)
-                    .on_unfocus(Message::TextUnfocused)
                     .width(Length::Fixed(220.0)),
             ),
         );
@@ -179,8 +175,6 @@ fn add_form<'a>(add: &'a AddForm, sign_in: &SignIn<'a>) -> Element<'a, Message> 
                     widget::secure_input(fl!("password"), &add.password, None, true)
                         .on_input(Message::AddFormPasswordChanged)
                         .on_submit(|_| Message::AddFormConfirm)
-                        .on_focus(Message::TextFocused)
-                        .on_unfocus(Message::TextUnfocused)
                         .width(Length::Fixed(220.0)),
                 ),
         );
@@ -249,8 +243,6 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
             widget::settings::item::builder(fl!("imap-host")).control(
                 widget::text_input("imap.example.com", &form.host)
                     .on_input(Message::MailFormHostChanged)
-                    .on_focus(Message::TextFocused)
-                    .on_unfocus(Message::TextUnfocused)
                     .width(Length::Fixed(220.0)),
             ),
         )
@@ -258,8 +250,6 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
             widget::settings::item::builder(fl!("port")).control(
                 widget::text_input("993", &form.port)
                     .on_input(Message::MailFormPortChanged)
-                    .on_focus(Message::TextFocused)
-                    .on_unfocus(Message::TextUnfocused)
                     .width(Length::Fixed(220.0)),
             ),
         )
@@ -277,8 +267,6 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                 .control(
                     widget::text_input("https://…/.well-known/jmap", &form.jmap_url)
                         .on_input(Message::MailFormJmapUrlChanged)
-                        .on_focus(Message::TextFocused)
-                        .on_unfocus(Message::TextUnfocused)
                         .width(Length::Fixed(220.0)),
                 ),
         )
@@ -288,8 +276,6 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                 .control(
                     widget::text_input(form.account_username.clone(), &form.username)
                         .on_input(Message::MailFormUsernameChanged)
-                        .on_focus(Message::TextFocused)
-                        .on_unfocus(Message::TextUnfocused)
                         .width(Length::Fixed(220.0)),
                 ),
         );
@@ -302,8 +288,6 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                 .control(
                     widget::text_input("you@example.com", &form.from_address)
                         .on_input(Message::MailFormFromAddressChanged)
-                        .on_focus(Message::TextFocused)
-                        .on_unfocus(Message::TextUnfocused)
                         .width(Length::Fixed(220.0)),
                 ),
         )
@@ -311,8 +295,6 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
             widget::settings::item::builder(fl!("from-name")).control(
                 widget::text_input(String::new(), &form.from_name)
                     .on_input(Message::MailFormFromNameChanged)
-                    .on_focus(Message::TextFocused)
-                    .on_unfocus(Message::TextUnfocused)
                     .width(Length::Fixed(220.0)),
             ),
         )
@@ -323,8 +305,6 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                 .control(
                     widget::text_input(form.host.clone(), &form.smtp_host)
                         .on_input(Message::MailFormSmtpHostChanged)
-                        .on_focus(Message::TextFocused)
-                        .on_unfocus(Message::TextUnfocused)
                         .width(Length::Fixed(220.0)),
                 ),
         )
@@ -332,8 +312,6 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
             widget::settings::item::builder(fl!("smtp-port")).control(
                 widget::text_input("465", &form.smtp_port)
                     .on_input(Message::MailFormSmtpPortChanged)
-                    .on_focus(Message::TextFocused)
-                    .on_unfocus(Message::TextUnfocused)
                     .width(Length::Fixed(220.0)),
             ),
         )
@@ -413,8 +391,6 @@ fn aliases(form: &MailForm) -> Element<'_, Message> {
                     widget::text_input(fl!("alias-placeholder"), &form.alias_input)
                         .on_input(Message::MailFormAliasInputChanged)
                         .on_submit(|_| Message::MailFormAliasAdded)
-                        .on_focus(Message::TextFocused)
-                        .on_unfocus(Message::TextUnfocused)
                         .width(Length::Fill),
                 )
                 .push(widget::button::standard(fl!("alias-add")).on_press_maybe(

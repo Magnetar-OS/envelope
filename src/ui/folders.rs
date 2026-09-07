@@ -24,9 +24,7 @@ pub fn name_dialog<'a>(title: String, confirm: String, name: &'a str) -> Element
             widget::text_input(fl!("folder-name-placeholder"), name)
                 .id(super::FOLDER_NAME_ID.clone())
                 .on_input(Message::FolderNameChanged)
-                .on_submit(|_| Message::FolderDialogConfirmed)
-                .on_focus(Message::TextFocused)
-                .on_unfocus(Message::TextUnfocused),
+                .on_submit(|_| Message::FolderDialogConfirmed),
         )
         .primary_action(widget::button::suggested(confirm).on_press(Message::FolderDialogConfirmed))
         .secondary_action(
@@ -127,9 +125,7 @@ impl<'a> LabelPicker<'a> {
                 widget::text_input(fl!("label-placeholder"), self.query)
                     .id(super::FOLDER_NAME_ID.clone())
                     .on_input(Message::LabelQueryChanged)
-                    .on_submit(|_| Message::FolderDialogConfirmed)
-                    .on_focus(Message::TextFocused)
-                    .on_unfocus(Message::TextUnfocused),
+                    .on_submit(|_| Message::FolderDialogConfirmed),
             );
 
         for (row, (name, applied)) in self.rows.iter().enumerate() {
@@ -204,9 +200,7 @@ impl<'a> MovePicker<'a> {
                 widget::text_input(fl!("move-placeholder"), self.query)
                     .id(super::FOLDER_NAME_ID.clone())
                     .on_input(Message::MoveQueryChanged)
-                    .on_submit(|_| Message::FolderDialogConfirmed)
-                    .on_focus(Message::TextFocused)
-                    .on_unfocus(Message::TextUnfocused),
+                    .on_submit(|_| Message::FolderDialogConfirmed),
             );
 
         if self.matches.is_empty() {

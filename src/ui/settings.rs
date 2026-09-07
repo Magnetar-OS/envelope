@@ -24,8 +24,6 @@ pub fn view<'a>(config: &Config, interval: &'a str, send_delay: &'a str) -> Elem
                 .control(
                     widget::text_input("120", interval)
                         .on_input(Message::PollSecondsChanged)
-                        .on_focus(Message::TextFocused)
-                        .on_unfocus(Message::TextUnfocused)
                         .width(cosmic::iced::Length::Fixed(120.0)),
                 ),
         )
@@ -40,8 +38,6 @@ pub fn view<'a>(config: &Config, interval: &'a str, send_delay: &'a str) -> Elem
                 .control(
                     widget::text_input("10", send_delay)
                         .on_input(Message::SendDelayChanged)
-                        .on_focus(Message::TextFocused)
-                        .on_unfocus(Message::TextUnfocused)
                         .width(cosmic::iced::Length::Fixed(120.0)),
                 ),
         );
