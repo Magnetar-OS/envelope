@@ -38,8 +38,11 @@ All notable changes to this project are documented here. The format follows
   week through the same outbox.
 - Snooze: `b` (or the menu) puts a conversation away until later today,
   tomorrow morning, or next week. Snoozed mail waits in a Snoozed folder on
-  the server — visible from every device — and comes back to the inbox
-  through the same check that fetches new mail. Undoable, like any move.
+  the server — visible from every device — and comes back through the same
+  check that fetches new mail: to the folder it was deferred from, and
+  unread, with the star it had left untouched. A wake that cannot reach the
+  server stays due and is tried again rather than being dropped. Undoable,
+  like any move.
 - Filter rules: match arriving mail on sender, recipients, subject, or
   mailing list, and file, read, star, or delete it — automation of the verbs
   you already have. Edited on the Filter rules page or by hand in the

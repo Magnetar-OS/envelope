@@ -30,6 +30,7 @@ use cosmic_pim_mail::outbox::{Outbox, Queued};
 use cosmic_pim_mail::push::{PushOp, PushQueue};
 use cosmic_pim_mail::sasl::Credentials;
 use cosmic_pim_mail::smtp::{self, Outcome, SmtpEndpoint};
+use cosmic_pim_mail::snooze;
 use cosmic_pim_mail::store::{MailStore, RemoteMessage};
 
 /// How often a cycle does the full-mailbox reconciliation pass.
@@ -1317,49 +1318,19 @@ pub fn special(folders: &[Folder], role: SpecialUse) -> Option<&Folder> {
 /// client creates itself would be guessing at our own convention.
 const SNOOZED_FOLDER: &str = "Snoozed";
 
-/// One snoozed conversation's return ticket.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct SnoozeTicket {
-    /// The `Message-ID`s of the messages that left, the key that survives
-    /// the move — a MOVE renumbers, and the new UIDs are never reported.
-    message_ids: Vec<String>,
-    /// When they come back, epoch milliseconds.
-    until_ms: i64,
-}
-
-/// The wake schedule. Local, like the drafts dirty-list: the *messages* are
-/// on the server, visible to every device in the Snoozed folder; the timer
-/// that returns them lives here.
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-struct SnoozeSchedule {
-    #[serde(default)]
-    tickets: Vec<SnoozeTicket>,
-}
-
-fn snooze_path(connection: &Connection) -> PathBuf {
-    connection
-        .root
-        .join(&connection.account_id)
-        .join(".snooze.json")
-}
-
-fn load_snooze(connection: &Connection) -> SnoozeSchedule {
-    std::fs::read_to_string(snooze_path(connection))
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
-}
-
-fn save_snooze(connection: &Connection, schedule: &SnoozeSchedule) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(schedule).map_err(|why| why.to_string())?;
-    let path = snooze_path(connection);
-    let temp = path.with_extension("json.new");
-    std::fs::write(&temp, json).map_err(|why| why.to_string())?;
-    std::fs::rename(&temp, &path).map_err(|why| why.to_string())
+/// The account's snooze schedule.
+///
+/// The timer lives in the substrate — one engine for every app in the suite,
+/// and a TOML file a person can read and cancel by hand. What is Envelope's
+/// alone is the holding folder and the moves, which is the half that needs a
+/// server.
+fn snooze_schedule(connection: &Connection) -> Result<snooze::Schedule, String> {
+    snooze::Schedule::open(connection.root.join(&connection.account_id))
+        .map_err(|why| why.to_string())
 }
 
 /// Snoozes messages: they leave `folder` for the Snoozed folder now, through
-/// the durable queue, and a ticket brings them back at `until_ms`.
+/// the durable queue, and the schedule brings them back at `until_ms`.
 ///
 /// Returns what a move returns — the taken messages — so the caller's undo
 /// works exactly like archive's.
@@ -1369,15 +1340,21 @@ pub fn snooze(
     uids: &[u32],
     until_ms: i64,
 ) -> Result<Vec<RemoteMessage>, String> {
-    // The ids are read before the move takes the files away.
+    // Identity and subject are read before the move takes the files away.
+    // The subject is carried so a pending snooze can be listed as something
+    // a person recognises rather than as a `Message-ID`.
     let store =
         MaildirStore::open(connection.mailbox_path(folder)).map_err(|why| why.to_string())?;
-    let message_ids: Vec<String> = uids
+    let deferred: Vec<(String, String)> = uids
         .iter()
         .filter_map(|uid| store.raw(*uid).ok().flatten())
-        .filter_map(|raw| Message::parse(&raw).and_then(|message| message.message_id))
+        .filter_map(|raw| Message::parse(&raw))
+        .filter_map(|message| {
+            let subject = message.subject;
+            message.message_id.map(|id| (id, subject))
+        })
         .collect();
-    if message_ids.is_empty() {
+    if deferred.is_empty() {
         return Err("those messages carry no Message-ID, so nothing could bring them back".into());
     }
 
@@ -1391,74 +1368,111 @@ pub fn snooze(
     let destination = cosmic_pim_mail::folder::from_list_entry(SNOOZED_FOLDER, Some('/'), &[]);
     let taken = move_to(connection, folder, &destination, uids)?;
 
-    let mut schedule = load_snooze(connection);
-    schedule.tickets.push(SnoozeTicket {
-        message_ids,
-        until_ms,
-    });
-    save_snooze(connection, &schedule)?;
+    let mut schedule = snooze_schedule(connection)?;
+    let snoozed_at_ms = now_ms();
+    for (message_id, subject) in deferred {
+        schedule
+            .snooze(snooze::Snoozed {
+                message_id,
+                // Where it came from is where it goes back to. A message
+                // deferred out of Archive returns to Archive, not to the
+                // inbox it had already left.
+                origin: folder.wire_name.clone(),
+                holding: SNOOZED_FOLDER.to_owned(),
+                wake_at_ms: until_ms,
+                snoozed_at_ms,
+                subject,
+            })
+            .map_err(|why| why.to_string())?;
+    }
     Ok(taken)
 }
 
-/// Returns every snoozed message whose time has come to the inbox.
+/// Returns every snoozed message whose time has come to where it came from.
 ///
 /// Blocking, for the worker, after a sync pass — the poll that drains every
 /// other queued write is also what wakes snoozes, so a laptop that was
 /// asleep past the deadline wakes them on its next check. Returns how many
 /// came back. IMAP only, like the mirror.
 pub fn wake_snoozed(connection: &Connection, now_ms: i64) -> Result<usize, String> {
-    let mut schedule = load_snooze(connection);
-    let due: Vec<SnoozeTicket> = schedule
-        .tickets
-        .iter()
-        .filter(|ticket| ticket.until_ms <= now_ms)
-        .cloned()
-        .collect();
+    let mut schedule = snooze_schedule(connection)?;
+    let due = schedule.due(now_ms);
     if due.is_empty() {
         return Ok(0);
     }
 
     let mut session = folder_session(connection)?;
-    session
-        .select_mailbox(SNOOZED_FOLDER)
-        .map_err(|why| why.to_string())?;
-
     let mut woken = 0usize;
-    for ticket in &due {
-        for message_id in &ticket.message_ids {
-            let uids = session
-                .uids_by_message_id(message_id)
-                .map_err(|why| why.to_string())?;
-            // Gone is not an error: the user may have dealt with it from
-            // another client, which is the snooze resolving itself.
-            for uid in uids {
-                use cosmic_pim_mail::push::Writeback as _;
-                session
-                    .move_message(uid, "INBOX")
+    for wake in due {
+        match wake_one(&mut session, &wake) {
+            // Retired only once the message is actually back. A wake that
+            // failed stays due and is tried again on the next pass, rather
+            // than being dropped with the message still put away — mail the
+            // user deliberately deferred must not be lost by a failed move.
+            Ok(moved) => {
+                schedule
+                    .woke(&wake.message_id)
                     .map_err(|why| why.to_string())?;
-                woken += 1;
+                woken += moved;
             }
+            Err(why) => tracing::warn!(
+                message_id = wake.message_id,
+                why,
+                "a snoozed message could not be brought back; it stays due"
+            ),
         }
     }
     let _ = session.logout();
-
-    // Every due ticket leaves the schedule, found or not — a ticket whose
-    // message is gone would otherwise be searched forever.
-    schedule.tickets.retain(|ticket| ticket.until_ms > now_ms);
-    save_snooze(connection, &schedule)?;
     Ok(woken)
 }
 
-/// Is there anything on the snooze schedule at all?
+/// Brings one message back, returning how many copies moved.
+///
+/// Not finding it is success rather than failure: the user dealt with it from
+/// another client, which is the snooze resolving itself, and the record
+/// should retire rather than be searched for forever.
+fn wake_one(session: &mut Session, wake: &snooze::Wake) -> Result<usize, String> {
+    use cosmic_pim_mail::push::Writeback as _;
+
+    session
+        .select_mailbox(&wake.from)
+        .map_err(|why| why.to_string())?;
+    let uids = session
+        .uids_by_message_id(&wake.message_id)
+        .map_err(|why| why.to_string())?;
+
+    let mut moved = 0usize;
+    for uid in uids {
+        // Before the move, always. Neither MOVE nor the COPY fallback reports
+        // the destination UID, so this is the last moment the message can be
+        // addressed at all — and a message that comes back already-read comes
+        // back invisible.
+        if wake.mark_unread {
+            session.mark_unread(uid).map_err(|why| why.to_string())?;
+        }
+        if wake.is_move() {
+            session
+                .move_message(uid, &wake.to)
+                .map_err(|why| why.to_string())?;
+        }
+        moved += 1;
+    }
+    Ok(moved)
+}
+
+/// Is there anything on the snooze schedule whose time has come?
 ///
 /// The cheap pre-check that lets the poll skip connecting when nothing is
-/// snoozed — the common case, every two minutes.
+/// due — the common case, every two minutes.
 #[must_use]
 pub fn has_due_snoozes(connection: &Connection, now_ms: i64) -> bool {
-    load_snooze(connection)
-        .tickets
-        .iter()
-        .any(|ticket| ticket.until_ms <= now_ms)
+    match snooze_schedule(connection) {
+        Ok(schedule) => !schedule.due(now_ms).is_empty(),
+        // A schedule that will not load is not "nothing to do". It is a
+        // problem the wake pass should report, so let it run and say so
+        // rather than skipping silently on the strength of a read error.
+        Err(_) => true,
+    }
 }
 
 /// This account's filter rules, as stored.
