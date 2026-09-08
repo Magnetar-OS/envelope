@@ -102,10 +102,15 @@ impl<'a> Reader<'a> {
             column = column.push(self.attachments(opened));
         }
 
-        // Selectable, so the text of a message can be copied out of it. The
-        // size and line height repeat `widget::text::body`'s preset because
-        // the pinned libcosmic has no selectable equivalent of it; if that
-        // revision moves forward, this collapses back to the preset.
+        // Selectable, so the text of a message can be copied out of it.
+        //
+        // The metrics restate `widget::text::body`'s preset by hand because
+        // `selectable_text` carries no typography presets — not in the pinned
+        // revision, and not in any revision: `body` exists only on the
+        // non-selectable builder in `widget/text.rs`. So this is not waiting
+        // on a pin move and will not collapse on its own. It has to be kept
+        // in step with `text::body` by hand; if that preset's size or line
+        // height changes, this is the other half that must change with it.
         column = column.push(widget::divider::horizontal::default()).push(
             widget::selectable_text(message.body.text.clone())
                 .size(14.0)
