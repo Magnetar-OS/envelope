@@ -1,5 +1,5 @@
 {
-  "versionFiles": ["Cargo.toml", "Cargo.lock", "resources/io.github.entro314labs.Envelope.metainfo.xml"],
+  "versionFiles": ["Cargo.toml", "Cargo.lock", "resources/com.magnetaros.Envelope.metainfo.xml"],
   "publish": null,
   "steps": ["version", "changelog", "tag", "push"]
 }
