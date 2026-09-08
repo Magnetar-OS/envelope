@@ -1,7 +1,7 @@
 # Name of the application's binary.
 name := 'envelope'
 # The unique ID of the application.
-appid := 'io.github.entro314labs.Envelope'
+appid := 'com.magnetaros.Envelope'
 
 # Path to root file system, which defaults to `/`.
 rootdir := ''

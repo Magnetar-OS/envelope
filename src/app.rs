@@ -32,7 +32,7 @@ use crate::config::Config;
 use crate::fl;
 use crate::mail::{self, Connection, Conversation, Opened, SyncReport};
 
-const APP_ID: &str = "io.github.entro314labs.Envelope";
+const APP_ID: &str = "com.magnetaros.Envelope";
 /// Read from the manifest rather than repeated here, so the About page cannot
 /// name a repository the package does not come from.
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");

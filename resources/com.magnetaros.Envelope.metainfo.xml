@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.entro314labs.Envelope</id>
+  <id>com.magnetaros.Envelope</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-only</project_license>
   <!-- What marks this as part of the COSMIC set rather than a generic GTK app. -->
@@ -9,7 +9,7 @@
   <name>Envelope</name>
   <summary>Read and write your mail</summary>
 
-  <developer id="io.github.entro314labs">
+  <developer id="com.magnetaros">
     <name>entro314 labs</name>
   </developer>
 
@@ -39,7 +39,7 @@
     </p>
   </description>
 
-  <launchable type="desktop-id">io.github.entro314labs.Envelope.desktop</launchable>
+  <launchable type="desktop-id">com.magnetaros.Envelope.desktop</launchable>
   <icon type="remote" width="64" height="64" scale="1">https://raw.githubusercontent.com/Magnetar-OS/envelope/main/resources/icons/hicolor/scalable/apps/icon.svg</icon>
 
   <!-- How the COSMIC App Library and store recognise a COSMIC application, and

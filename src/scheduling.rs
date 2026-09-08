@@ -20,13 +20,13 @@ use cosmic_pim_mail::model::Mailbox;
 /// The shared interface name. The `1` suffix is the versioning policy: a
 /// breaking change is a new name exported alongside this one, never a
 /// changed signature under it.
-const INTERFACE: &str = "io.github.entro314labs.CosmicPim.Scheduling1";
+const INTERFACE: &str = "com.magnetaros.CosmicPim.Scheduling1";
 
-const SLATE_NAME: &str = "io.github.entro314labs.Slate";
-const SLATE_PATH: &str = "/io/github/entro314labs/Slate";
+const SLATE_NAME: &str = "com.magnetaros.Slate";
+const SLATE_PATH: &str = "/com/magnetaros/Slate";
 
 /// Where Envelope exports [`Scheduling`], on its own owned name.
-pub const ENVELOPE_PATH: &str = "/io/github/entro314labs/Envelope";
+pub const ENVELOPE_PATH: &str = "/com/magnetaros/Envelope";
 
 /// What handing an invitation to the calendar came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,7 +80,7 @@ pub async fn deliver_invitation(
 /// The mailer side of the contract, exported on Envelope's own name.
 pub struct Scheduling;
 
-#[zbus::interface(name = "io.github.entro314labs.CosmicPim.Scheduling1")]
+#[zbus::interface(name = "com.magnetaros.CosmicPim.Scheduling1")]
 impl Scheduling {
     /// Queues the `METHOD:REPLY` text Slate built, to the organizer, from
     /// the named account. `true` is the promise that the reply is in the
