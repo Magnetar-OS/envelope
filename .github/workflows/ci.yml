@@ -27,7 +27,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          repository: entro314-labs/cosmic-pim
+          repository: Magnetar-OS/cosmic-pim
           path: cosmic-pim
 
       - name: System libraries the build needs

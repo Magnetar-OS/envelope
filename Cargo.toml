@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-only"
 description = "Envelope — mail for the COSMIC desktop"
-repository = "https://github.com/entro314-labs/envelope"
+repository = "https://github.com/Magnetar-OS/envelope"
 rust-version = "1.98.0"
 
 [dependencies]

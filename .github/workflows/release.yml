@@ -76,7 +76,7 @@ jobs:
       pkgname: 'envelope-bin'
       product_name: 'envelope'
       pkgdesc: 'Read and write your mail'
-      url: 'https://github.com/entro314-labs/envelope'
+      url: 'https://github.com/Magnetar-OS/envelope'
       license: 'GPL-3.0-only'
       depends: 'libxkbcommon openssl sqlite'
       provides: 'envelope'

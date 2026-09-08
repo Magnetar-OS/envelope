@@ -5,12 +5,12 @@ Mail for the [COSMIC desktop](https://github.com/pop-os/cosmic-epoch).
 ## Part of a suite
 
 Envelope is one of three applications over a shared substrate,
-[cosmic-pim](https://github.com/entro314-labs/cosmic-pim):
+[cosmic-pim](https://github.com/Magnetar-OS/cosmic-pim):
 
 | App | Repository | What it is |
 |---|---|---|
-| **Slate** | [slate](https://github.com/entro314-labs/slate) | Calendar and tasks |
-| **Circle** | [circle](https://github.com/entro314-labs/circle) | Contacts |
+| **Slate** | [slate](https://github.com/Magnetar-OS/slate) | Calendar and tasks |
+| **Circle** | [circle](https://github.com/Magnetar-OS/circle) | Contacts |
 | **Envelope** | you are here | Mail |
 
 **Sign in with a browser.** For providers with OAuth configured — Google and
@@ -35,7 +35,7 @@ up here with its password already stored, and one added here shows up there.
 The one thing a Slate account will not have is a mail server — a CalDAV URL
 says nothing about an IMAP host — and the same discovery fills that in.
 
-[cosmic-pim/ARCHITECTURE.md](https://github.com/entro314-labs/cosmic-pim/blob/main/ARCHITECTURE.md)
+[cosmic-pim/ARCHITECTURE.md](https://github.com/Magnetar-OS/cosmic-pim/blob/main/ARCHITECTURE.md)
 describes how the layers fit and where new code belongs, including the section
 on what the suite's invariants mean for mail. Read it before changing anything
 here: verbatim storage, durable writeback, and push-before-pull apply to a
@@ -223,4 +223,4 @@ clippy, and the tests. Requires a sibling checkout of `cosmic-pim`.
 ## Licence
 
 GPL-3.0-only for this application; the substrate it links is MPL-2.0. See
-[cosmic-pim/LICENSING.md](https://github.com/entro314-labs/cosmic-pim/blob/main/LICENSING.md).
+[cosmic-pim/LICENSING.md](https://github.com/Magnetar-OS/cosmic-pim/blob/main/LICENSING.md).

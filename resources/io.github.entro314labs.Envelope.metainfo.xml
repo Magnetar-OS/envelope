@@ -13,9 +13,9 @@
     <name>entro314 labs</name>
   </developer>
 
-  <url type="homepage">https://github.com/entro314-labs/envelope</url>
-  <url type="bugtracker">https://github.com/entro314-labs/envelope/issues</url>
-  <url type="vcs-browser">https://github.com/entro314-labs/envelope</url>
+  <url type="homepage">https://github.com/Magnetar-OS/envelope</url>
+  <url type="bugtracker">https://github.com/Magnetar-OS/envelope/issues</url>
+  <url type="vcs-browser">https://github.com/Magnetar-OS/envelope</url>
 
   <description>
     <p>
@@ -40,7 +40,7 @@
   </description>
 
   <launchable type="desktop-id">io.github.entro314labs.Envelope.desktop</launchable>
-  <icon type="remote" width="64" height="64" scale="1">https://raw.githubusercontent.com/entro314-labs/envelope/main/resources/icons/hicolor/scalable/apps/icon.svg</icon>
+  <icon type="remote" width="64" height="64" scale="1">https://raw.githubusercontent.com/Magnetar-OS/envelope/main/resources/icons/hicolor/scalable/apps/icon.svg</icon>
 
   <!-- How the COSMIC App Library and store recognise a COSMIC application, and
        which binary and file types this component actually provides. -->
