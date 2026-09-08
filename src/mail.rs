@@ -66,7 +66,7 @@ pub struct Opened {
     pub invitation: Option<cosmic_pim_mail::calendar::Invitation>,
     /// The labels on this message, named through the mailbox's table.
     pub labels: Vec<String>,
-    /// The message's OpenPGP state, examined against the account's keyring
+    /// The message's `OpenPGP` state, examined against the account's keyring
     /// and the stored bytes — the verbatim original, which is the only thing
     /// a signature can be checked against.
     pub pgp: cosmic_pim_mail::pgp::Examined,
@@ -550,12 +550,11 @@ pub fn sweep_drafts(
     // The folder the server declares for the role, or the conventional name —
     // created if the account has never had one, because a mirror with nowhere
     // to land is a mirror that silently is not one.
-    let wire = match special(folders, SpecialUse::Drafts) {
-        Some(folder) => folder.wire_name.clone(),
-        None => {
-            let _ = session.create_mailbox("Drafts");
-            "Drafts".to_owned()
-        }
+    let wire = if let Some(folder) = special(folders, SpecialUse::Drafts) {
+        folder.wire_name.clone()
+    } else {
+        let _ = session.create_mailbox("Drafts");
+        "Drafts".to_owned()
     };
     let report = cosmic_pim_mail::draft_sync::sweep(&mut session, &wire, &store, &domain, now_ms());
     let _ = session.logout();
@@ -747,23 +746,22 @@ pub fn search(
     let mut flags: HashMap<String, (BTreeMap<u32, Flags>, Vec<String>)> = HashMap::new();
     let mut kept = Vec::with_capacity(hits.len());
     for hit in hits {
-        let (entry, table) = match flags.get(&hit.mailbox) {
-            Some(entry) => entry,
-            None => {
-                let Some(folder) = folders.iter().find(|f| f.wire_name == hit.mailbox) else {
-                    // A mailbox the server no longer lists. The index will drop
-                    // it on the next sync; until then it cannot be filtered.
-                    continue;
-                };
-                let loaded = MaildirStore::open(connection.mailbox_path(folder))
-                    .map(|store| {
-                        let table = store.keywords();
-                        let entries = store.state().map(|state| state.entries).unwrap_or_default();
-                        (entries, table)
-                    })
-                    .unwrap_or_default();
-                flags.entry(hit.mailbox.clone()).or_insert(loaded)
-            }
+        let (entry, table) = if let Some(entry) = flags.get(&hit.mailbox) {
+            entry
+        } else {
+            let Some(folder) = folders.iter().find(|f| f.wire_name == hit.mailbox) else {
+                // A mailbox the server no longer lists. The index will drop
+                // it on the next sync; until then it cannot be filtered.
+                continue;
+            };
+            let loaded = MaildirStore::open(connection.mailbox_path(folder))
+                .map(|store| {
+                    let table = store.keywords();
+                    let entries = store.state().map(|state| state.entries).unwrap_or_default();
+                    (entries, table)
+                })
+                .unwrap_or_default();
+            flags.entry(hit.mailbox.clone()).or_insert(loaded)
         };
         let hit_flags = entry.get(&hit.uid).copied().unwrap_or_default();
         if (query.unread && hit_flags.seen) || (query.starred && !hit_flags.flagged) {
@@ -895,6 +893,7 @@ pub struct UnifiedConversation {
 /// calendar-only account in the shared store is the ordinary case, not an
 /// error. An account whose credentials cannot be read is skipped with a log
 /// line — one broken account must not take the other inboxes with it.
+#[must_use]
 pub fn all_connections() -> Vec<Connection> {
     let Ok(accounts) = AccountStore::open_default() else {
         return Vec::new();
@@ -937,7 +936,7 @@ pub fn unified_inbox(connections: &[Connection]) -> Result<Vec<UnifiedConversati
                     account_id: connection.account_id.clone(),
                     account_name: connection.account.display_name.clone(),
                     conversation,
-                }))
+                }));
             }
             Err(why) => {
                 // Logged, not fatal: one account's unreadable index must not
@@ -954,7 +953,7 @@ pub fn unified_inbox(connections: &[Connection]) -> Result<Vec<UnifiedConversati
     Ok(merged)
 }
 
-/// Imports an mbox file into a folder, by APPENDing every message.
+/// Imports an mbox file into a folder, by `APPEND`ing every message.
 ///
 /// APPEND rather than writing into the maildir, because the maildir is a
 /// *mirror* of the server: injecting messages locally creates entries the next
@@ -1015,7 +1014,7 @@ pub enum Unsubscribe {
     /// composer already knows how to do.
     Mailto(String),
     /// A plain `https:` page. Belongs in the browser: without the one-click
-    /// header it is a page, and POSTing at pages is guessing.
+    /// header it is a page, and `POST`ing at pages is guessing.
     Browser(String),
 }
 
@@ -1090,6 +1089,7 @@ fn forget_index(connection: &Connection, mailbox: &str) -> Result<(), String> {
 /// This is what the sidebar shows before the first sync of a session finishes:
 /// the mailbox is on disk, so there is no reason to stare at an empty window
 /// waiting for a server.
+#[must_use]
 pub fn cached_folders(connection: &Connection, folders: &[Folder]) -> Vec<Folder> {
     folders
         .iter()
@@ -1142,7 +1142,7 @@ pub fn conversations(
 }
 
 /// The names a keyword bitmask displays as: table rows for set bits, minus
-/// gap rows and the `$`-prefixed conventions ($Forwarded, $MDNSent, …) that
+/// gap rows and the `$`-prefixed conventions (`$Forwarded`, `$MDNSent`, …) that
 /// are bookkeeping between servers, not something a person filed.
 fn display_labels(table: &[String], bits: u32) -> Vec<String> {
     let flags = Flags {
@@ -1751,26 +1751,24 @@ pub fn apply_rules(
         // Deletion means Trash, the same as the Delete key: a rule is
         // automation of a verb the user has, not a stronger one.
         let destination = if plan.delete {
-            match special(folders, SpecialUse::Trash) {
-                Some(trash) => Some(trash.clone()),
-                None => {
-                    report.failures.push((
-                        plan.matched.join(", "),
-                        "this account has no Trash folder to delete into".into(),
-                    ));
-                    None
-                }
+            if let Some(trash) = special(folders, SpecialUse::Trash) {
+                Some(trash.clone())
+            } else {
+                report.failures.push((
+                    plan.matched.join(", "),
+                    "this account has no Trash folder to delete into".into(),
+                ));
+                None
             }
         } else if let Some(wire) = &plan.move_to {
-            match folders.iter().find(|f| &f.wire_name == wire) {
-                Some(folder) => Some(folder.clone()),
-                None => {
-                    report.failures.push((
-                        plan.matched.join(", "),
-                        format!("{wire} is no longer a folder on this account"),
-                    ));
-                    None
-                }
+            if let Some(folder) = folders.iter().find(|f| &f.wire_name == wire) {
+                Some(folder.clone())
+            } else {
+                report.failures.push((
+                    plan.matched.join(", "),
+                    format!("{wire} is no longer a folder on this account"),
+                ));
+                None
             }
         } else {
             None

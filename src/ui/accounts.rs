@@ -5,7 +5,7 @@
 //!
 //! Accounts are the suite's, held in `$XDG_CONFIG_HOME/cosmic-pim/accounts.toml`,
 //! and an account added in Slate is already here with its password. What is
-//! missing on one of those is only the mail endpoint — a CalDAV URL says
+//! missing on one of those is only the mail endpoint — a `CalDAV` URL says
 //! nothing about an IMAP host — so the endpoint form asks for that alone.
 //!
 //! An account added *here* starts from the other end: an address and a

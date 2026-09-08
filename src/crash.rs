@@ -42,12 +42,17 @@ pub fn install_hook() {
 /// Reports written since the last launch that surfaced them, oldest first.
 /// Each is renamed `.seen.log` as it is returned, so the notice appears once
 /// rather than nagging on every start; the files themselves stay for reading.
+#[must_use]
 pub fn take_unreported() -> Vec<PathBuf> {
     crash_dir()
         .map(|dir| take_unreported_in(&dir))
         .unwrap_or_default()
 }
 
+#[allow(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "the names are ours; see the filter below"
+)]
 fn take_unreported_in(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -55,6 +60,10 @@ fn take_unreported_in(dir: &Path) -> Vec<PathBuf> {
     let mut fresh: Vec<PathBuf> = entries
         .filter_map(Result::ok)
         .map(|e| e.path())
+        // `ends_with` rather than `Path::extension`, and case-sensitively on
+        // purpose: these names are ours, written by `install_hook` above, and
+        // the suffix that matters (`.seen.log` vs `.log`) is not an extension
+        // that `Path` can tell apart.
         .filter(|p| {
             p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
                 n.starts_with("crash-") && n.ends_with(".log") && !n.ends_with(".seen.log")

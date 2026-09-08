@@ -17,7 +17,7 @@ use crate::fl;
 /// A name prompt shared by create and rename; `title` and `confirm` carry the
 /// difference.
 #[must_use]
-pub fn name_dialog<'a>(title: String, confirm: String, name: &'a str) -> Element<'a, Message> {
+pub fn name_dialog(title: String, confirm: String, name: &str) -> Element<'_, Message> {
     widget::dialog()
         .title(title)
         .control(

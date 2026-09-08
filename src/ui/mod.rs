@@ -112,6 +112,7 @@ pub fn size(bytes: usize) -> String {
 }
 
 /// Text in the theme's destructive colour, for the things that need it.
+#[must_use]
 pub fn destructive<Message: 'static>(text: String) -> cosmic::Element<'static, Message> {
     use cosmic::widget;
     widget::text::body(text)

@@ -12,6 +12,17 @@
 //! - [`app`] — the state machine.
 //! - [`ui`] — the views, each a function of the model.
 
+// Envelope is a binary. The modules below are `pub` so that `main.rs` and the
+// integration tests can reach them, not because anything outside this crate
+// links against them — there is no published API here to document. `# Errors`
+// sections earn their keep in `cosmic-pim-*`, which other applications do
+// consume; forty-three of them here would be forty-three sections nobody
+// reads. Every other pedantic lint stays on.
+#![allow(
+    clippy::missing_errors_doc,
+    reason = "binary crate: the pub surface exists for the lib/bin split, not for consumers"
+)]
+
 pub mod actions;
 pub mod app;
 pub mod config;

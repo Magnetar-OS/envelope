@@ -290,6 +290,8 @@ fn named(key: cosmic::iced::keyboard::key::Named) -> KeyBind {
 
 /// How a binding is written for a person.
 fn describe(bind: &KeyBind) -> String {
+    use std::fmt::Write as _;
+
     let mut out = String::new();
     for modifier in &bind.modifiers {
         out.push_str(match modifier {
@@ -299,10 +301,17 @@ fn describe(bind: &KeyBind) -> String {
             Modifier::Shift => "Shift+",
         });
     }
+    // Every arm is named. A `_` here would keep compiling if `Key` grew a
+    // variant and describe it as debug output in the cheat sheet; a binding
+    // nobody can read is worth a build failure instead.
     match &bind.key {
         Key::Character(c) => out.push_str(&c.to_uppercase()),
-        Key::Named(named) => out.push_str(&format!("{named:?}")),
-        other => out.push_str(&format!("{other:?}")),
+        Key::Named(named) => {
+            let _ = write!(out, "{named:?}");
+        }
+        key @ Key::Unidentified => {
+            let _ = write!(out, "{key:?}");
+        }
     }
     out
 }

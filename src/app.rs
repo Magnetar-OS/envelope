@@ -3425,7 +3425,7 @@ impl AppModel {
         // Under IDLE's 29-minute ceiling, and short enough that a thread
         // orphaned by an account switch dies within minutes rather than
         // holding a connection for half an hour.
-        const WATCH: std::time::Duration = std::time::Duration::from_secs(4 * 60);
+        const WATCH: std::time::Duration = std::time::Duration::from_mins(4);
 
         cosmic::task::future(async move {
             let outcome =
