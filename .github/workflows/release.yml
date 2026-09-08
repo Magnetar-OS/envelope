@@ -43,6 +43,13 @@ jobs:
       # the full install tree for nfpm's tree entry to package.
       build_command: |
         command -v just >/dev/null || { curl --proto '=https' --tlsv1.2 -sSfL https://just.systems/install.sh | sudo bash -s -- --to /usr/local/bin; }
+        # The substrate is still a path dependency (`../cosmic-pim`), and the
+        # kit checks out only this repository — so unlike ci.yml, which clones
+        # it as a second checkout, the release leg has to fetch it itself or
+        # `--locked` fails on a directory that is not there. This line retires
+        # itself the day cosmic-pim-* are on crates.io and the manifest moves
+        # to version dependencies.
+        [ -d ../cosmic-pim ] || git clone --depth 1 https://github.com/Magnetar-OS/cosmic-pim.git ../cosmic-pim
         cargo build --release --locked
         just rootdir="$PWD/.release-kit/pkgroot" install
       binary_path: 'target/release/$RK_BINARY'
