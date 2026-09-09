@@ -265,6 +265,7 @@ fn to_row(composer: &Composer) -> Element<'_, Message> {
         .spacing(spacing.space_xxs)
         .push(
             widget::text_input(String::new(), &composer.to)
+                .id(crate::ui::COMPOSE_TO_ID.clone())
                 .on_input(Message::ComposeToChanged)
                 .style(cosmic::theme::TextInput::Inline)
                 .width(Length::Fill),

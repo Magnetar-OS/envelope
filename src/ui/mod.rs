@@ -331,6 +331,16 @@ pub fn notice<'a, M: 'static>(text: String, tone: Tone) -> cosmic::Element<'a, M
         .into()
 }
 
+/// The composer's first field, so a new message can open with the cursor in
+/// it.
+///
+/// There is deliberately no id for the body. Naming the `text_editor` is the
+/// only way to focus it, and doing so panics the pinned libcosmic —
+/// "Downcast on stateless state" — as soon as any widget operation walks the
+/// composer's tree.
+pub static COMPOSE_TO_ID: std::sync::LazyLock<cosmic::widget::Id> =
+    std::sync::LazyLock::new(|| cosmic::widget::Id::new("compose-to"));
+
 /// The folder dialogs' input — the name field, and the move picker's query —
 /// so opening either can focus it.
 pub static FOLDER_NAME_ID: std::sync::LazyLock<cosmic::widget::Id> =

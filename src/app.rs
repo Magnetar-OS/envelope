@@ -2359,12 +2359,38 @@ impl AppModel {
             }
             Message::Detach => self.detach_opened(),
             Message::WindowOpened(id) => {
-                // Nothing to do but ask what state it opened in: a window that
-                // the compositor tiled or maximized on the way up has to draw
-                // the corners it actually has.
-                window::is_maximized(id).map(move |maximized| {
+                // Ask what state it opened in: a window that the compositor
+                // tiled or maximized on the way up has to draw the corners it
+                // actually has.
+                let state = window::is_maximized(id).map(move |maximized| {
                     cosmic::Action::App(Message::WindowMaximizedChanged(id, maximized))
-                })
+                });
+
+                // And put the cursor where the writing starts. A composer that
+                // opens with nothing focused has to be clicked before it can
+                // be typed into, which is a click every mail client saves you.
+                //
+                // Here rather than in `open_composer`, because a widget has to
+                // exist before it can be focused and at that point the window
+                // has only been asked for.
+                //
+                // Only a *new* message gets the cursor. A reply's To is
+                // already filled, so focusing it would aim the keyboard at the
+                // recipient list; the field that wants the cursor there is the
+                // body, and the body cannot take it — giving libcosmic's
+                // `text_editor` an id (the only way to name it for a focus
+                // operation) panics the moment any widget operation reaches
+                // it: "Downcast on stateless state", in the wrapper's
+                // `operate`. Verified against the pinned revision. So a reply
+                // opens unfocused rather than focused on the wrong thing.
+                let focus = match self.windows.get(&id) {
+                    Some(Detached::Compose(composer)) if composer.to.trim().is_empty() => {
+                        widget::text_input::focus(crate::ui::COMPOSE_TO_ID.clone())
+                    }
+                    _ => Task::none(),
+                };
+
+                Task::batch([state, focus])
             }
             Message::WindowCloseRequested(id) => {
                 // Ours to close, because a detached window is opened with
