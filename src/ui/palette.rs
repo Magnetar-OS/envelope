@@ -15,6 +15,12 @@ use crate::actions::Action;
 use crate::app::Message;
 use crate::fl;
 
+/// How tall the row list may grow before it scrolls.
+///
+/// About eight rows: enough that the answer is usually on screen, few enough
+/// that the box stays a palette rather than becoming a window.
+const ROWS_HEIGHT: f32 = 320.0;
+
 /// What the palette shows for the current query.
 pub struct Palette<'a> {
     pub query: &'a str,
@@ -30,20 +36,14 @@ impl<'a> Palette<'a> {
     pub fn view(self) -> Element<'a, Message> {
         let spacing = cosmic::theme::spacing();
 
-        let mut column = widget::column::with_capacity(self.matches.len() + 2)
+        // Room on the right for the scrollbar, which otherwise sits on top of
+        // the shortcut column and cuts "Ctrl+Z" in half.
+        let mut rows = widget::column::with_capacity(self.matches.len().max(1))
             .spacing(spacing.space_xxs)
-            .push(
-                widget::text_input(fl!("palette-placeholder"), self.query)
-                    .id(super::PALETTE_ID.clone())
-                    .on_input(Message::PaletteQueryChanged)
-                    // Enter runs the selected row. Through on_submit rather
-                    // than the key handler, because the input has focus and
-                    // owns the keystroke.
-                    .on_submit(|_| Message::PaletteSubmitted),
-            );
+            .padding([0, spacing.space_s, 0, 0]);
 
         if self.matches.is_empty() {
-            column = column.push(widget::text::caption(fl!("palette-nothing")));
+            rows = rows.push(crate::ui::muted(fl!("palette-nothing")));
         }
 
         for (index, (action, shortcut)) in self.matches.iter().enumerate() {
@@ -53,7 +53,7 @@ impl<'a> Palette<'a> {
                 .push(widget::text::body(action.label()).width(Length::Fill))
                 .push(widget::text::caption(shortcut.clone()));
 
-            column = column.push(
+            rows = rows.push(
                 widget::button::custom(row)
                     .width(Length::Fill)
                     .selected(index == self.selected)
@@ -62,12 +62,36 @@ impl<'a> Palette<'a> {
             );
         }
 
+        // The rows scroll and the box does not grow past [`ROWS_HEIGHT`]. With
+        // a message open the registry offers thirty-odd actions, which as a
+        // plain column is a dialog taller than the window it is drawn over;
+        // and a palette is typed at rather than browsed, so the answer to "my
+        // command is below the fold" is another letter, not a longer box.
+        let column = widget::column::with_capacity(2)
+            .spacing(spacing.space_xxs)
+            .push(
+                widget::text_input(fl!("palette-placeholder"), self.query)
+                    .id(super::PALETTE_ID.clone())
+                    .on_input(Message::PaletteQueryChanged)
+                    // Enter runs the selected row. Through on_submit rather
+                    // than the key handler, because the input has focus and
+                    // owns the keystroke.
+                    .on_submit(|_| Message::PaletteSubmitted),
+            )
+            .push(
+                widget::scrollable(rows)
+                    .height(Length::Shrink)
+                    .apply(widget::container)
+                    .max_height(ROWS_HEIGHT),
+            );
+
         widget::dialog()
             .control(
                 column
                     .padding(spacing.space_s)
                     .apply(widget::container)
-                    .width(Length::Fixed(crate::ui::PICKER_WIDTH)),
+                    .width(Length::Fixed(crate::ui::PICKER_WIDTH))
+                    .height(Length::Shrink),
             )
             .into()
     }
