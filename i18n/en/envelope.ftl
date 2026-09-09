@@ -84,6 +84,7 @@ from-address-hint = The address recipients see. Leave empty to use the login.
 from-name = Your name
 no-from-address = This account has no address to send from.
 compose = New message
+from = From
 reply = Reply
 reply-all = Reply all
 forward = Forward
@@ -192,6 +193,7 @@ unsubscribing = Asking the sender to take you off the list…
 unsubscribed = Off the list. The sender has up to a few days to comply.
 unsubscribe-failed = The unsubscribe did not go through: { $reason }
 save-as-file = Save as file
+detach = Open in new window
 all-inboxes = All inboxes
 
 # Import
@@ -327,3 +329,14 @@ pgp-encrypted = Encrypted with OpenPGP. Decryption is not set up yet, so the sea
 pgp-import-key = Import key
 pgp-key-imported = Key imported for { $address }. Their signed mail can now be verified.
 compose-body-placeholder = Write your message
+
+# Reader — message text
+show-quoted = { $lines ->
+        [one] Show 1 quoted line
+       *[other] Show { $lines } quoted lines
+    }
+hide-quoted = Hide quoted text
+quote-depth = { $depth } levels deep
+
+# Composer
+redo = Redo

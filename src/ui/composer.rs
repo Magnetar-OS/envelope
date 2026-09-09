@@ -38,8 +38,10 @@ pub fn view<'a>(
         .push(
             widget::row::with_capacity(2)
                 .align_y(Alignment::Center)
-                .spacing(spacing.space_xxs)
-                .push(widget::text::title3(fl!("compose")).width(Length::Fill))
+                // The window's title bar already says what this is, and says
+                // it in the subject the user is typing. What belongs here is
+                // the one thing the frame cannot show: who it is going out as.
+                .push(widget::text::caption(fl!("from")).width(Length::Fixed(64.0)))
                 // One identity is a fact and shows as one; several are a
                 // choice and show as a dropdown.
                 .push(if identities.len() > 1 {
@@ -49,7 +51,7 @@ pub fn view<'a>(
                         Message::ComposeFromSelected,
                     ))
                 } else {
-                    Element::from(widget::text::caption(from_line(composer)))
+                    Element::from(widget::text::body(from_line(composer)))
                 }),
         )
         .push(fields)

@@ -20,6 +20,7 @@ use cosmic::app::{Core, Task, context_drawer};
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::Length;
 use cosmic::iced::Subscription;
+use cosmic::iced::window;
 use cosmic::widget::{self, about::About, menu};
 use cosmic::{Application as _, ApplicationExt as _};
 use cosmic::{Apply as _, Element};
@@ -36,7 +37,8 @@ const APP_ID: &str = "com.magnetaros.Envelope";
 /// Read from the manifest rather than repeated here, so the About page cannot
 /// name a repository the package does not come from.
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
-const APP_ICON: &[u8] = include_bytes!("../resources/icons/hicolor/scalable/apps/icon.svg");
+const APP_ICON: &[u8] =
+    include_bytes!("../resources/icons/hicolor/scalable/apps/com.magnetaros.Envelope.svg");
 
 pub struct AppModel {
     core: Core,
@@ -72,7 +74,28 @@ pub struct AppModel {
     reader_error: Option<String>,
 
     mail_form: Option<MailForm>,
-    composer: Option<Composer>,
+    /// Every window but the main one: messages being written, and messages
+    /// being read away from the list.
+    ///
+    /// A mail client writes in windows. The reading pane is where a mailbox is
+    /// triaged, and it is the wrong place to answer from — a reply that
+    /// replaces the thread it answers hides the thing being answered, and
+    /// two replies at once were not expressible at all.
+    windows: HashMap<window::Id, Detached>,
+    /// The window whose message is being dispatched, for as long as it is.
+    ///
+    /// Set by [`AppModel::update`] around the dispatch of anything a detached
+    /// window said, and by nothing else. It is what lets one `ComposeSend` arm
+    /// serve every composer: the arm asks for *the* composer, and this decides
+    /// which one that is. `None` means the main window.
+    routed: Option<window::Id>,
+    /// Which detached windows are maximized.
+    ///
+    /// Tracked here because `Core` tracks it for the main window only — every
+    /// window-state update libcosmic handles is guarded on the main window id
+    /// — and a header bar this application draws itself has to know whether to
+    /// square its corners.
+    maximized: std::collections::HashSet<window::Id>,
     /// The providers a browser sign-in can reach, loaded once — the registry
     /// is files on disk and does not change under a running app.
     sign_in_providers: Vec<crate::mail::SignInProvider>,
@@ -162,6 +185,14 @@ pub struct AppModel {
     search: String,
     results: Vec<cosmic_pim_mail::Hit>,
     searching: bool,
+
+    /// Which of the open message's quoted runs the reader has been asked to
+    /// show, by their index among its blocks.
+    ///
+    /// Cleared whenever a message is opened: "show this quote" is a decision
+    /// about the message being read, and carrying it to the next one would
+    /// unfold a run of history nobody asked to see.
+    expanded_quotes: std::collections::HashSet<usize>,
 }
 
 /// How many search results are shown.
@@ -173,6 +204,82 @@ const SEARCH_LIMIT: usize = 200;
 /// The search box, so a keystroke can put the cursor in it.
 static SEARCH_ID: std::sync::LazyLock<cosmic::widget::Id> =
     std::sync::LazyLock::new(|| cosmic::widget::Id::new("search"));
+
+/// What a window other than the main one is showing.
+///
+/// One enum rather than two maps because the answer to "what is in this
+/// window" has to be exhaustive: a window whose contents cannot be named is a
+/// window that cannot be drawn, and `view_window` is called for every id the
+/// runtime knows about.
+pub enum Detached {
+    /// A message being written. Boxed, like the message being read: a composer
+    /// carries an editor's worth of state, and every window map entry would
+    /// otherwise be sized for it.
+    Compose(Box<Composer>),
+    /// A message being read away from the list.
+    Read(Box<Reading>),
+}
+
+/// A message open in a window of its own.
+///
+/// Carries its own folder and conversation rather than reading the main
+/// window's selection, and that is the whole point of the type: the list moves
+/// on. Archiving from a window opened an hour ago has to file the exchange
+/// that window is showing, not whatever happens to be selected now.
+pub struct Reading {
+    pub folder: Folder,
+    /// The whole conversation's uids, so filing from here files the exchange
+    /// — the same rule the reading pane follows.
+    pub uids: Vec<u32>,
+    pub opened: Opened,
+    /// Which quoted runs this window has been asked to unfold. Per window,
+    /// because it is a decision about the message on screen.
+    pub expanded_quotes: std::collections::HashSet<usize>,
+}
+
+/// What a reader action is acting on.
+///
+/// Borrowed rather than cloned, and assembled per action rather than stored:
+/// the answer to "which message" depends on which window asked, and a stored
+/// answer would be the stale one exactly when the two disagree.
+struct Target<'a> {
+    folder: &'a Folder,
+    /// The whole conversation, for the operations that file the exchange.
+    uids: &'a [u32],
+    /// The one message a flag, a save or an export is about.
+    uid: u32,
+    /// The message itself, when it is actually open. A conversation can be
+    /// selected in the list without one.
+    opened: Option<&'a Opened>,
+}
+
+/// What a composer's window is called.
+///
+/// The subject, because that is what the user is writing and what they will
+/// look for in a window list. A message with no subject yet is named for what
+/// it is, not called "(no subject)" — nobody has failed to write one, they
+/// have not written one *yet*.
+fn compose_title(subject: &str) -> String {
+    let subject = subject.trim();
+    if subject.is_empty() {
+        fl!("compose")
+    } else {
+        subject.to_owned()
+    }
+}
+
+/// What a detached message's window is called.
+///
+/// Here an empty subject is a fact about the message, and reads as the list
+/// reads it.
+fn read_title(subject: &str) -> String {
+    let subject = subject.trim();
+    if subject.is_empty() {
+        fl!("no-subject")
+    } else {
+        subject.to_owned()
+    }
+}
 
 /// A message being written.
 ///
@@ -201,6 +308,12 @@ pub struct Composer {
     pub draft_id: Option<String>,
     pub sending: bool,
     pub error: Option<String>,
+    /// Undo and redo for the body.
+    ///
+    /// The composer's, not the application's: `text_editor` remembers nothing,
+    /// and before this Ctrl+Z in a half-written message reached past the
+    /// composer and undid the last *mail* operation. See [`crate::text`].
+    pub history: crate::text::History,
 }
 
 impl Composer {
@@ -212,6 +325,10 @@ impl Composer {
             // Seeded from the draft, which is how a reply opens with the
             // quoted text it was built with — several lines of it.
             body: widget::text_editor::Content::with_text(&draft.body),
+            // The floor undo stops at is the body as it opened — for a reply,
+            // the quoted message. Undoing past that would empty a composer
+            // the user never emptied.
+            history: crate::text::History::new(draft.body.clone()),
             draft,
             answering,
             draft_id: None,
@@ -230,6 +347,94 @@ impl Composer {
             || !self.to.trim().is_empty()
             || !self.cc.trim().is_empty()
             || !self.bcc.trim().is_empty()
+    }
+
+    /// Performs one editor action on the body, and remembers what it did.
+    ///
+    /// Two things happen here that the widget does not do on its own:
+    ///
+    /// - **Enter continues what the line was.** A `> ` quote, a `- ` bullet, a
+    ///   numbered item. The quote is the case that matters: a reply written
+    ///   inside quoted text that silently stops being quoted halfway down
+    ///   attributes the rest of the paragraph to the person being quoted.
+    /// - **Edits are recorded**, coalesced into steps a person would recognise
+    ///   as one action. Cursor movement records nothing but still updates where
+    ///   undo will return to.
+    fn edit(&mut self, action: widget::text_editor::Action) {
+        use widget::text_editor::{Action, Edit};
+
+        let before = self.body.cursor().position;
+        let before = (before.line, before.column);
+        let kind = crate::text::EditKind::of(&action);
+
+        match (&action, self.continuation()) {
+            // An empty continued line: Enter clears it rather than making a
+            // second empty one. That is how a list or a quote is left.
+            (Action::Edit(Edit::Enter), Some(prefix)) if prefix.is_empty() => {
+                self.body
+                    .perform(Action::Move(widget::text_editor::Motion::Home));
+                self.body
+                    .perform(Action::Select(widget::text_editor::Motion::End));
+                self.body.perform(Action::Edit(Edit::Delete));
+            }
+            (Action::Edit(Edit::Enter), Some(prefix)) => {
+                self.body.perform(Action::Edit(Edit::Enter));
+                self.body
+                    .perform(Action::Edit(Edit::Paste(std::sync::Arc::new(prefix))));
+            }
+            _ => self.body.perform(action),
+        }
+
+        let after = self.body.cursor().position;
+        let after = (after.line, after.column);
+        match kind {
+            Some(kind) => self.history.record(self.body.text(), before, after, kind),
+            // Not an edit — but the cursor may have moved, and undo should
+            // come back to where the user actually is.
+            None => self.history.moved(after),
+        }
+    }
+
+    /// What Enter on the current line should open the next one with.
+    fn continuation(&self) -> Option<String> {
+        let line = self.body.cursor().position.line;
+        crate::text::continuation(&self.body.line(line)?.text)
+    }
+
+    /// Steps the body back one edit. Returns false when there is nothing to
+    /// step back to, so the caller can fall through to whatever else Ctrl+Z
+    /// might have meant.
+    fn undo(&mut self) -> bool {
+        let Some((text, caret)) = self.history.undo() else {
+            return false;
+        };
+        let text = text.to_owned();
+        crate::text::replace(&mut self.body, &text);
+        crate::text::restore(&mut self.body, caret);
+        true
+    }
+
+    fn redo(&mut self) -> bool {
+        let Some((text, caret)) = self.history.redo() else {
+            return false;
+        };
+        let text = text.to_owned();
+        crate::text::replace(&mut self.body, &text);
+        crate::text::restore(&mut self.body, caret);
+        true
+    }
+
+    /// The draft as it should go out: [`Self::resolved`] with the body
+    /// wrapped.
+    ///
+    /// Separate from `resolved` because a *draft* keeps what was typed. Wrapping
+    /// on every save would reformat the user's paragraphs under them the next
+    /// time they opened it; wrapping once, on the way out, is the only point at
+    /// which the line lengths are anyone else's problem.
+    fn outgoing(&self) -> cosmic_pim_mail::Draft {
+        let mut draft = self.resolved();
+        draft.body = crate::text::wrap(&draft.body, crate::text::WRAP_COLUMNS);
+        draft
     }
 
     /// The draft with the address fields as currently typed.
@@ -670,6 +875,8 @@ pub enum Message {
         cosmic::iced::keyboard::Key,
         Option<cosmic::iced::keyboard::key::Physical>,
     ),
+    /// Show or hide one of the open message's quoted runs.
+    ToggleQuote(usize),
     SearchFocused,
     SearchUnfocused,
     ShowOutbox,
@@ -758,6 +965,41 @@ pub enum Message {
     ServerDraftOpened(Box<Result<(String, cosmic_pim_mail::Draft), String>>),
     ComposeSend,
     ComposeSent(Box<crate::mail::Sent>),
+
+    /// Something that happened in a window, to be routed only if that window
+    /// is one of ours.
+    ///
+    /// Keystrokes arrive with the window they were typed in, main window
+    /// included; routing the main window's own keys through
+    /// [`Self::InWindow`] would make every one of them look detached.
+    InWindowIfDetached(window::Id, Box<Message>),
+    /// Something a detached window said, and which window said it.
+    ///
+    /// Every message a detached window's view produces is wrapped in this, and
+    /// so is every message the resulting task produces — which is what carries
+    /// a send's outcome back to the composer that started it rather than to
+    /// whichever window happens to be focused when it lands.
+    InWindow(window::Id, Box<Message>),
+    /// Move the open message into a window of its own.
+    Detach,
+    /// A window finished opening.
+    WindowOpened(window::Id),
+    /// A window was asked to close — by its own header bar, or by the
+    /// compositor. Distinct from [`Self::WindowClosed`]: this is the request,
+    /// and it is where a draft gets saved.
+    WindowCloseRequested(window::Id),
+    /// A window is gone, and whatever it held goes with it.
+    WindowClosed(window::Id),
+    /// The main window is closing, which ends the process and every other
+    /// window with it. The last moment anything can be kept.
+    WindowsClosing,
+    /// A window was resized, which is also the only notice a maximize gives.
+    WindowResized(window::Id),
+    WindowMaximizedChanged(window::Id, bool),
+    /// The header bar of a detached window: drag, and the window buttons.
+    WindowDrag,
+    WindowToggleMaximize,
+    WindowMinimize,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -861,7 +1103,9 @@ impl cosmic::Application for AppModel {
             list_error: None,
             reader_error: None,
             mail_form: None,
-            composer: None,
+            windows: HashMap::new(),
+            routed: None,
+            maximized: std::collections::HashSet::new(),
             sign_in_providers: mail::sign_in_providers(),
             add_form: None,
             signing_in: false,
@@ -907,6 +1151,7 @@ impl cosmic::Application for AppModel {
                 })
                 .unwrap_or_default(),
             search: String::new(),
+            expanded_quotes: std::collections::HashSet::new(),
             results: Vec::new(),
             searching: false,
         };
@@ -931,10 +1176,10 @@ impl cosmic::Application for AppModel {
             .map(|account| account.id.clone());
         model.rebuild_connection();
 
-        // A link the desktop handed us opens straight into the composer. Done
-        // before the folder load so the user sees what they clicked on rather
-        // than an inbox that turns into a composer a moment later.
-        model.launch(flags.launch.as_ref());
+        // A link the desktop handed us opens straight into a composer window.
+        // Done before the folder load so the user sees what they clicked on
+        // rather than an inbox that grows a composer a moment later.
+        let launched = model.launch(flags.launch.as_ref());
 
         // The window is filled from disk first and the server is asked
         // afterwards, in that order: the mailbox is already there, so there is
@@ -943,7 +1188,10 @@ impl cosmic::Application for AppModel {
         let drafts = model.reload_drafts();
         let outbox = model.reload_outbox();
         let first_sync = model.sync_now();
-        (model, Task::batch([cached, drafts, outbox, first_sync]))
+        (
+            model,
+            Task::batch([launched, cached, drafts, outbox, first_sync]),
+        )
     }
 
     fn header_end(&self) -> Vec<Element<'_, Self::Message>> {
@@ -978,6 +1226,7 @@ impl cosmic::Application for AppModel {
                         menu::Item::Divider,
                         item(Action::Snooze),
                         item(Action::Label),
+                        item(Action::Detach),
                         item(Action::MoveToFolder),
                         item(Action::NewFolder),
                         item(Action::RenameFolder),
@@ -1042,8 +1291,11 @@ impl cosmic::Application for AppModel {
                 .map(|update| Message::ConfigChanged(update.config)),
             // Every key press, decided in `update` — the decision needs the
             // model (is a text field focused, is a chord half-typed) and a
-            // subscription does not have it.
-            cosmic::iced::event::listen_with(|event, status, _| {
+            // subscription does not have it. Carrying the window it was typed
+            // in, because that decides *what* it acts on: `e` in a detached
+            // message archives that message, and `e` in a composer is a
+            // letter.
+            cosmic::iced::event::listen_with(|event, status, id| {
                 use cosmic::iced::keyboard::Event;
                 match event {
                     cosmic::iced::Event::Keyboard(Event::KeyPressed {
@@ -1053,34 +1305,61 @@ impl cosmic::Application for AppModel {
                         ..
                     // A key a widget has already handled — a character going
                     // into a text field, a scroll — is not ours to reinterpret.
-                    }) if status == cosmic::iced::event::Status::Ignored => {
-                        Some(Message::KeyPressed(modifiers, key, Some(physical_key)))
-                    }
+                    }) if status == cosmic::iced::event::Status::Ignored => Some(
+                        Message::InWindowIfDetached(
+                            id,
+                            Box::new(Message::KeyPressed(modifiers, key, Some(physical_key))),
+                        ),
+                    ),
                     _ => None,
                 }
+            }),
+            // The window frame this application draws itself needs the state
+            // libcosmic keeps for the main window only: whether each window is
+            // maximized, and when one has gone.
+            cosmic::iced::event::listen_with(|event, _, id| match event {
+                cosmic::iced::Event::Window(window::Event::Resized(_)) => {
+                    Some(Message::WindowResized(id))
+                }
+                cosmic::iced::Event::Window(window::Event::CloseRequested) => {
+                    Some(Message::WindowCloseRequested(id))
+                }
+                cosmic::iced::Event::Window(window::Event::Closed) => {
+                    Some(Message::WindowClosed(id))
+                }
+                _ => None,
             }),
         ])
     }
 
     /// The application is closing.
     ///
-    /// The composer's save-on-close path only runs when the *composer* is
-    /// closed; without this, quitting the window with a half-written message
-    /// open discards it — the exact loss the drafts store exists to prevent.
-    /// The save is synchronous because a `Task` returned here would race the
-    /// exit.
+    /// A composer's save-on-close path only runs when that *composer* is
+    /// closed; without this, quitting with half-written messages open would
+    /// discard them — the exact loss the drafts store exists to prevent. Every
+    /// open composer, because the main window closing takes the others with
+    /// it. The save is synchronous because a `Task` returned here would race
+    /// the exit.
     fn on_app_exit(&mut self) -> Option<Self::Message> {
-        if let (Some(composer), Some(connection)) = (self.composer.take(), self.connection.as_ref())
-            && composer.is_worth_saving()
-            && let Err(why) = mail::save_draft(
-                connection,
-                composer.draft_id.as_deref(),
-                &composer.resolved(),
-            )
-        {
-            tracing::error!(%why, "a draft was lost on exit");
-        }
+        self.save_open_drafts();
         None
+    }
+
+    /// A window is going away.
+    ///
+    /// libcosmic reports this once the window is actually gone, so it is a
+    /// notice rather than a veto — which is why a composer's window is opened
+    /// with `exit_on_close_request` off and routed through
+    /// [`Message::WindowCloseRequested`] instead, where there is still
+    /// something to save. This is the backstop for the closes that do not come
+    /// through there, and the main window's own close, which takes every other
+    /// window with it.
+    fn on_close_requested(&self, id: window::Id) -> Option<Self::Message> {
+        Some(if self.core.main_window_is(id) {
+            Message::WindowsClosing
+        } else {
+            Message::WindowClosed(id)
+        })
     }
 
     /// Escape, routed here by libcosmic's `keyboard_nav`.
@@ -1116,18 +1395,14 @@ impl cosmic::Application for AppModel {
                 // links would be worse than opening one.
                 for url in url {
                     if url.scheme().eq_ignore_ascii_case("mailto") {
-                        self.open_mailto(url.as_str());
-                        break;
+                        return self.open_mailto(url.as_str());
                     }
                 }
                 Task::none()
             }
             cosmic::dbus_activation::Details::ActivateAction { action, .. } => {
                 match action.parse::<crate::flags::Launch>() {
-                    Ok(launch) => {
-                        self.launch(Some(&launch));
-                        Task::none()
-                    }
+                    Ok(launch) => self.launch(Some(&launch)),
                     Err(why) => {
                         tracing::warn!(action, %why, "an activation this build does not understand");
                         Task::none()
@@ -1293,33 +1568,17 @@ impl cosmic::Application for AppModel {
             .view()
         };
 
-        // The composer takes the reader's half of the window rather than a
-        // dialog or a second window. Writing a reply is reading the thread with
-        // extra steps: the list stays where it was, so the message being
-        // answered is still one click away.
-        let right = match self.composer.as_ref() {
-            Some(composer) => {
-                let selected = self
-                    .connection
-                    .as_ref()
-                    .and_then(|c| {
-                        c.identities.iter().position(|m| {
-                            m.address.eq_ignore_ascii_case(&composer.draft.from.address)
-                        })
-                    })
-                    .unwrap_or(0);
-                crate::ui::composer::view(composer, &self.identity_labels, selected)
-            }
-            None => crate::ui::reader::Reader {
-                opened: self.opened.as_ref(),
-                error: self.reader_error.as_deref(),
-                can_send: self
-                    .connection
-                    .as_ref()
-                    .is_some_and(|c| c.submission.is_some()),
-            }
-            .view(),
-        };
+        // The reading pane, and only the reading pane. Writing happens in a
+        // window of its own — see [`Detached`] — so the thread being answered
+        // stays on screen beside the answer instead of being replaced by it.
+        let right = crate::ui::reader::Reader {
+            opened: self.opened.as_ref(),
+            error: self.reader_error.as_deref(),
+            can_send: self.can_send(),
+            expanded_quotes: &self.expanded_quotes,
+            detachable: true,
+        }
+        .view();
 
         let content = widget::row::with_capacity(3)
             .push(
@@ -1341,6 +1600,72 @@ impl cosmic::Application for AppModel {
         // The standard chrome: confirmations surface over the content,
         // wherever the user is looking.
         widget::toaster(&self.toasts, content)
+    }
+
+    /// A detached window: the frame, and whatever it is holding.
+    ///
+    /// libcosmic's window template stops at the main window — `view_main` is
+    /// applied to that one and `view_window` is handed the bare element for
+    /// every other — so the header bar, the background and the corners are
+    /// drawn here rather than inherited. Everything the contents say is
+    /// wrapped in [`Message::InWindow`], which is what lets one `update` serve
+    /// every window without a composer having to know its own window id.
+    fn view_window(&self, id: window::Id) -> Element<'_, Self::Message> {
+        let Some(detached) = self.windows.get(&id) else {
+            // A window the runtime knows about and the model does not, which
+            // is what a closing window looks like for a frame. The default
+            // implementation of this method panics; a blank frame on the way
+            // out is a better answer than a crash.
+            return widget::Space::new().into();
+        };
+
+        let content: Element<'_, Message> = match detached {
+            Detached::Compose(composer) => crate::ui::composer::view(
+                composer,
+                &self.identity_labels,
+                self.identity_index(composer),
+            ),
+            Detached::Read(reading) => crate::ui::reader::Reader {
+                opened: Some(&reading.opened),
+                error: None,
+                can_send: self.can_send(),
+                expanded_quotes: &reading.expanded_quotes,
+                // Already in a window of its own; the button would open a
+                // window onto the window the user is looking at.
+                detachable: false,
+            }
+            .view(),
+        };
+
+        // Squared off when maximized, like every other COSMIC window. The
+        // state is this application's to track: libcosmic keeps `Core`'s copy
+        // for the main window only.
+        let maximized = self.maximized.contains(&id);
+
+        widget::column::with_capacity(2)
+            .push(
+                widget::header_bar()
+                    .title(self.title(id))
+                    .focused(self.core.focused_window() == Some(id))
+                    .maximized(maximized)
+                    .sharp_corners(maximized)
+                    .on_close(Message::WindowCloseRequested(id))
+                    .on_drag(Message::WindowDrag)
+                    .on_maximize(Message::WindowToggleMaximize)
+                    .on_double_click(Message::WindowToggleMaximize)
+                    .on_minimize(Message::WindowMinimize),
+            )
+            .push(
+                widget::container(content)
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            )
+            .apply(widget::container)
+            .class(cosmic::theme::Container::WindowBackground)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .apply(Element::from)
+            .map(move |message| Message::InWindow(id, Box::new(message)))
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
@@ -1541,7 +1866,10 @@ impl AppModel {
             }
 
             Message::OpenInCalendar => {
-                let Some(invitation) = self.opened.as_ref().and_then(|o| o.invitation.clone())
+                let Some(invitation) = self
+                    .target()
+                    .and_then(|target| target.opened)
+                    .and_then(|opened| opened.invitation.clone())
                 else {
                     return Task::none();
                 };
@@ -1582,6 +1910,7 @@ impl AppModel {
                     Ok(opened) => {
                         self.reader_error = None;
                         let already_read = opened.flags.seen;
+                        self.expanded_quotes.clear();
                         self.opened = Some(opened);
                         // Opening a message marks it read, which is what every
                         // mail client does and what users expect. It goes
@@ -1606,7 +1935,10 @@ impl AppModel {
             }
 
             Message::ToggleRead => {
-                let seen = self.opened.as_ref().is_some_and(|o| o.flags.seen);
+                let seen = self
+                    .target()
+                    .and_then(|target| target.opened)
+                    .is_some_and(|opened| opened.flags.seen);
                 self.set_flags(move |flags| Flags {
                     seen: !seen,
                     ..flags
@@ -1614,7 +1946,10 @@ impl AppModel {
             }
 
             Message::ToggleFlagged => {
-                let flagged = self.opened.as_ref().is_some_and(|o| o.flags.flagged);
+                let flagged = self
+                    .target()
+                    .and_then(|target| target.opened)
+                    .is_some_and(|opened| opened.flags.flagged);
                 self.set_flags(move |flags| Flags {
                     flagged: !flagged,
                     ..flags
@@ -1873,10 +2208,92 @@ impl AppModel {
             Message::ComposeToChanged(text) => self.with_composer(|c| c.to = text),
             Message::ComposeCcChanged(text) => self.with_composer(|c| c.cc = text),
             Message::ComposeBccChanged(text) => self.with_composer(|c| c.bcc = text),
-            Message::ComposeSubjectChanged(text) => self.with_composer(|c| c.draft.subject = text),
-            Message::ComposeBodyAction(action) => self.with_composer(|c| c.body.perform(*action)),
-            Message::ComposeCancel => self.close_composer(true),
-            Message::ComposeDiscard => self.close_composer(false),
+            Message::ComposeSubjectChanged(text) => {
+                let edited = self.with_composer(|c| c.draft.subject = text);
+                // The window is named after the subject, so a window list is
+                // useful while three replies are open. Retitled as it is
+                // typed, because a title that lags is a title that lies.
+                let (Some(id), Some(composer)) = (self.routed, self.composer()) else {
+                    return edited;
+                };
+                let title = compose_title(&composer.draft.subject);
+                Task::batch([edited, self.set_window_title(title, id)])
+            }
+            Message::ComposeBodyAction(action) => {
+                self.with_composer(|composer| composer.edit(*action))
+            }
+            Message::ComposeCancel => self.finish_composing(true),
+            Message::ComposeDiscard => self.finish_composing(false),
+
+            // Dispatched here rather than in `update` so that anything which
+            // reaches `dispatch` directly is routed the same way. The task is
+            // wrapped straight back up: a send started in one composer lands
+            // in that composer, whichever window has focus when the answer
+            // arrives.
+            Message::InWindow(id, inner) => {
+                let previous = self.routed.replace(id);
+                let task = self.dispatch(*inner);
+                self.routed = previous;
+                task.map(move |action| match action {
+                    cosmic::Action::App(message) => {
+                        cosmic::Action::App(Message::InWindow(id, Box::new(message)))
+                    }
+                    // Framework messages belong to the framework, not to a
+                    // window of ours.
+                    other => other,
+                })
+            }
+            Message::InWindowIfDetached(id, inner) => {
+                if self.windows.contains_key(&id) {
+                    return self.dispatch(Message::InWindow(id, inner));
+                }
+                self.dispatch(*inner)
+            }
+            Message::Detach => self.detach_opened(),
+            Message::WindowOpened(id) => {
+                // Nothing to do but ask what state it opened in: a window that
+                // the compositor tiled or maximized on the way up has to draw
+                // the corners it actually has.
+                window::is_maximized(id).map(move |maximized| {
+                    cosmic::Action::App(Message::WindowMaximizedChanged(id, maximized))
+                })
+            }
+            Message::WindowCloseRequested(id) => {
+                // Ours to close, because a detached window is opened with
+                // `exit_on_close_request` off so that a draft can be kept
+                // first. The main window's close is the framework's, and
+                // taking it here would be closing it twice.
+                if self.windows.contains_key(&id) {
+                    return self.close_window(id);
+                }
+                Task::none()
+            }
+            Message::WindowClosed(id) => {
+                // The window is already gone, so there is nothing to close and
+                // nothing to save that `WindowCloseRequested` did not already
+                // save. This is the model catching up.
+                self.windows.remove(&id);
+                self.maximized.remove(&id);
+                Task::none()
+            }
+            Message::WindowsClosing => {
+                self.save_open_drafts();
+                Task::none()
+            }
+            Message::WindowResized(id) => window::is_maximized(id).map(move |maximized| {
+                cosmic::Action::App(Message::WindowMaximizedChanged(id, maximized))
+            }),
+            Message::WindowMaximizedChanged(id, maximized) => {
+                if maximized {
+                    self.maximized.insert(id);
+                } else {
+                    self.maximized.remove(&id);
+                }
+                Task::none()
+            }
+            Message::WindowDrag => self.core.drag(self.routed),
+            Message::WindowToggleMaximize => self.core.toggle_maximize(self.routed),
+            Message::WindowMinimize => self.core.minimize(self.routed),
             Message::DraftsLoaded(drafts) => {
                 self.drafts = drafts;
                 Task::none()
@@ -1952,6 +2369,13 @@ impl AppModel {
             }
             Message::MarkReadOnOpenChanged(on) => {
                 self.remember(|config| config.mark_read_on_open = on);
+                Task::none()
+            }
+            Message::ToggleQuote(index) => {
+                let expanded = self.expanded_quotes_mut();
+                if !expanded.remove(&index) {
+                    expanded.insert(index);
+                }
                 Task::none()
             }
             Message::SearchFocused => {
@@ -2042,10 +2466,11 @@ impl AppModel {
                 Task::none()
             }
             Message::ExportMessage => {
-                let (Some(connection), Some(folder), Some(uid)) = (
-                    self.connection.clone(),
-                    self.current_folder().cloned(),
-                    self.opened.as_ref().map(|opened| opened.uid),
+                let connection = self.connection.clone();
+                let (Some(connection), Some((folder, uid))) = (
+                    connection,
+                    self.target()
+                        .map(|target| (target.folder.clone(), target.uid)),
                 ) else {
                     return Task::none();
                 };
@@ -2074,10 +2499,11 @@ impl AppModel {
                 Task::none()
             }
             Message::PgpKeyImport(index) => {
-                let (Some(connection), Some(folder), Some(uid)) = (
-                    self.connection.clone(),
-                    self.current_folder().cloned(),
-                    self.opened.as_ref().map(|o| o.uid),
+                let connection = self.connection.clone();
+                let (Some(connection), Some((folder, uid))) = (
+                    connection,
+                    self.target()
+                        .map(|target| (target.folder.clone(), target.uid)),
                 ) else {
                     return Task::none();
                 };
@@ -2144,12 +2570,12 @@ impl AppModel {
                 for path in paths {
                     match cosmic_pim_mail::compose::Attachment::from_path(&path) {
                         Ok(attachment) => {
-                            if let Some(composer) = self.composer.as_mut() {
+                            if let Some(composer) = self.composer_mut() {
                                 composer.draft.attachments.push(attachment);
                             }
                         }
                         Err(why) => {
-                            if let Some(composer) = self.composer.as_mut() {
+                            if let Some(composer) = self.composer_mut() {
                                 composer.error = Some(why.to_string());
                             }
                         }
@@ -2186,8 +2612,8 @@ impl AppModel {
                         // Carried, so a save here replaces the server copy
                         // rather than leaving a second one beside it.
                         composer.draft_id = Some(id);
-                        self.composer = Some(composer);
                         self.reader_error = None;
+                        return self.open_composer(composer);
                     }
                     Err(why) => self.reader_error = Some(why),
                 }
@@ -2362,7 +2788,7 @@ impl AppModel {
                 self.snooze_selected(preset.until_ms())
             }
             Message::SendLater => {
-                if self.composer.is_none() {
+                if self.composer().is_none() {
                     return Task::none();
                 }
                 self.update(Message::FolderDialogOpened(FolderDialog::SendLater))
@@ -2373,7 +2799,9 @@ impl AppModel {
             }
             Message::SendScheduled(result) => match *result {
                 Ok((id, not_before_ms, grace)) => {
-                    self.composer = None;
+                    // Queued and durable, so the window has nothing left to
+                    // hold — the same rule an immediate send follows.
+                    let closed = self.discard_composer();
                     self.say(if grace {
                         fl!(
                             "send-scheduled-grace",
@@ -2407,10 +2835,10 @@ impl AppModel {
                     } else {
                         Task::none()
                     };
-                    Task::batch([self.reload_outbox(), self.reload_drafts(), timer])
+                    Task::batch([closed, self.reload_outbox(), self.reload_drafts(), timer])
                 }
                 Err(why) => {
-                    if let Some(composer) = self.composer.as_mut() {
+                    if let Some(composer) = self.composer_mut() {
                         composer.sending = false;
                         composer.error = Some(why);
                     } else {
@@ -2424,8 +2852,8 @@ impl AppModel {
                     Ok(Some(draft)) => {
                         // The words the user wrote, back where they can be
                         // edited — the entire point of the grace.
-                        self.composer = Some(Composer::new(draft, None));
                         self.say(fl!("send-taken-back"));
+                        return self.open_composer(Composer::new(draft, None));
                     }
                     Ok(None) => self.say(fl!("send-already-gone")),
                     Err(why) => self.say(why),
@@ -2712,20 +3140,23 @@ impl AppModel {
         })
     }
 
-    /// Applies a flag change to the conversation's newest message.
+    /// Applies a flag change to the message the action was about.
     fn set_flags(&mut self, edit: impl Fn(Flags) -> Flags + Send + 'static) -> Task<Message> {
-        let (Some(connection), Some(folder), Some(uid)) = (
-            self.connection.clone(),
-            self.current_folder().cloned(),
-            self.selected_uid(),
-        ) else {
+        let connection = self.connection.clone();
+        let Some((folder, uid)) = self
+            .target()
+            .map(|target| (target.folder.clone(), target.uid))
+        else {
+            return Task::none();
+        };
+        let Some(connection) = connection else {
             return Task::none();
         };
 
         // Reflected immediately so the button does not sit in the old state
         // waiting for a disk write; the reload that follows is what makes it
         // true rather than merely displayed.
-        if let Some(opened) = self.opened.as_mut() {
+        if let Some(opened) = self.opened_mut() {
             opened.flags = edit(opened.flags);
         }
 
@@ -2812,25 +3243,33 @@ impl AppModel {
 
     /// Moves the selected conversation to `destination`, with undo.
     fn move_conversation_to(&mut self, destination: Folder) -> Task<Message> {
-        let (Some(connection), Some(folder), Some(index)) = (
-            self.connection.clone(),
-            self.current_folder().cloned(),
-            self.selected_conversation,
-        ) else {
+        let connection = self.connection.clone();
+        let Some((folder, uids)) = self
+            .target()
+            .map(|target| (target.folder.clone(), target.uids.to_vec()))
+        else {
+            return Task::none();
+        };
+        let Some(connection) = connection else {
             return Task::none();
         };
         if destination.wire_name == folder.wire_name {
             return Task::none();
         }
-        let Some(uids) = self.conversations.get(index).map(|c| c.uids.clone()) else {
-            return Task::none();
+
+        // Filed, so whatever was showing it has nothing left to show: the
+        // window if it came from one, the reading pane otherwise.
+        let emptied = match self.detached_read() {
+            Some(id) => self.drop_window(id),
+            None => {
+                self.opened = None;
+                self.selected_conversation = None;
+                Task::none()
+            }
         };
 
-        self.opened = None;
-        self.selected_conversation = None;
-
         let description = fl!("undo-move", folder = destination.display_name.clone());
-        cosmic::task::future(async move {
+        let moved = cosmic::task::future(async move {
             let result = tokio::task::spawn_blocking(move || {
                 mail::move_to(&connection, &folder, &destination, &uids).map(|messages| {
                     (!messages.is_empty()).then_some(UndoEntry {
@@ -2842,23 +3281,280 @@ impl AppModel {
             .await
             .unwrap_or_else(|why| Err(why.to_string()));
             Message::Mutated(result)
-        })
+        });
+        Task::batch([emptied, moved])
     }
 
     /// Acts on what a launch asked for, whether it started this process or
     /// arrived over D-Bus at one already running.
-    fn launch(&mut self, launch: Option<&crate::flags::Launch>) {
+    fn launch(&mut self, launch: Option<&crate::flags::Launch>) -> Task<Message> {
         match launch {
-            Some(crate::flags::Launch::Mailto(url)) => self.open_mailto(url),
-            Some(crate::flags::Launch::Compose) => {
-                let _ = self.act(Action::Compose);
+            Some(crate::flags::Launch::Mailto(url)) => {
+                let url = url.clone();
+                self.open_mailto(&url)
             }
-            None => {}
+            Some(crate::flags::Launch::Compose) => self.act(Action::Compose),
+            None => Task::none(),
         }
     }
 
-    /// Opens the composer on a `mailto:` link.
-    fn open_mailto(&mut self, url: &str) {
+    /// The composer this message is about.
+    ///
+    /// Which is to say: the one belonging to the window the message came from.
+    /// A composer only exists in a window of its own, so a message that
+    /// arrived without a window — a menu entry pressed in the main window, a
+    /// task nobody routed — is not about a composer at all, and says so.
+    fn composer(&self) -> Option<&Composer> {
+        match self.windows.get(&self.routed?) {
+            Some(Detached::Compose(composer)) => Some(composer.as_ref()),
+            _ => None,
+        }
+    }
+
+    fn composer_mut(&mut self) -> Option<&mut Composer> {
+        match self.windows.get_mut(&self.routed?) {
+            Some(Detached::Compose(composer)) => Some(composer.as_mut()),
+            _ => None,
+        }
+    }
+
+    /// Is there an address to send from?
+    ///
+    /// The reply buttons are drawn either way, greyed rather than hidden: a
+    /// missing button reads as a missing feature.
+    fn can_send(&self) -> bool {
+        self.connection
+            .as_ref()
+            .is_some_and(|connection| connection.submission.is_some())
+    }
+
+    /// Which of the account's identities a composer is writing as, as an index
+    /// into the dropdown's labels.
+    fn identity_index(&self, composer: &Composer) -> usize {
+        self.connection
+            .as_ref()
+            .and_then(|connection| {
+                connection.identities.iter().position(|identity| {
+                    identity
+                        .address
+                        .eq_ignore_ascii_case(&composer.draft.from.address)
+                })
+            })
+            .unwrap_or(0)
+    }
+
+    /// Which window an action is being invoked from.
+    fn surface(&self) -> actions::Surface {
+        match self.routed.and_then(|id| self.windows.get(&id)) {
+            Some(Detached::Compose(_)) => actions::Surface::Writing,
+            Some(Detached::Read(_)) => actions::Surface::Reading,
+            None => actions::Surface::Main,
+        }
+    }
+
+    /// Which window a keystroke the framework swallowed was aimed at.
+    ///
+    /// Every message this application routes carries its window, so this is
+    /// only for the hooks that do not: `on_escape` is a key libcosmic matched
+    /// before this saw it, and the window it was meant for is the focused one.
+    /// Deliberately not consulted by anything that arrives already routed —
+    /// focus is a second answer to a question that already has one, and two
+    /// answers is how they come to disagree.
+    fn focused_detached(&self) -> Option<window::Id> {
+        let id = self.core.focused_window()?;
+        self.windows.contains_key(&id).then_some(id)
+    }
+
+    /// What a reader action is acting on: the message in the window the action
+    /// came from, or the one in the reading pane.
+    fn target(&self) -> Option<Target<'_>> {
+        if let Some(id) = self.routed
+            && let Some(Detached::Read(reading)) = self.windows.get(&id)
+        {
+            return Some(Target {
+                folder: &reading.folder,
+                uids: &reading.uids,
+                uid: reading.opened.uid,
+                opened: Some(&reading.opened),
+            });
+        }
+        let conversation = self.conversations.get(self.selected_conversation?)?;
+        Some(Target {
+            folder: self.current_folder()?,
+            uids: &conversation.uids,
+            uid: conversation.newest_uid()?,
+            opened: self.opened.as_ref(),
+        })
+    }
+
+    /// The window this message came from, when it is one showing a message.
+    fn detached_read(&self) -> Option<window::Id> {
+        let id = self.routed?;
+        matches!(self.windows.get(&id), Some(Detached::Read(_))).then_some(id)
+    }
+
+    /// The open message, wherever it is open, for the changes that are
+    /// reflected before the disk agrees.
+    fn opened_mut(&mut self) -> Option<&mut Opened> {
+        if let Some(id) = self.routed
+            && let Some(Detached::Read(reading)) = self.windows.get_mut(&id)
+        {
+            return Some(&mut reading.opened);
+        }
+        self.opened.as_mut()
+    }
+
+    /// The quoted-run state of whichever reader a message came from.
+    fn expanded_quotes_mut(&mut self) -> &mut std::collections::HashSet<usize> {
+        if let Some(id) = self.routed
+            && let Some(Detached::Read(reading)) = self.windows.get_mut(&id)
+        {
+            return &mut reading.expanded_quotes;
+        }
+        &mut self.expanded_quotes
+    }
+
+    /// Opens a window, with the chrome a window of our own drawing needs.
+    ///
+    /// Undecorated on purpose: `view_window` draws a COSMIC header bar into
+    /// it, the same one the main window gets from the framework's template.
+    /// The template itself is not available here — libcosmic applies it to the
+    /// main window only — so the window's frame is this application's job.
+    fn open_window(&mut self, detached: Detached, title: String) -> Task<Message> {
+        let size = match &detached {
+            // Wide enough for a quoted reply not to wrap at every line, tall
+            // enough to see the fields and the first paragraph at once.
+            Detached::Compose(_) => cosmic::iced::Size::new(760.0, 640.0),
+            Detached::Read(_) => cosmic::iced::Size::new(820.0, 720.0),
+        };
+        let mut settings = window::Settings {
+            size,
+            min_size: Some(cosmic::iced::Size::new(400.0, 320.0)),
+            resizable: true,
+            resize_border: 8,
+            decorations: false,
+            transparent: true,
+            // The close goes through `WindowCloseRequested` first, because a
+            // composer has a draft to save before its window is allowed to
+            // stop existing.
+            exit_on_close_request: false,
+            ..Default::default()
+        };
+        // The same app id the main window gets from the framework. Without it
+        // a composer is a second application to the desktop: its own dock
+        // entry, a fallback icon, and no grouping with the mail it came from.
+        #[cfg(target_os = "linux")]
+        {
+            settings.platform_specific.application_id = Self::APP_ID.to_string();
+        }
+        let (id, opening) = window::open(settings);
+        self.windows.insert(id, detached);
+        Task::batch([
+            opening.map(|id| cosmic::Action::App(Message::WindowOpened(id))),
+            self.set_window_title(title, id),
+        ])
+    }
+
+    /// Opens a composer in a window of its own.
+    fn open_composer(&mut self, composer: Composer) -> Task<Message> {
+        let title = compose_title(&composer.draft.subject);
+        self.open_window(Detached::Compose(Box::new(composer)), title)
+    }
+
+    /// Puts the open message in a window of its own, and gives the reading
+    /// pane back to the list.
+    ///
+    /// Moves rather than copies: the same message in two places is two places
+    /// to press Archive, and the point of detaching is that the list can move
+    /// on while this one stays put.
+    fn detach_opened(&mut self) -> Task<Message> {
+        // Already in a window of its own. Asking again means the user wants to
+        // see it, so raise it rather than opening a second copy.
+        if self.routed.is_some() {
+            // Already in a window of its own, or in a composer, which has no
+            // message to detach. Asking again means the user wants to see it,
+            // so raise it rather than opening a second copy of the same
+            // message.
+            return match self.detached_read() {
+                Some(id) => window::gain_focus(id),
+                None => Task::none(),
+            };
+        }
+        let (Some(folder), Some(index)) =
+            (self.current_folder().cloned(), self.selected_conversation)
+        else {
+            return Task::none();
+        };
+        let Some(uids) = self.conversations.get(index).map(|c| c.uids.clone()) else {
+            return Task::none();
+        };
+        let Some(opened) = self.opened.take() else {
+            return Task::none();
+        };
+        let expanded_quotes = std::mem::take(&mut self.expanded_quotes);
+        let title = read_title(&opened.message.subject);
+        self.open_window(
+            Detached::Read(Box::new(Reading {
+                folder,
+                uids,
+                opened,
+                expanded_quotes,
+            })),
+            title,
+        )
+    }
+
+    /// A window is closing: keep whatever it was holding, then let it go.
+    ///
+    /// The draft save is the reason this exists. A composer closed by its own
+    /// header bar and one closed by the compositor have to lose the same
+    /// amount of writing, which is none.
+    fn close_window(&mut self, id: window::Id) -> Task<Message> {
+        let previous = self.routed.replace(id);
+        let saved = self.save_composer(true);
+        self.routed = previous;
+        Task::batch([saved, self.drop_window(id)])
+    }
+
+    /// Saves every open composer, for the moment the process is about to stop
+    /// existing and there is no later.
+    ///
+    /// Synchronous, like the single-composer path it replaces: a `Task`
+    /// returned at exit races the exit and loses.
+    fn save_open_drafts(&mut self) {
+        let Some(connection) = self.connection.clone() else {
+            return;
+        };
+        for detached in self.windows.values_mut() {
+            let Detached::Compose(composer) = detached else {
+                continue;
+            };
+            if !composer.is_worth_saving() {
+                continue;
+            }
+            // The id is kept, not discarded, and that is the whole
+            // correctness of this loop. Quitting through the application
+            // rather than the window runs `on_app_exit` *and then* closes the
+            // main window, which arrives back here as `WindowsClosing` — so
+            // this saves twice. A composer that has never been saved carries
+            // no id, `save_draft` mints one from the clock, and a second pass
+            // a few milliseconds later would mint a different one: two draft
+            // files for one half-written message, and the mirror would then
+            // put both on the server. Writing the id back makes the second
+            // pass a replacement, which is what `Drafts::save` is built for.
+            match mail::save_draft(
+                &connection,
+                composer.draft_id.as_deref(),
+                &composer.resolved(),
+            ) {
+                Ok(id) => composer.draft_id = Some(id),
+                Err(why) => tracing::error!(%why, "a draft was lost on exit"),
+            }
+        }
+    }
+
+    /// Opens a composer on a `mailto:` link, in a window of its own.
+    fn open_mailto(&mut self, url: &str) -> Task<Message> {
         let Some(identity) = self
             .connection
             .as_ref()
@@ -2868,11 +3564,12 @@ impl AppModel {
             self.say(fl!("no-from-address"));
             self.context_page = ContextPage::Accounts;
             self.core.window.show_context = true;
-            return;
+            return Task::none();
         };
         if let Some(draft) = crate::mailto::prefill(url, identity) {
-            self.composer = Some(Composer::new(draft, None));
+            return self.open_composer(Composer::new(draft, None));
         }
+        Task::none()
     }
 
     /// Opens the composer with a draft built from the current state.
@@ -2895,12 +3592,17 @@ impl AppModel {
             return Task::none();
         };
 
+        // Whichever reader asked — the pane, or the window the Reply button
+        // was pressed in. A reply opened from a detached message answers that
+        // message, however far the list has moved on since.
+        let target = self.target();
+        let opened = target.as_ref().and_then(|target| target.opened);
+
         // A reply goes out as the identity the original was addressed to —
         // answering mail sent to an alias from the primary address outs the
         // alias. A fresh compose stays on the primary, whatever is open.
         if match_recipient
-            && let (Some(connection), Some(opened)) =
-                (self.connection.as_ref(), self.opened.as_ref())
+            && let (Some(connection), Some(opened)) = (self.connection.as_ref(), opened)
             && let Some(matched) =
                 opened
                     .message
@@ -2919,32 +3621,37 @@ impl AppModel {
 
         // A reply marks the message it answers — but only once it is actually
         // away, so a cancelled reply leaves no trace.
-        let answering = self
-            .current_folder()
-            .cloned()
-            .zip(self.opened.as_ref().map(|o| o.uid));
+        let answering = target
+            .as_ref()
+            .and_then(|target| Some((target.folder.clone(), target.opened?.uid)));
 
-        let draft = build(self.opened.as_ref(), identity);
-        self.composer = Some(Composer::new(draft, answering));
-        Task::none()
+        let draft = build(opened, identity);
+        self.open_composer(Composer::new(draft, answering))
     }
 
-    /// Closes the composer, keeping what was typed unless told not to.
+    /// Keeps what the current window's composer was holding, unless told not
+    /// to.
     ///
     /// Keeping is the default because the cost of the two mistakes is not
     /// symmetric: a stray draft is a line in a list, and a discarded one is
     /// gone. Discarding is a separate button that says what it does.
-    fn close_composer(&mut self, keep: bool) -> Task<Message> {
-        let Some(composer) = self.composer.take() else {
+    ///
+    /// The window itself is somebody else's business — this is called both by
+    /// the composer's own buttons and by a window closing under it, and only
+    /// one of those has a window left to close afterwards.
+    fn save_composer(&mut self, keep: bool) -> Task<Message> {
+        let Some(connection) = self.connection.clone() else {
             return Task::none();
         };
-        let Some(connection) = self.connection.as_ref() else {
+        let Some(composer) = self.composer() else {
             return Task::none();
         };
+        let draft_id = composer.draft_id.clone();
+        let resolved = composer.is_worth_saving().then(|| composer.resolved());
 
         if !keep {
-            if let Some(id) = composer.draft_id.as_deref()
-                && let Err(why) = mail::delete_draft(connection, id)
+            if let Some(id) = draft_id.as_deref()
+                && let Err(why) = mail::delete_draft(&connection, id)
             {
                 self.say(why);
             }
@@ -2953,32 +3660,53 @@ impl AppModel {
             return Task::batch([self.reload_drafts(), self.sweep_drafts_now()]);
         }
 
-        if !composer.is_worth_saving() {
+        let Some(resolved) = resolved else {
             return Task::none();
-        }
-        match mail::save_draft(
-            connection,
-            composer.draft_id.as_deref(),
-            &composer.resolved(),
-        ) {
+        };
+        match mail::save_draft(&connection, draft_id.as_deref(), &resolved) {
             Ok(_) => Task::batch([self.reload_drafts(), self.sweep_drafts_now()]),
             Err(why) => {
-                // The composer is already closed, so this cannot be shown
-                // beside the text it lost. Saying so in the status line is the
-                // least bad thing available, and it is why saving is also
-                // possible before closing.
+                // The window is going, so this cannot be shown beside the text
+                // it lost. Saying so in a toast is the least bad thing
+                // available, and it is why saving is also possible without
+                // closing.
                 self.say(fl!("draft-not-saved", reason = why));
                 Task::none()
             }
         }
     }
 
+    /// The composer's own Save-draft and Discard buttons: deal with the
+    /// writing, then close the window it was in.
+    fn finish_composing(&mut self, keep: bool) -> Task<Message> {
+        let Some(id) = self.routed else {
+            return Task::none();
+        };
+        let saved = self.save_composer(keep);
+        Task::batch([saved, self.drop_window(id)])
+    }
+
+    /// The message is away: the window has nothing left to hold.
+    fn discard_composer(&mut self) -> Task<Message> {
+        match self.routed {
+            Some(id) => self.drop_window(id),
+            None => Task::none(),
+        }
+    }
+
+    /// Lets go of a window — what it was holding, and the window itself.
+    fn drop_window(&mut self, id: window::Id) -> Task<Message> {
+        self.windows.remove(&id);
+        self.maximized.remove(&id);
+        window::close(id)
+    }
+
     /// Leaves the open message's list, by the least ceremonious route it
     /// offers.
     fn unsubscribe(&mut self) -> Task<Message> {
         let Some(route) = self
-            .opened
-            .as_ref()
+            .target()
+            .and_then(|target| target.opened)
             .and_then(|opened| mail::unsubscribe_route(&opened.message))
         else {
             return Task::none();
@@ -2996,10 +3724,7 @@ impl AppModel {
             }
             // Leaving the list is sending a message, and the composer already
             // knows how — the same mailto path a link would take.
-            mail::Unsubscribe::Mailto(url) => {
-                self.open_mailto(&url);
-                Task::none()
-            }
+            mail::Unsubscribe::Mailto(url) => self.open_mailto(&url),
             mail::Unsubscribe::Browser(url) => {
                 if let Err(why) = open::that_detached(&url) {
                     self.say(why.to_string());
@@ -3011,10 +3736,11 @@ impl AppModel {
 
     /// Saves one attachment of the open message.
     fn save_attachment(&mut self, index: usize) -> Task<Message> {
-        let (Some(connection), Some(folder), Some(uid)) = (
-            self.connection.clone(),
-            self.current_folder().cloned(),
-            self.opened.as_ref().map(|opened| opened.uid),
+        let connection = self.connection.clone();
+        let (Some(connection), Some((folder, uid))) = (
+            connection,
+            self.target()
+                .map(|target| (target.folder.clone(), target.uid)),
         ) else {
             return Task::none();
         };
@@ -3499,10 +4225,21 @@ impl AppModel {
     /// with nothing to show why. The search box in the header is the one
     /// field that outlives every surface, so it is the one whose focus is
     /// worth tracking; everything else lives inside something this can see.
+    /// The composer moved into a window of its own, so this is now a question
+    /// about *which* window: `c` typed into a composer must be a `c`, and the
+    /// same `c` typed into a detached message must still open a composer.
     fn typing(&self) -> bool {
+        if self.composer().is_some() {
+            return true;
+        }
+        // A detached message is a reader. It has no text fields, so the
+        // single-letter shortcuts work there exactly as they do in the list —
+        // and the main window's own state is not its business.
+        if self.detached_read().is_some() {
+            return false;
+        }
         self.search_focused
             || self.palette.is_some()
-            || self.composer.is_some()
             || self.folder_dialog.is_some()
             || self.core.window.show_context
     }
@@ -3607,13 +4344,19 @@ impl AppModel {
     /// The single place an action becomes behaviour, so a keystroke, a menu
     /// entry, and a button cannot drift apart about what it does.
     fn act(&mut self, action: Action) -> Task<Message> {
+        // A window of one's own only does what that window is for. Without
+        // this, `e` typed into a message opened an hour ago would archive
+        // whatever the list happens to have selected now.
+        if !action.allowed_in(self.surface()) {
+            return Task::none();
+        }
         match action {
             Action::Compose => self.update(Message::Compose),
             Action::Reply => self.update(Message::Reply { all: false }),
             Action::ReplyAll => self.update(Message::Reply { all: true }),
             Action::Forward => self.update(Message::Forward),
             Action::Send => {
-                if self.composer.is_some() {
+                if self.composer().is_some() {
                     self.update(Message::ComposeSend)
                 } else {
                     Task::none()
@@ -3626,9 +4369,26 @@ impl AppModel {
             Action::Delete => self.update(Message::Delete),
             Action::ToggleRead => self.update(Message::ToggleRead),
             Action::ToggleFlagged => self.update(Message::ToggleFlagged),
+            Action::Detach => self.update(Message::Detach),
 
             Action::ImportMbox => self.update(Message::ImportMbox),
-            Action::Undo => self.undo(),
+            // Ctrl+Z means "take back what I just did", and inside the
+            // composer what the user just did was type. Before this it reached
+            // past the composer and un-archived a conversation they had
+            // finished with — the same keystroke, two windows away from what
+            // they were looking at.
+            Action::Undo => {
+                if self.composer_mut().is_some_and(Composer::undo) {
+                    return Task::none();
+                }
+                self.undo()
+            }
+            Action::Redo => {
+                if let Some(composer) = self.composer_mut() {
+                    composer.redo();
+                }
+                Task::none()
+            }
             Action::Search => {
                 // Focus rather than a mode: the box is always there, and this
                 // is the keystroke that puts the cursor in it.
@@ -3815,8 +4575,13 @@ impl AppModel {
             self.palette_rows.clear();
             return Task::none();
         }
-        if self.composer.is_some() {
-            return self.update(Message::ComposeCancel);
+        // Escape in a window of its own closes that window — the composer
+        // keeping what was typed, a detached message simply going away.
+        // `on_escape` arrives without a window, so the focused one is the one
+        // it was aimed at. Escape in the main window keeps working down the
+        // list below.
+        if let Some(id) = self.routed.or_else(|| self.focused_detached()) {
+            return self.close_window(id);
         }
         if self.core.window.show_context {
             self.core.window.show_context = false;
@@ -3994,18 +4759,18 @@ impl AppModel {
         })
     }
 
-    /// Reopens a saved draft in the composer.
+    /// Reopens a saved draft, in a window of its own.
     fn open_draft(&mut self, id: &str) -> Task<Message> {
-        let Some(connection) = self.connection.as_ref() else {
+        let Some(connection) = self.connection.clone() else {
             return Task::none();
         };
-        match mail::load_draft(connection, id) {
+        match mail::load_draft(&connection, id) {
             Ok(Some(draft)) => {
                 let mut composer = Composer::new(draft, None);
                 // Carried, so re-saving replaces this draft rather than
                 // leaving the old one beside a new one.
                 composer.draft_id = Some(id.to_owned());
-                self.composer = Some(composer);
+                return self.open_composer(composer);
             }
             Ok(None) => self.say(fl!("draft-gone")),
             Err(why) => self.say(why),
@@ -4014,7 +4779,7 @@ impl AppModel {
     }
 
     fn with_composer(&mut self, edit: impl FnOnce(&mut Composer)) -> Task<Message> {
-        if let Some(composer) = self.composer.as_mut() {
+        if let Some(composer) = self.composer_mut() {
             edit(composer);
             composer.error = None;
         }
@@ -4022,32 +4787,37 @@ impl AppModel {
     }
 
     fn send_draft(&mut self) -> Task<Message> {
-        let (Some(composer), Some(connection)) = (self.composer.as_mut(), self.connection.clone())
-        else {
+        // Everything the model owns is read before the composer is borrowed:
+        // the composer lives in a window now, so holding it means holding the
+        // window map, which means holding the model.
+        let Some(connection) = self.connection.clone() else {
+            return Task::none();
+        };
+        let grace = self.config.send_delay();
+        let folders = self.folders.clone();
+
+        let Some(composer) = self.composer_mut() else {
             return Task::none();
         };
         if composer.sending {
             return Task::none();
         }
-        let draft = composer.resolved();
+        let draft = composer.outgoing();
         if let Some(problem) = draft.problem() {
             composer.error = Some(problem.to_owned());
             return Task::none();
         }
         composer.sending = true;
         composer.error = None;
+        let answering = composer.answering.clone();
+        let draft_id = composer.draft_id.clone();
 
         // With a grace configured, sending is scheduling: the message waits
         // out the delay in the outbox, where undo can still reach it.
-        let grace = self.config.send_delay();
         if grace > 0 {
             let not_before = chrono::Utc::now().timestamp_millis() + i64::from(grace) * 1_000;
             return self.schedule_send_at(not_before, true);
         }
-
-        let folders = self.folders.clone();
-        let answering = composer.answering.clone();
-        let draft_id = composer.draft_id.clone();
 
         cosmic::task::future(async move {
             let sent = tokio::task::spawn_blocking(move || {
@@ -4067,11 +4837,11 @@ impl AppModel {
 
     /// Queues the composer's message to go at `not_before_ms`.
     fn schedule_send_at(&mut self, not_before_ms: i64, grace: bool) -> Task<Message> {
-        let (Some(composer), Some(connection)) = (self.composer.as_mut(), self.connection.clone())
-        else {
+        let connection = self.connection.clone();
+        let (Some(composer), Some(connection)) = (self.composer_mut(), connection) else {
             return Task::none();
         };
-        let draft = composer.resolved();
+        let draft = composer.outgoing();
         if let Some(problem) = draft.problem() {
             composer.error = Some(problem.to_owned());
             composer.sending = false;
@@ -4093,30 +4863,32 @@ impl AppModel {
     }
 
     fn composer_finished(&mut self, sent: mail::Sent) -> Task<Message> {
-        let Some(composer) = self.composer.as_mut() else {
+        let Some(composer) = self.composer_mut() else {
             return Task::none();
         };
         composer.sending = false;
         match sent {
             mail::Sent::Ok { filed } => {
-                // Closed only on success. A failed send that discarded what the
-                // user wrote would be unforgivable, and is the whole reason the
-                // composer stays open below.
-                self.composer = None;
+                // The window goes only on success. A failed send that took the
+                // window and what the user wrote with it would be
+                // unforgivable, and is the whole reason the composer stays
+                // open below.
+                let closed = self.discard_composer();
                 self.say(if filed {
                     fl!("sent")
                 } else {
                     fl!("sent-not-filed")
                 });
                 // The sweep retires the sent draft's server mirror.
-                return Task::batch([self.reload_drafts(), self.sweep_drafts_now()]);
+                return Task::batch([closed, self.reload_drafts(), self.sweep_drafts_now()]);
             }
             mail::Sent::Queued => {
-                // Closed, because the message is no longer the user's problem:
-                // it is queued, durable, and will go out on the next check.
-                self.composer = None;
+                // Gone from the screen, because the message is no longer the
+                // user's problem: it is queued, durable, and will go out on
+                // the next check.
+                let closed = self.discard_composer();
                 self.say(fl!("send-queued"));
-                return self.reload_outbox();
+                return Task::batch([closed, self.reload_outbox()]);
             }
             mail::Sent::Failed(why) => {
                 composer.error = Some(fl!("send-failed", reason = why));
@@ -4600,6 +5372,52 @@ mod tests {
     }
 
     #[test]
+    fn a_keystroke_cannot_act_on_a_window_it_was_not_typed_in() {
+        use crate::actions::Surface;
+
+        // The whole reason a composer has a window of its own: `e` typed into
+        // one is a letter, and must not archive whatever the list has
+        // selected two windows away.
+        assert!(!Action::Archive.allowed_in(Surface::Writing));
+        assert!(!Action::Delete.allowed_in(Surface::Writing));
+        assert!(!Action::Next.allowed_in(Surface::Writing));
+        assert!(!Action::Search.allowed_in(Surface::Writing));
+        // What a composer is for still works there.
+        assert!(Action::Send.allowed_in(Surface::Writing));
+        assert!(Action::Undo.allowed_in(Surface::Writing));
+        assert!(Action::Escape.allowed_in(Surface::Writing));
+
+        // A detached message can be filed from where it is being read.
+        assert!(Action::Archive.allowed_in(Surface::Reading));
+        assert!(Action::Reply.allowed_in(Surface::Reading));
+        assert!(Action::ToggleFlagged.allowed_in(Surface::Reading));
+        // But it has no list, so nothing that walks one belongs to it.
+        assert!(!Action::Next.allowed_in(Surface::Reading));
+        assert!(!Action::Previous.allowed_in(Surface::Reading));
+        assert!(!Action::GoInbox.allowed_in(Surface::Reading));
+
+        // The main window is still the whole application.
+        for binding in crate::actions::bindings() {
+            assert!(
+                binding.action.allowed_in(Surface::Main),
+                "{:?} became unreachable from the main window",
+                binding.action
+            );
+        }
+    }
+
+    #[test]
+    fn a_window_is_named_after_what_it_holds() {
+        assert_eq!(compose_title("  Plan  "), "Plan");
+        assert_eq!(read_title("Re: Plan"), "Re: Plan");
+        // Two different absences: nothing written yet, and a message that
+        // arrived without one.
+        assert_ne!(compose_title(""), read_title(""));
+        assert!(!compose_title("   ").is_empty());
+        assert!(!read_title("").is_empty());
+    }
+
+    #[test]
     fn a_composer_reports_the_same_problem_the_send_would_fail_with() {
         let me = cosmic_pim_mail::Mailbox {
             name: Some("Me".into()),
@@ -4635,6 +5453,122 @@ mod tests {
         assert_eq!(composer.draft.subject, "Re: Plan");
         // The field text is what gets sent, not the draft's original list.
         assert_eq!(composer.resolved().to[0].address, "ada@example.com");
+    }
+
+    /// A composer with `body` already typed into it.
+    fn composing(body: &str) -> Composer {
+        let me = cosmic_pim_mail::Mailbox {
+            name: Some("Me".into()),
+            address: "me@example.com".into(),
+        };
+        let mut draft = cosmic_pim_mail::Draft::new(me);
+        draft.body = body.to_owned();
+        draft.to = parse_addresses("ada@example.com");
+        let mut composer = Composer::new(draft, None);
+        composer.to = "ada@example.com".into();
+        composer
+    }
+
+    /// Types `text` a character at a time, the way the editor delivers it.
+    fn type_into(composer: &mut Composer, text: &str) {
+        for character in text.chars() {
+            composer.edit(widget::text_editor::Action::Edit(
+                widget::text_editor::Edit::Insert(character),
+            ));
+        }
+    }
+
+    fn press_enter(composer: &mut Composer) {
+        composer.edit(widget::text_editor::Action::Edit(
+            widget::text_editor::Edit::Enter,
+        ));
+    }
+
+    #[test]
+    fn enter_inside_a_quote_keeps_the_reply_quoted() {
+        // The failure this guards against is silent and expensive: the rest of
+        // the paragraph stops being marked as quoted, so the recipient reads
+        // the sender's words as the words of whoever was being quoted.
+        let mut composer = composing("> what do you think?");
+        composer.edit(widget::text_editor::Action::Move(
+            widget::text_editor::Motion::DocumentEnd,
+        ));
+        press_enter(&mut composer);
+        type_into(&mut composer, "agreed");
+
+        assert_eq!(composer.body.text(), "> what do you think?\n> agreed");
+    }
+
+    #[test]
+    fn enter_twice_leaves_the_quote() {
+        // The second Enter clears the empty `> ` and leaves the cursor on that
+        // line rather than opening another one — the convention every editor
+        // with list continuation uses for leaving a list, and the one people
+        // already have in their fingers.
+        let mut composer = composing("> what do you think?");
+        composer.edit(widget::text_editor::Action::Move(
+            widget::text_editor::Motion::DocumentEnd,
+        ));
+        press_enter(&mut composer);
+        press_enter(&mut composer);
+        type_into(&mut composer, "mine now");
+
+        assert_eq!(composer.body.text(), "> what do you think?\nmine now");
+    }
+
+    #[test]
+    fn undo_walks_back_by_word_and_stops_at_the_quoted_reply() {
+        // The floor matters as much as the steps: undoing past the body the
+        // composer opened with would throw away the quoted message the user
+        // never typed and cannot get back.
+        let opened = "> original\n\n";
+        let mut composer = composing(opened);
+        composer.edit(widget::text_editor::Action::Move(
+            widget::text_editor::Motion::DocumentEnd,
+        ));
+        type_into(&mut composer, "hello there");
+        assert_eq!(composer.body.text(), format!("{opened}hello there"));
+
+        assert!(composer.undo(), "the last word should come back off");
+        assert_eq!(composer.body.text(), format!("{opened}hello "));
+
+        while composer.undo() {}
+        assert_eq!(composer.body.text(), opened);
+        assert!(!composer.undo(), "undo went past the body it opened with");
+    }
+
+    #[test]
+    fn redo_puts_back_what_undo_took() {
+        let mut composer = composing("");
+        type_into(&mut composer, "hello");
+        assert!(composer.undo());
+        assert_eq!(composer.body.text(), "");
+        assert!(composer.redo());
+        assert_eq!(composer.body.text(), "hello");
+        assert!(!composer.redo());
+    }
+
+    #[test]
+    fn a_sent_body_is_wrapped_but_the_draft_kept_is_not() {
+        let long = "word ".repeat(40);
+        let composer = composing(long.trim_end());
+
+        let saved = composer.resolved().body;
+        assert_eq!(saved, long.trim_end(), "a saved draft was reformatted");
+
+        let sent = composer.outgoing().body;
+        assert!(sent.lines().count() > 1, "the body went out unwrapped");
+        for line in sent.lines() {
+            assert!(
+                line.chars().count() <= crate::text::WRAP_COLUMNS,
+                "too long for text/plain: {line:?}"
+            );
+        }
+        assert_eq!(
+            sent.replace('\n', " "),
+            long.trim_end(),
+            "wrapping changed the words"
+        );
     }
 
     #[test]

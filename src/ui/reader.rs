@@ -17,6 +17,16 @@
 //! What the reader does instead is *tell the user what the message tried*: that
 //! it wanted to load remote content, that it hid text from them, and whether it
 //! was sent by the domain it claims.
+//!
+//! # What it does do with the text
+//!
+//! Show its structure. A plain-text body is not a paragraph, it is what was
+//! written now on top of what was written before, and [`crate::text::blocks`]
+//! is what separates the two. Quoted history arrives folded, because on the
+//! fifth reply of a thread the two lines that are new are the message and the
+//! forty below them are furniture. A Markdown renderer gets this for free
+//! from the syntax; a plain-text reader has to find it for itself, because a
+//! blockquote is a structure rather than indented prose.
 
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget;
@@ -33,6 +43,12 @@ pub struct Reader<'a> {
     /// greyed rather than hidden: a missing button reads as a missing feature,
     /// and the fix is one page away.
     pub can_send: bool,
+    /// Which quoted runs the user has asked to see, by their index among the
+    /// message's blocks. Empty is the state every message opens in.
+    pub expanded_quotes: &'a std::collections::HashSet<usize>,
+    /// Whether to offer the message a window of its own. False when this
+    /// *is* that window.
+    pub detachable: bool,
 }
 
 impl<'a> Reader<'a> {
@@ -102,29 +118,100 @@ impl<'a> Reader<'a> {
             column = column.push(self.attachments(opened));
         }
 
-        // Selectable, so the text of a message can be copied out of it.
-        //
-        // The metrics restate `widget::text::body`'s preset by hand because
-        // `selectable_text` carries no typography presets — not in the pinned
-        // revision, and not in any revision: `body` exists only on the
-        // non-selectable builder in `widget/text.rs`. So this is not waiting
-        // on a pin move and will not collapse on its own. It has to be kept
-        // in step with `text::body` by hand; if that preset's size or line
-        // height changes, this is the other half that must change with it.
-        column = column.push(widget::divider::horizontal::default()).push(
-            widget::selectable_text(message.body.text.clone())
-                .size(14.0)
-                .line_height(cosmic::iced::widget::text::LineHeight::Absolute(
-                    21.0.into(),
-                ))
-                .font(cosmic::font::default())
-                .wrapping(cosmic::iced::core::text::Wrapping::Word),
-        );
+        column = column
+            .push(widget::divider::horizontal::default())
+            .push(self.body(&message.body.text));
 
         widget::scrollable(column)
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
+    }
+
+    /// The message text, as the structure it actually has.
+    fn body(&self, text: &str) -> Element<'a, Message> {
+        use crate::text::Block;
+
+        let spacing = cosmic::theme::spacing();
+        let blocks = crate::text::blocks(text);
+
+        // A body that is only quoting, or only a signature, still has to
+        // appear — but a genuinely empty one gets nothing rather than an
+        // empty box.
+        if blocks.is_empty() {
+            return widget::Space::new().into();
+        }
+
+        let mut column = widget::column::with_capacity(blocks.len()).spacing(spacing.space_s);
+        for (index, block) in blocks.into_iter().enumerate() {
+            column = column.push(match block {
+                Block::Prose(text) => prose(text),
+                Block::Signature(text) => signature(text),
+                Block::Quoted { depth, text } => self.quoted(index, depth, text),
+            });
+        }
+        column.into()
+    }
+
+    /// One run of quoted history: a control that says how much there is, and
+    /// the text itself once it has been asked for.
+    ///
+    /// Folded by default. The alternative — showing it and letting the user
+    /// scroll — is what makes a long thread unreadable, and the count is on
+    /// the control precisely so that folding never hides *how much* was
+    /// folded.
+    fn quoted(&self, index: usize, depth: usize, text: String) -> Element<'a, Message> {
+        let spacing = cosmic::theme::spacing();
+        let expanded = self.expanded_quotes.contains(&index);
+        let lines = text.lines().count();
+
+        let toggle = widget::button::text(if expanded {
+            fl!("hide-quoted")
+        } else {
+            fl!("show-quoted", lines = lines)
+        })
+        .on_press(Message::ToggleQuote(index));
+
+        let mut column = widget::column::with_capacity(2)
+            .spacing(spacing.space_xxs)
+            .push(
+                widget::row::with_capacity(2)
+                    .align_y(Alignment::Center)
+                    .spacing(spacing.space_xxs)
+                    .push(toggle)
+                    // Only worth saying when it is more than one deep: "quoted
+                    // text" already implies one level, and a caption on every
+                    // reply is a caption nobody reads.
+                    .push_maybe(
+                        (depth > 1)
+                            .then(|| widget::text::caption(fl!("quote-depth", depth = depth))),
+                    ),
+            );
+
+        if expanded {
+            column = column.push(
+                widget::container(quoted_text(text))
+                    .padding([spacing.space_xxs, spacing.space_s])
+                    .class(cosmic::theme::Container::custom(|theme| {
+                        let cosmic = theme.cosmic();
+                        // The same soft-accent ground the label chips use, so
+                        // "not written by this sender" reads the same way
+                        // everywhere in the window.
+                        let mut accent = cosmic.accent_color();
+                        accent.alpha = 0.08;
+                        widget::container::Style {
+                            background: Some(cosmic::iced::Background::Color(accent.into())),
+                            border: cosmic::iced::Border {
+                                radius: cosmic.corner_radii.radius_s.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }
+                    })),
+            );
+        }
+
+        column.into()
     }
 
     fn header(&self, opened: &'a Opened) -> Element<'a, Message> {
@@ -190,7 +277,7 @@ impl<'a> Reader<'a> {
             .push(reply(fl!("reply-all"), Message::Reply { all: true }))
             .push(reply(fl!("forward"), Message::Forward));
 
-        let mut filing = widget::row::with_capacity(6)
+        let mut filing = widget::row::with_capacity(7)
             .spacing(spacing.space_xxs)
             .push(
                 widget::button::text(if opened.flags.seen {
@@ -215,6 +302,12 @@ impl<'a> Reader<'a> {
                     .on_press(Message::Delete),
             )
             .push(widget::button::text(fl!("save-as-file")).on_press(Message::ExportMessage));
+
+        // A window of its own, so the list can move on without losing the
+        // message. Not offered in a window that already is one.
+        if self.detachable {
+            filing = filing.push(widget::button::text(fl!("detach")).on_press(Message::Detach));
+        }
 
         // Only for mail that is a mailing, which is exactly what the header's
         // presence says. Everything else showing an Unsubscribe button would
@@ -355,4 +448,73 @@ impl<'a> Reader<'a> {
         }
         column.into()
     }
+}
+
+/// The message's own words, selectable so they can be copied out.
+///
+/// The metrics restate `widget::text::body`'s preset by hand because
+/// `selectable_text` carries no typography presets — not in the pinned
+/// revision, and not in any revision: `body` exists only on the
+/// non-selectable builder in `widget/text.rs`. So this is not waiting on a pin
+/// move and will not collapse on its own. It has to be kept in step with
+/// `text::body` by hand; if that preset's size or line height changes, this is
+/// the other half that must change with it.
+fn prose<'a>(text: String) -> Element<'a, Message> {
+    widget::selectable_text(text)
+        .size(14.0)
+        .line_height(cosmic::iced::widget::text::LineHeight::Absolute(
+            21.0.into(),
+        ))
+        .font(cosmic::font::default())
+        .wrapping(cosmic::iced::core::text::Wrapping::Word)
+        .into()
+}
+
+/// Quoted history, dimmed. Still selectable — quoting back out of a quote is
+/// one of the things a reply is for.
+fn quoted_text<'a>(text: String) -> Element<'a, Message> {
+    dimmed(prose_builder(text)).into()
+}
+
+/// The sender's signature. Dimmed and set apart, because it is the same four
+/// lines under every message they have ever sent.
+fn signature<'a>(text: String) -> Element<'a, Message> {
+    let spacing = cosmic::theme::spacing();
+    widget::column::with_capacity(2)
+        .spacing(spacing.space_xxs)
+        .push(widget::divider::horizontal::light())
+        .push(dimmed(prose_builder(text).size(12.0).line_height(
+            cosmic::iced::widget::text::LineHeight::Absolute(18.0.into()),
+        )))
+        .into()
+}
+
+/// [`prose`] before it is turned into an `Element`, so the two dimmed variants
+/// can adjust it without restating the metrics a third time.
+fn prose_builder<'a>(text: String) -> widget::SelectableText<'a> {
+    widget::selectable_text(text)
+        .size(14.0)
+        .line_height(cosmic::iced::widget::text::LineHeight::Absolute(
+            21.0.into(),
+        ))
+        .font(cosmic::font::default())
+        .wrapping(cosmic::iced::core::text::Wrapping::Word)
+}
+
+/// Text at the theme's secondary emphasis — what "someone else wrote this"
+/// looks like without inventing a colour.
+///
+/// A `class` rather than a `style`: `theme::Text::Custom` holds a plain
+/// function pointer, so the closure cannot capture, and the alpha has to be a
+/// constant rather than a parameter. That is the toolkit's constraint, not a
+/// simplification — see the `TODO` on `Text::Custom` in libcosmic.
+fn dimmed(text: widget::SelectableText<'_>) -> widget::SelectableText<'_> {
+    text.class(cosmic::theme::Text::Custom(|theme| {
+        let mut color = theme.cosmic().on_bg_color();
+        color.alpha *= 0.7;
+        cosmic::iced::widget::text::Style {
+            color: Some(color.into()),
+            ..Default::default()
+        }
+    }))
 }

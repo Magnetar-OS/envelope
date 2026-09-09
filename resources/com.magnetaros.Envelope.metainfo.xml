@@ -40,7 +40,7 @@
   </description>
 
   <launchable type="desktop-id">com.magnetaros.Envelope.desktop</launchable>
-  <icon type="remote" width="64" height="64" scale="1">https://raw.githubusercontent.com/Magnetar-OS/envelope/main/resources/icons/hicolor/scalable/apps/icon.svg</icon>
+  <icon type="remote" width="64" height="64" scale="1">https://raw.githubusercontent.com/Magnetar-OS/envelope/main/resources/icons/hicolor/scalable/apps/com.magnetaros.Envelope.svg</icon>
 
   <!-- How the COSMIC App Library and store recognise a COSMIC application, and
        which binary and file types this component actually provides. -->
@@ -76,9 +76,10 @@
 
   <content_rating type="oars-1.1"/>
 
+  <!-- The green of the app icon; software centres tint the page header with it. -->
   <branding>
-    <color type="primary" scheme_preference="light">#94bfe7</color>
-    <color type="primary" scheme_preference="dark">#274768</color>
+    <color type="primary" scheme_preference="light">#59c77a</color>
+    <color type="primary" scheme_preference="dark">#1f8a4c</color>
   </branding>
 
   <releases>

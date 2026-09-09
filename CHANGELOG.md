@@ -32,11 +32,49 @@ All notable changes to this project are documented here. The format follows
 - The folder list scrolls. An account with more folders than fit the window
   had the rest simply unreachable.
 - Message text can be selected and copied.
+- `Ctrl+Z` in the composer undoes typing rather than the last mail
+  operation. It was reaching past the composer entirely and un-archiving a
+  conversation the user had finished with — two windows away from what they
+  were looking at.
+- Outgoing message bodies are wrapped at 72 columns. A paragraph typed into
+  the editor went out as one line however long it was, which renders badly
+  in clients that do not soft-wrap and worse once quoted into a reply. URLs
+  and the signature separator are left intact, and saved drafts keep what
+  was typed — the wrap happens on the way out, not on every save.
 - List rows keep a fixed height: a long subject or a crowd of recipients is
   clipped with an ellipsis instead of wrapping onto a second line and making
   the list jump as it scrolls.
 
 ### Added
+
+- Mail is written and read in windows of its own. Composing, replying and
+  forwarding open a window per message, the way every desktop mail client
+  does it, so a reply sits beside the thread it answers instead of
+  replacing it — and two replies can be open at once, which was not
+  expressible before. A message can be sent to its own window from the
+  reader ("Open in new window", `o`), which leaves the list free to move on
+  without taking the message with it. Each window carries the subject as
+  its title, files and flags the message it is actually showing, and keeps
+  what was typed when it is closed — by its own button, by the compositor,
+  or by the application quitting with it open.
+
+- Quoted history folds. A plain-text body is now read as the structure it
+  actually has — what this sender wrote, what they were quoting, and their
+  signature — with quoted runs collapsed behind a control that says how many
+  lines they hold, and shown dimmed when opened. On the fifth reply of a
+  thread the two lines that are new are no longer buried under forty that
+  are not.
+
+- The composer continues what a line was. Enter inside `> ` quoted text
+  keeps the reply quoted, which is what stops the rest of a paragraph being
+  attributed to whoever was being quoted; bullets and numbered items
+  continue and renumber the same way, and pressing Enter on an empty one
+  leaves the list.
+
+- Undo and redo in the composer, by word rather than by keystroke, with the
+  cursor returned to where the edit started. `Ctrl+Z` and `Ctrl+Shift+Z`;
+  undo stops at the body the composer opened with, so a reply's quoted text
+  cannot be undone away.
 
 - The sidebar can be hidden: the header's toggle, `F9`, the menu, and the
   palette all flip it, over the desktop's own show/hide state — so in a

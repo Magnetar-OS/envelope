@@ -46,8 +46,13 @@ pub enum Action {
     Snooze,
     /// Apply or clear labels on the conversation.
     Label,
+    /// Put the open message in a window of its own.
+    Detach,
 
     Undo,
+    /// Put back what [`Action::Undo`] took away. Only the composer has
+    /// anything to redo — a mail operation that has been undone is undone.
+    Redo,
     Search,
     Sync,
     /// Show or hide the folder sidebar.
@@ -95,7 +100,9 @@ impl Action {
             Self::ToggleFlagged => fl!("toggle-starred"),
             Self::Snooze => fl!("snooze"),
             Self::Label => fl!("label"),
+            Self::Detach => fl!("detach"),
             Self::Undo => fl!("undo"),
+            Self::Redo => fl!("redo"),
             Self::Search => fl!("search"),
             Self::Sync => fl!("sync-now"),
             Self::ToggleSidebar => fl!("toggle-sidebar"),
@@ -134,8 +141,10 @@ impl Action {
             | Self::ToggleFlagged
             | Self::Snooze
             | Self::Label
+            | Self::Detach
             | Self::MoveToFolder
-            | Self::Undo => Group::Reading,
+            | Self::Undo
+            | Self::Redo => Group::Reading,
             Self::GoInbox | Self::GoDrafts | Self::GoOutbox | Self::GoSent | Self::GoArchive => {
                 Group::Going
             }
@@ -172,9 +181,58 @@ impl Action {
                 | Self::ToggleFlagged
                 | Self::Snooze
                 | Self::Label
+                | Self::Detach
                 | Self::MoveToFolder
         )
     }
+
+    /// Does this still mean anything in the window it was invoked from?
+    ///
+    /// A keystroke belongs to the window it was typed in. Archive typed into a
+    /// composer must not file whatever the *list* has selected, and `j` typed
+    /// into a message opened an hour ago must not walk a list that window
+    /// cannot see — that is a keystroke acting two windows away from what the
+    /// user is looking at, which is the thing a window of one's own is
+    /// supposed to prevent.
+    #[must_use]
+    pub fn allowed_in(self, surface: Surface) -> bool {
+        match surface {
+            // The main window is the whole application.
+            Surface::Main => true,
+            // A composer: what it is for, plus a way out.
+            Surface::Writing => matches!(
+                self,
+                Self::Compose | Self::Send | Self::Undo | Self::Redo | Self::Escape
+            ),
+            // A detached message: what can be done to that message, plus a way
+            // out. Not `Undo` — by the time a message window would offer it,
+            // the operation it would take back has already closed the window.
+            Surface::Reading => matches!(
+                self,
+                Self::Compose
+                    | Self::Reply
+                    | Self::ReplyAll
+                    | Self::Forward
+                    | Self::Archive
+                    | Self::Delete
+                    | Self::ToggleRead
+                    | Self::ToggleFlagged
+                    | Self::Detach
+                    | Self::Escape
+            ),
+        }
+    }
+}
+
+/// Which window an action was invoked from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Surface {
+    /// The list, the reading pane, and everything the menu reaches.
+    Main,
+    /// A message being written, in a window of its own.
+    Writing,
+    /// A message being read, in a window of its own.
+    Reading,
 }
 
 /// How the cheat sheet is divided.
@@ -379,9 +437,25 @@ pub fn bindings() -> Vec<Binding> {
             handled_by_framework: false,
         },
         Binding {
+            // Gmail's key for opening the conversation, which here means
+            // opening it where the list cannot take it away again.
+            action: Action::Detach,
+            bare: Some(Bare::Key('o')),
+            combination: None,
+            handled_by_framework: false,
+        },
+        Binding {
             action: Action::Undo,
             bare: Some(Bare::Key('z')),
             combination: Some(ctrl("z")),
+            handled_by_framework: false,
+        },
+        Binding {
+            // No bare key: outside the composer there is nothing to redo, and
+            // a lone `y` that usually does nothing is worse than no binding.
+            action: Action::Redo,
+            bare: None,
+            combination: Some(ctrl_shift("z")),
             handled_by_framework: false,
         },
         // Writing
