@@ -114,6 +114,13 @@ pub struct AppModel {
     /// The folders the move picker is showing, as indices into `folders`.
     /// Held in the model because `dialog()` hands out borrows.
     move_rows: Vec<usize>,
+    /// The column edge being dragged, if one is.
+    dragging: Option<Drag>,
+    /// Live column widths. Seeded from the configuration and written back to
+    /// it when a drag ends, so the file is touched once per adjustment rather
+    /// than once per frame of one.
+    sidebar_width: f32,
+    list_width: f32,
     /// Each conversation's label chips, parallel to `conversations`.
     conversation_labels: Vec<Vec<String>>,
     /// Every label the open folder knows, for the picker.
@@ -770,6 +777,28 @@ impl SnoozePreset {
     }
 }
 
+/// Which column edge is being dragged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Split {
+    /// Between the folder sidebar and the message list.
+    Sidebar,
+    /// Between the message list and the message.
+    List,
+}
+
+/// A column drag in progress.
+///
+/// The origin width and the cursor's first position are both recorded so the
+/// column tracks the pointer exactly, however much padding the shell puts
+/// around the panes. Deriving the width from the raw cursor position instead
+/// would make the edge jump to the pointer on the first pixel of movement.
+#[derive(Clone, Copy, Debug)]
+pub struct Drag {
+    pub split: Split,
+    origin: f32,
+    from_x: Option<f32>,
+}
+
 #[derive(Clone, Debug)]
 pub enum Message {
     LaunchUrl(String),
@@ -870,6 +899,12 @@ pub enum Message {
     Act(Action),
     /// A toast expired or was dismissed.
     ToastClosed(widget::ToastId),
+    /// A column edge was grabbed.
+    SplitPressed(Split),
+    /// The pointer moved while a column edge is held, in window coordinates.
+    SplitMoved(f32),
+    /// The column edge was let go; the width becomes the remembered one.
+    SplitReleased,
     KeyPressed(
         cosmic::iced::keyboard::Modifiers,
         cosmic::iced::keyboard::Key,
@@ -1112,6 +1147,9 @@ impl cosmic::Application for AppModel {
             palette: None,
             folder_dialog: None,
             move_rows: Vec::new(),
+            dragging: None,
+            sidebar_width: crate::config::DEFAULT_SIDEBAR_WIDTH as f32,
+            list_width: crate::config::DEFAULT_LIST_WIDTH as f32,
             conversation_labels: Vec::new(),
             known_labels: Vec::new(),
             label_rows: Vec::new(),
@@ -1160,6 +1198,8 @@ impl cosmic::Application for AppModel {
         if let Some(text) = model.status.clone() {
             model.pending_toasts.push(text);
         }
+        model.sidebar_width = model.config.sidebar_width();
+        model.list_width = model.config.list_width();
         // The settings fields show the loaded values from the first frame,
         // not from the first config-change event.
         model.poll_seconds = model.config.poll_seconds.to_string();
@@ -1275,7 +1315,22 @@ impl cosmic::Application for AppModel {
             showing_unified: self.showing_unified,
         }
         .view();
-        Some(sidebar.map(cosmic::Action::App))
+        // The shell puts the nav slot in a row with no width of its own, so
+        // the sidebar states its own — and carries the edge that adjusts it,
+        // which has to live on this side of the slot boundary.
+        Some(
+            widget::row::with_capacity(2)
+                .push(
+                    widget::container(sidebar)
+                        .width(Length::Fixed(self.sidebar_width))
+                        .height(Length::Fill),
+                )
+                .push(crate::ui::column_handle(Message::SplitPressed(
+                    Split::Sidebar,
+                )))
+                .apply(Element::from)
+                .map(cosmic::Action::App),
+        )
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
@@ -1317,6 +1372,27 @@ impl cosmic::Application for AppModel {
             // The window frame this application draws itself needs the state
             // libcosmic keeps for the main window only: whether each window is
             // maximized, and when one has gone.
+            // Only while a column edge is held. `mouse_area` reports movement
+            // solely while the pointer is over it, and a fast gesture leaves a
+            // seven-pixel strip immediately — so the drag is followed at the
+            // window level instead, by a subscription that exists for exactly
+            // as long as the drag does.
+            if self.dragging.is_some() {
+                cosmic::iced::event::listen_with(|event, _, _| {
+                    use cosmic::iced::mouse::{Button, Event};
+                    match event {
+                        cosmic::iced::Event::Mouse(Event::CursorMoved { position }) => {
+                            Some(Message::SplitMoved(position.x))
+                        }
+                        cosmic::iced::Event::Mouse(Event::ButtonReleased(Button::Left)) => {
+                            Some(Message::SplitReleased)
+                        }
+                        _ => None,
+                    }
+                })
+            } else {
+                Subscription::none()
+            },
             cosmic::iced::event::listen_with(|event, _, id| match event {
                 cosmic::iced::Event::Window(window::Event::Resized(_)) => {
                     Some(Message::WindowResized(id))
@@ -1583,14 +1659,16 @@ impl cosmic::Application for AppModel {
         let content = widget::row::with_capacity(3)
             .push(
                 widget::container(list)
-                    // A fixed list column rather than a proportion: a message
-                    // list is read down its left edge, and a column that grows
-                    // with the window puts the sender and the date at opposite
-                    // ends of a wide screen.
-                    .width(Length::Fixed(380.0))
+                    // A set width rather than a proportion: a message list is
+                    // read down its left edge, and a column that grows with
+                    // the window puts the sender and the date at opposite ends
+                    // of a wide screen. Which width is the user's to decide —
+                    // their folder names and their screen — so the edge is
+                    // draggable and the answer is remembered.
+                    .width(Length::Fixed(self.list_width))
                     .height(Length::Fill),
             )
-            .push(widget::divider::vertical::default())
+            .push(crate::ui::column_handle(Message::SplitPressed(Split::List)))
             .push(
                 widget::container(right)
                     .width(Length::Fill)
@@ -2353,6 +2431,12 @@ impl AppModel {
                 outcome,
             } => self.watch_ended(generation, outcome),
             Message::ConfigChanged(config) => {
+                // Not while a drag is in flight: the write this app is about
+                // to make would arrive back as a change and fight the pointer.
+                if self.dragging.is_none() {
+                    self.sidebar_width = config.sidebar_width();
+                    self.list_width = config.list_width();
+                }
                 self.poll_seconds = config.poll_seconds.to_string();
                 self.send_delay = config.send_delay_seconds.to_string();
                 self.config = config;
@@ -2390,6 +2474,56 @@ impl AppModel {
                 self.key_pressed(&modifiers, &key, physical.as_ref())
             }
             Message::Act(action) => self.act(action),
+            Message::SplitPressed(split) => {
+                self.dragging = Some(Drag {
+                    split,
+                    origin: match split {
+                        Split::Sidebar => self.sidebar_width,
+                        Split::List => self.list_width,
+                    },
+                    from_x: None,
+                });
+                Task::none()
+            }
+            Message::SplitMoved(x) => {
+                if let Some(drag) = self.dragging.as_mut() {
+                    // The first move fixes the reference point, so the edge
+                    // stays under the pointer rather than jumping to it.
+                    let from = *drag.from_x.get_or_insert(x);
+                    let wanted = drag.origin + (x - from);
+                    let (range, target) = match drag.split {
+                        Split::Sidebar => (crate::config::SIDEBAR_WIDTH, &mut self.sidebar_width),
+                        Split::List => (crate::config::LIST_WIDTH, &mut self.list_width),
+                    };
+                    #[allow(clippy::cast_precision_loss, reason = "a width in pixels")]
+                    let clamped = wanted.clamp(*range.start() as f32, *range.end() as f32);
+                    *target = clamped;
+                }
+                Task::none()
+            }
+            Message::SplitReleased => {
+                // Written once, at the end. A config write per frame of a drag
+                // would be a file rewrite per pointer event, and every other
+                // process watching the key would hear all of them.
+                if let Some(drag) = self.dragging.take() {
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "a width in pixels, already clamped to a small positive range"
+                    )]
+                    match drag.split {
+                        Split::Sidebar => {
+                            let width = self.sidebar_width as u32;
+                            self.remember(|config| config.sidebar_width = width);
+                        }
+                        Split::List => {
+                            let width = self.list_width as u32;
+                            self.remember(|config| config.list_width = width);
+                        }
+                    }
+                }
+                Task::none()
+            }
             Message::ToastClosed(id) => {
                 self.toasts.remove(id);
                 Task::none()

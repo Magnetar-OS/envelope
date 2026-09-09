@@ -51,7 +51,29 @@ pub struct Config {
     /// Seconds a send waits in the outbox before going, so it can be taken
     /// back. Zero sends immediately. See [`Config::send_delay`].
     pub send_delay_seconds: u32,
+    /// How wide the folder sidebar is, in pixels.
+    ///
+    /// Remembered because a column width is a judgement about the user's own
+    /// folder names and their own screen, and re-making it at every launch is
+    /// the kind of small daily friction that makes an application feel
+    /// borrowed rather than theirs. Clamped on read — see
+    /// [`Config::sidebar_width`].
+    pub sidebar_width: u32,
+    /// How wide the message list is, in pixels. See
+    /// [`Config::list_width`].
+    pub list_width: u32,
 }
+
+/// What a column may be dragged to.
+///
+/// Floors rather than preferences: a sidebar under ~180px cannot show a
+/// folder name, and a list under ~280px cannot show a sender and a date on
+/// one line. The ceilings stop a drag from leaving no room for the message
+/// itself, which is the thing the window is for.
+pub const SIDEBAR_WIDTH: std::ops::RangeInclusive<u32> = 180..=460;
+pub const LIST_WIDTH: std::ops::RangeInclusive<u32> = 280..=700;
+pub const DEFAULT_SIDEBAR_WIDTH: u32 = 240;
+pub const DEFAULT_LIST_WIDTH: u32 = 380;
 
 impl Default for Config {
     fn default() -> Self {
@@ -61,6 +83,8 @@ impl Default for Config {
             poll_seconds: DEFAULT_POLL_SECONDS,
             mark_read_on_open: true,
             send_delay_seconds: DEFAULT_SEND_DELAY_SECONDS,
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            list_width: DEFAULT_LIST_WIDTH,
         }
     }
 }
@@ -83,6 +107,20 @@ impl Config {
     #[must_use]
     pub fn poll_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(u64::from(self.poll_seconds.max(MINIMUM_POLL_SECONDS)))
+    }
+
+    /// The sidebar's width, clamped — a hand-edited configuration file is a
+    /// supported thing to do, and it must not be able to produce a window
+    /// with no message list in it.
+    #[must_use]
+    pub fn sidebar_width(&self) -> f32 {
+        clamp(self.sidebar_width, SIDEBAR_WIDTH)
+    }
+
+    /// The message list's width, clamped for the same reason.
+    #[must_use]
+    pub fn list_width(&self) -> f32 {
+        clamp(self.list_width, LIST_WIDTH)
     }
 
     /// The undo-send grace, ceilinged for the same hand-edited-file reason
@@ -134,4 +172,9 @@ mod tests {
         };
         assert_eq!(config.poll_interval().as_secs(), 900);
     }
+}
+
+#[allow(clippy::cast_precision_loss, reason = "a column width in pixels")]
+fn clamp(value: u32, range: std::ops::RangeInclusive<u32>) -> f32 {
+    value.clamp(*range.start(), *range.end()) as f32
 }

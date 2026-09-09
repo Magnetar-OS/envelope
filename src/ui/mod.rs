@@ -58,6 +58,32 @@ pub fn relative_date(date: Option<DateTime<Utc>>) -> String {
 pub static PALETTE_ID: std::sync::LazyLock<cosmic::widget::Id> =
     std::sync::LazyLock::new(|| cosmic::widget::Id::new("palette"));
 
+/// How wide a column handle's grab zone is.
+///
+/// The line itself stays a hairline; this is the area the pointer actually
+/// has to hit. Seven pixels is about the smallest that does not turn grabbing
+/// a column edge into a test of aim — every desktop toolkit lands between six
+/// and eight, for that reason.
+const HANDLE_WIDTH: f32 = 7.0;
+
+/// A draggable column edge.
+///
+/// Drawn as the same hairline the fixed divider was, so making the window
+/// adjustable does not add furniture to it. The affordance is the pointer:
+/// over the grab zone it becomes a resize cursor, which is the whole
+/// discoverability story and costs no pixels.
+#[must_use]
+pub fn column_handle<'a>(press: crate::app::Message) -> cosmic::Element<'a, crate::app::Message> {
+    cosmic::widget::mouse_area(
+        cosmic::widget::container(cosmic::widget::divider::vertical::default())
+            .center_x(cosmic::iced::Length::Fixed(HANDLE_WIDTH))
+            .height(cosmic::iced::Length::Fill),
+    )
+    .interaction(cosmic::iced::mouse::Interaction::ResizingHorizontally)
+    .on_press(press)
+    .into()
+}
+
 /// One label, as a small chip.
 ///
 /// Hand-rolled: libcosmic has no chip widget (verified against the whole
