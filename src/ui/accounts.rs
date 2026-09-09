@@ -63,7 +63,7 @@ pub fn view<'a>(
             section = section.add(
                 widget::settings::item::builder(account.display_name.clone())
                     .description(description)
-                    .control(controls),
+                    .flex_control(controls),
             );
         }
         column = column.push(section);
@@ -128,14 +128,14 @@ fn add_form<'a>(add: &'a AddForm, sign_in: &SignIn<'a>) -> Element<'a, Message> 
     let mut section = widget::settings::section()
         .title(fl!("add-account-title"))
         .add(
-            widget::settings::item::builder(fl!("add-account-name")).control(
+            widget::settings::item::builder(fl!("add-account-name")).flex_control(
                 widget::text_input(String::new(), &add.name)
                     .on_input(Message::AddFormNameChanged)
                     .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
             ),
         )
         .add(
-            widget::settings::item::builder(fl!("add-account-address")).control(
+            widget::settings::item::builder(fl!("add-account-address")).flex_control(
                 widget::text_input("you@example.com", &add.email)
                     .on_input(Message::AddFormEmailChanged)
                     .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
@@ -171,7 +171,7 @@ fn add_form<'a>(add: &'a AddForm, sign_in: &SignIn<'a>) -> Element<'a, Message> 
         section = section.add(
             widget::settings::item::builder(fl!("password"))
                 .description(hint)
-                .control(
+                .flex_control(
                     widget::secure_input(fl!("password"), &add.password, None, true)
                         .on_input(Message::AddFormPasswordChanged)
                         .on_submit(|_| Message::AddFormConfirm)
@@ -188,7 +188,7 @@ fn add_form<'a>(add: &'a AddForm, sign_in: &SignIn<'a>) -> Element<'a, Message> 
             fl!("sign-in-with", provider = provider.name.clone())
         });
         section = section.add(
-            widget::settings::item::builder(provider.name.clone()).control(
+            widget::settings::item::builder(provider.name.clone()).flex_control(
                 button.on_press_maybe(
                     (!sign_in.in_flight && has_address)
                         .then(|| Message::SignInStarted(provider.id.clone())),
@@ -232,7 +232,7 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
         .add(
             widget::settings::item::builder(fl!("protocol"))
                 .description(fl!("protocol-hint"))
-                .control(
+                .flex_control(
                     widget::dropdown(PROTOCOL_LABELS, Some(form.protocol_index()), |index| {
                         Message::MailFormProtocolChanged(PROTOCOLS[index])
                     })
@@ -240,21 +240,21 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                 ),
         )
         .add(
-            widget::settings::item::builder(fl!("imap-host")).control(
+            widget::settings::item::builder(fl!("imap-host")).flex_control(
                 widget::text_input("imap.example.com", &form.host)
                     .on_input(Message::MailFormHostChanged)
                     .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
             ),
         )
         .add(
-            widget::settings::item::builder(fl!("port")).control(
+            widget::settings::item::builder(fl!("port")).flex_control(
                 widget::text_input("993", &form.port)
                     .on_input(Message::MailFormPortChanged)
                     .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
             ),
         )
         .add(
-            widget::settings::item::builder(fl!("encryption")).control(
+            widget::settings::item::builder(fl!("encryption")).flex_control(
                 widget::dropdown(TRANSPORT_LABELS, Some(form.transport_index()), |index| {
                     Message::MailFormTransportChanged(TRANSPORTS[index])
                 })
@@ -264,7 +264,7 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
         .add(
             widget::settings::item::builder(fl!("jmap-url"))
                 .description(fl!("jmap-url-hint"))
-                .control(
+                .flex_control(
                     widget::text_input("https://…/.well-known/jmap", &form.jmap_url)
                         .on_input(Message::MailFormJmapUrlChanged)
                         .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
@@ -273,7 +273,7 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
         .add(
             widget::settings::item::builder(fl!("username"))
                 .description(fl!("imap-username-hint"))
-                .control(
+                .flex_control(
                     widget::text_input(form.account_username.clone(), &form.username)
                         .on_input(Message::MailFormUsernameChanged)
                         .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
@@ -285,14 +285,14 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
         .add(
             widget::settings::item::builder(fl!("from-address"))
                 .description(fl!("from-address-hint"))
-                .control(
+                .flex_control(
                     widget::text_input("you@example.com", &form.from_address)
                         .on_input(Message::MailFormFromAddressChanged)
                         .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
                 ),
         )
         .add(
-            widget::settings::item::builder(fl!("from-name")).control(
+            widget::settings::item::builder(fl!("from-name")).flex_control(
                 widget::text_input(String::new(), &form.from_name)
                     .on_input(Message::MailFormFromNameChanged)
                     .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
@@ -302,21 +302,21 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
         .add(
             widget::settings::item::builder(fl!("smtp-host"))
                 .description(fl!("smtp-host-hint"))
-                .control(
+                .flex_control(
                     widget::text_input(form.host.clone(), &form.smtp_host)
                         .on_input(Message::MailFormSmtpHostChanged)
                         .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
                 ),
         )
         .add(
-            widget::settings::item::builder(fl!("smtp-port")).control(
+            widget::settings::item::builder(fl!("smtp-port")).flex_control(
                 widget::text_input("465", &form.smtp_port)
                     .on_input(Message::MailFormSmtpPortChanged)
                     .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
             ),
         )
         .add(
-            widget::settings::item::builder(fl!("smtp-encryption")).control(
+            widget::settings::item::builder(fl!("smtp-encryption")).flex_control(
                 widget::dropdown(
                     TRANSPORT_LABELS,
                     Some(form.smtp_transport_index()),
@@ -416,7 +416,7 @@ fn aliases(form: &MailForm) -> Element<'_, Message> {
     }
     widget::settings::item::builder(fl!("aliases"))
         .description(fl!("aliases-hint"))
-        .control(column)
+        .flex_control(column)
         .into()
 }
 

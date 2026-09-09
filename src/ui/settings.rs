@@ -21,7 +21,7 @@ pub fn view<'a>(config: &Config, interval: &'a str, send_delay: &'a str) -> Elem
         .add(
             widget::settings::item::builder(fl!("check-every"))
                 .description(fl!("check-every-hint", minimum = MINIMUM_POLL_SECONDS))
-                .control(
+                .flex_control(
                     widget::text_input("120", interval)
                         .on_input(Message::PollSecondsChanged)
                         .width(cosmic::iced::Length::Fixed(crate::ui::CONTROL_WIDTH)),
@@ -35,7 +35,7 @@ pub fn view<'a>(config: &Config, interval: &'a str, send_delay: &'a str) -> Elem
         .add(
             widget::settings::item::builder(fl!("send-delay"))
                 .description(fl!("send-delay-hint"))
-                .control(
+                .flex_control(
                     widget::text_input("10", send_delay)
                         .on_input(Message::SendDelayChanged)
                         .width(cosmic::iced::Length::Fixed(crate::ui::CONTROL_WIDTH)),
