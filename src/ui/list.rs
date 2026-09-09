@@ -159,7 +159,7 @@ impl<'a> List<'a> {
             .width(Length::Fill)
             .padding([spacing.space_xs, spacing.space_s])
             .selected(selected)
-            .class(crate::ui::row_class())
+            .class(crate::ui::multiline_row_class(selected))
             .on_press(Message::ConversationSelected(index))
             .into()
     }
@@ -219,7 +219,7 @@ pub fn drafts(saved: &[cosmic_pim_mail::drafts::Saved]) -> Element<'_, Message> 
                     widget::button::custom(body)
                         .width(Length::Fill)
                         .padding([spacing.space_xs, spacing.space_s])
-                        .class(crate::ui::row_class())
+                        .class(crate::ui::multiline_row_class(false))
                         .on_press(Message::DraftOpened(draft.id.clone())),
                 )
                 .push(
@@ -307,7 +307,7 @@ pub fn results<'a>(
             widget::button::custom(body)
                 .width(Length::Fill)
                 .padding([spacing.space_xs, spacing.space_s])
-                .class(crate::ui::row_class())
+                .class(crate::ui::multiline_row_class(false))
                 .on_press(Message::HitOpened(index)),
         );
     }
@@ -438,7 +438,7 @@ pub fn unified(entries: &[crate::mail::UnifiedConversation]) -> Element<'_, Mess
             widget::button::custom(body)
                 .width(Length::Fill)
                 .padding([spacing.space_xs, spacing.space_s])
-                .class(crate::ui::row_class())
+                .class(crate::ui::multiline_row_class(false))
                 .on_press(Message::UnifiedOpened(index)),
         );
     }

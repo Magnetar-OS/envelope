@@ -151,6 +151,65 @@ pub fn row_class() -> cosmic::theme::Button {
     cosmic::theme::Button::ListItem(cosmic::theme::active().cosmic().corner_radii.radius_s)
 }
 
+/// [`row_class`] for a row that is more than one line.
+///
+/// `ListItem` paints its *text* with the accent when the row is selected,
+/// which is right for the nav bar it was written for: one line, one label,
+/// and the accent says "this one". A conversation row is three lines, and the
+/// third is a snippet that has been deliberately muted — selecting the row
+/// turned all three accent-coloured, including the muted one, so the
+/// selection became the most saturated block in the window and the row's own
+/// hierarchy disappeared inside it.
+///
+/// This keeps everything `ListItem` does — the same grounds at rest, hover,
+/// press and selection, delegated rather than copied, so a change in the
+/// theme still arrives — and drops only the text and icon overrides, leaving
+/// each line the colour it asked for.
+#[must_use]
+pub fn multiline_row_class(selected: bool) -> cosmic::theme::Button {
+    use cosmic::widget::button::Catalog as _;
+
+    let radii = cosmic::theme::active().cosmic().corner_radii.radius_s;
+
+    // What the accent says instead. `ListItem` marks the selection by
+    // recolouring the text, and with that dropped the selected ground is the
+    // theme's neutral hover colour — which is what an *unselected* row under
+    // the pointer wears, so hovering would look like selecting. The accent
+    // moves to the ground: a tint, at the strength the label chips already
+    // use, so the selection is unmistakable and every line keeps its own
+    // colour. The hovered figure is the same tint with more of it, so a
+    // selected row still answers the pointer.
+    let tint = move |mut style: cosmic::widget::button::Style, theme: &cosmic::Theme, alpha| {
+        style.text_color = None;
+        style.icon_color = None;
+        if selected {
+            let mut accent = theme.cosmic().accent_color();
+            accent.alpha = alpha;
+            style.background = Some(cosmic::iced::Background::Color(accent.into()));
+        }
+        style
+    };
+
+    cosmic::theme::Button::Custom {
+        active: Box::new(move |focused, theme| {
+            let style = theme.active(focused, selected, &cosmic::theme::Button::ListItem(radii));
+            tint(style, theme, 0.16)
+        }),
+        hovered: Box::new(move |focused, theme| {
+            let style = theme.hovered(focused, selected, &cosmic::theme::Button::ListItem(radii));
+            tint(style, theme, 0.24)
+        }),
+        pressed: Box::new(move |focused, theme| {
+            let style = theme.pressed(focused, selected, &cosmic::theme::Button::ListItem(radii));
+            tint(style, theme, 0.3)
+        }),
+        disabled: Box::new(move |theme| {
+            let style = theme.disabled(&cosmic::theme::Button::ListItem(radii));
+            tint(style, theme, 0.1)
+        }),
+    }
+}
+
 /// How wide a column handle's grab zone is.
 ///
 /// The line itself stays a hairline; this is the area the pointer actually
