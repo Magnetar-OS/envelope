@@ -107,6 +107,16 @@ pub fn empty_state<M: 'static>(text: String) -> cosmic::Element<'static, M> {
         .into()
 }
 
+/// The star a flagged message wears.
+///
+/// `insert-star-symbolic` rather than `starred-symbolic`: the second is not
+/// in the COSMIC icon theme at all. It resolved here only because a
+/// third-party theme happened to be installed on the machine it was written
+/// on, and would have been a blank space on a plain COSMIC install — the
+/// failure mode of a missing icon name is silence, which is why it has to be
+/// checked against the theme rather than remembered from another desktop.
+pub const STAR: &str = "insert-star-symbolic";
+
 /// How wide a field's label column is.
 ///
 /// One number for every form in the application. Labels that do not share a
@@ -190,6 +200,75 @@ pub fn label_chip<'a, M: 'a>(name: String) -> cosmic::Element<'a, M> {
                 ..Default::default()
             }
         }))
+        .into()
+}
+
+/// A toolbar button that is an icon and a tooltip rather than a word.
+///
+/// For the actions a reader performs on a message it has already read the
+/// label of: filing, starring, deleting. Eight words in a row is a sentence
+/// the eye has to read every time to find one of them, and in a reading pane
+/// narrow enough to be worth having, eight words do not fit on a line. The
+/// tooltip is not decoration — it is what keeps the icon nameable, and it
+/// carries the same string the menu entry does.
+#[must_use]
+pub fn icon_button<M: Clone + 'static>(
+    icon: &str,
+    label: String,
+    press: M,
+) -> cosmic::Element<'_, M> {
+    cosmic::widget::tooltip(
+        cosmic::widget::button::icon(cosmic::widget::icon::from_name(icon)).on_press(press),
+        cosmic::widget::text::body(label),
+        cosmic::widget::tooltip::Position::Bottom,
+    )
+    .into()
+}
+
+/// How loudly a notice speaks.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum Tone {
+    /// Something the message did that is worth knowing: it wanted to load
+    /// remote content, it hid text, it is encrypted.
+    Note,
+    /// Something that failed or does not add up: a broken signature, a domain
+    /// that did not authenticate, a bounce.
+    Warning,
+}
+
+/// What the reader says *about* a message, rather than what the message says.
+///
+/// These were loose caption lines in the same column as the body, which is
+/// where the message's own words are — so "this message tried to load remote
+/// content" read as a sentence the sender had written. A notice is a
+/// statement by the client about the mail in front of it, and it has to look
+/// like one: its own ground, its own icon, indented from the text it is
+/// about.
+#[must_use]
+pub fn notice<'a, M: 'static>(text: String, tone: Tone) -> cosmic::Element<'a, M> {
+    use cosmic::widget;
+    let spacing = cosmic::theme::spacing();
+
+    let (icon, body): (&str, cosmic::Element<'a, M>) = match tone {
+        Tone::Note => (
+            "dialog-information-symbolic",
+            muted(text)
+                .wrapping(cosmic::iced::core::text::Wrapping::Word)
+                .into(),
+        ),
+        Tone::Warning => ("dialog-warning-symbolic", destructive(text)),
+    };
+
+    let row = widget::row::with_capacity(2)
+        .align_y(cosmic::iced::Alignment::Start)
+        .spacing(spacing.space_xs)
+        .push(widget::icon::from_name(icon).size(16))
+        .push(body);
+
+    widget::container(row)
+        .padding([spacing.space_xs, spacing.space_s])
+        .width(cosmic::iced::Length::Fill)
+        .class(cosmic::theme::Container::Card)
         .into()
 }
 

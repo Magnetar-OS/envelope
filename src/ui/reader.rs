@@ -172,6 +172,10 @@ impl<'a> Reader<'a> {
         } else {
             fl!("show-quoted", lines = lines)
         })
+        // No left padding: this control sits in the flow of the message, and
+        // a button's own inset would step its label in from the column the
+        // prose above it runs down.
+        .padding([spacing.space_xxs, 0])
         .on_press(Message::ToggleQuote(index));
 
         let mut column = widget::column::with_capacity(2)
@@ -269,21 +273,29 @@ impl<'a> Reader<'a> {
         column.into()
     }
 
-    /// Everything that can be done to the open message, in one bar.
+    /// Everything that can be done to the open message.
     ///
-    /// One row rather than two. Split into "answering" and "filing" they read
-    /// as two toolbars with a rule of their own between them, and the second
-    /// one — the row holding Archive and Delete — looked like a warning strip.
-    /// [`widget::flex_row`] wraps them onto as many lines as the pane's width
-    /// needs, which is the same thing the split was trying to achieve without
-    /// asserting a grouping that is not there.
+    /// Words for answering, icons for filing, on two lines of their own. Answering is the decision the
+    /// reader is making — reply, reply to everyone, or pass it on — and the
+    /// difference between those three is worth spelling out. Filing is a
+    /// verb applied to a message already read: which one is wanted is known
+    /// before the bar is looked at, and a row of eight words is a sentence
+    /// that has to be read to find any of them. It is also the arrangement
+    /// every mail client with a reading pane arrived at, for the same reason:
+    /// the pane is narrow, and words do not fit.
+    ///
+    /// Two rows rather than one wrapping row. A single row of nine controls
+    /// wraps wherever the pane's width happens to put it — mid-group, so a
+    /// lone icon ends up beside Forward reading as a status dot rather than a
+    /// button. Splitting at the seam that is actually there keeps the break
+    /// in the same place at every width.
     ///
     /// Only Reply is filled. A toolbar where two buttons are filled has no
-    /// primary action, and Delete filled in the theme's destructive colour
-    /// made the loudest thing in the reader a button that moves a message to
-    /// Trash — recoverable, and pressed dozens of times a day. The destructive
-    /// fill is kept for what it is for: the confirm button of a dialog about
-    /// something that cannot be undone.
+    /// primary action, and Delete in the theme's destructive fill made the
+    /// loudest thing in the reader a button that moves a message to Trash —
+    /// recoverable, and pressed dozens of times a day. That fill is kept for
+    /// what it is for: the confirm button of a dialog about something that
+    /// cannot be undone.
     fn actions(&self, opened: &'a Opened) -> Element<'a, Message> {
         let spacing = cosmic::theme::spacing();
 
@@ -296,61 +308,82 @@ impl<'a> Reader<'a> {
             }
         };
 
-        let mut buttons: Vec<Element<'a, Message>> = vec![
+        let answering: Vec<Element<'a, Message>> = vec![
             reply(fl!("reply"), Message::Reply { all: false })
                 .class(cosmic::theme::Button::Suggested)
                 .into(),
             reply(fl!("reply-all"), Message::Reply { all: true }).into(),
             reply(fl!("forward"), Message::Forward).into(),
-            widget::button::text(if opened.flags.seen {
-                fl!("mark-unread")
+        ];
+
+        let mut filing: Vec<Element<'a, Message>> = vec![
+            if opened.flags.seen {
+                crate::ui::icon_button(
+                    "mail-mark-unread-symbolic",
+                    fl!("mark-unread"),
+                    Message::ToggleRead,
+                )
             } else {
-                fl!("mark-read")
-            })
-            .on_press(Message::ToggleRead)
-            .into(),
-            widget::button::text(if opened.flags.flagged {
-                fl!("unstar")
-            } else {
-                fl!("star")
-            })
-            .on_press(Message::ToggleFlagged)
-            .into(),
-            widget::button::text(fl!("archive"))
-                .on_press(Message::Archive)
-                .into(),
-            widget::button::text(fl!("delete"))
-                .on_press(Message::Delete)
-                .into(),
-            widget::button::text(fl!("save-as-file"))
-                .on_press(Message::ExportMessage)
-                .into(),
+                crate::ui::icon_button(
+                    "mail-mark-read-symbolic",
+                    fl!("mark-read"),
+                    Message::ToggleRead,
+                )
+            },
+            crate::ui::icon_button(
+                crate::ui::STAR,
+                if opened.flags.flagged {
+                    fl!("unstar")
+                } else {
+                    fl!("star")
+                },
+                Message::ToggleFlagged,
+            ),
+            crate::ui::icon_button("mail-archive-symbolic", fl!("archive"), Message::Archive),
+            crate::ui::icon_button("user-trash-symbolic", fl!("delete"), Message::Delete),
+            crate::ui::icon_button(
+                "document-save-symbolic",
+                fl!("save-as-file"),
+                Message::ExportMessage,
+            ),
         ];
 
         // A window of its own, so the list can move on without losing the
         // message. Not offered in a window that already is one.
         if self.detachable {
-            buttons.push(
-                widget::button::text(fl!("detach"))
-                    .on_press(Message::Detach)
-                    .into(),
-            );
+            filing.push(crate::ui::icon_button(
+                "window-new-symbolic",
+                fl!("detach"),
+                Message::Detach,
+            ));
         }
 
         // Only for mail that is a mailing, which is exactly what the header's
         // presence says. Everything else showing an Unsubscribe button would
-        // be a button that does nothing on most of the mailbox.
+        // be a button that does nothing on most of the mailbox. Kept as a
+        // word: it is rare, it is not a filing action, and no icon means it.
         if crate::mail::unsubscribe_route(&opened.message).is_some() {
-            buttons.push(
+            filing.push(
                 widget::button::text(fl!("unsubscribe"))
                     .on_press(Message::Unsubscribe)
                     .into(),
             );
         }
 
-        widget::flex_row(buttons)
+        widget::column::with_capacity(2)
             .spacing(spacing.space_xxs)
-            .width(Length::Fill)
+            .push(
+                widget::flex_row(answering)
+                    .spacing(spacing.space_xxs)
+                    .align_items(Alignment::Center)
+                    .width(Length::Fill),
+            )
+            .push(
+                widget::flex_row(filing)
+                    .spacing(spacing.space_xxs)
+                    .align_items(Alignment::Center)
+                    .width(Length::Fill),
+            )
             .into()
     }
 
@@ -372,18 +405,25 @@ impl<'a> Reader<'a> {
             use cosmic_pim_mail::pgp::Verdict;
             match &opened.pgp.verdict {
                 Verdict::Invalid => {
-                    notices.push(crate::ui::destructive(fl!("pgp-invalid")));
+                    notices.push(crate::ui::notice(
+                        fl!("pgp-invalid"),
+                        crate::ui::Tone::Warning,
+                    ));
                 }
-                Verdict::SignerMismatch { signer } => notices.push(
-                    widget::text::caption(fl!("pgp-mismatch", signer = signer.clone())).into(),
-                ),
+                Verdict::SignerMismatch { signer } => notices.push(crate::ui::notice(
+                    fl!("pgp-mismatch", signer = signer.clone()),
+                    crate::ui::Tone::Warning,
+                )),
                 Verdict::UnknownSigner if !opened.pgp.encrypted => {
-                    notices.push(widget::text::caption(fl!("pgp-unknown")).into());
+                    notices.push(crate::ui::notice(fl!("pgp-unknown"), crate::ui::Tone::Note));
                 }
                 Verdict::UnknownSigner | Verdict::Unsigned | Verdict::Verified { .. } => {}
             }
             if opened.pgp.encrypted {
-                notices.push(widget::text::caption(fl!("pgp-encrypted")).into());
+                notices.push(crate::ui::notice(
+                    fl!("pgp-encrypted"),
+                    crate::ui::Tone::Note,
+                ));
             }
         }
 
@@ -391,54 +431,65 @@ impl<'a> Reader<'a> {
         // is one line per failed recipient, in words. The raw text stays
         // below for the diagnosis the line cannot carry.
         for (recipient, reason) in &opened.bounces {
-            notices.push(crate::ui::destructive(fl!(
-                "bounce-notice",
-                recipient = recipient.clone(),
-                reason = reason.clone()
-            )));
+            notices.push(crate::ui::notice(
+                fl!(
+                    "bounce-notice",
+                    recipient = recipient.clone(),
+                    reason = reason.clone()
+                ),
+                crate::ui::Tone::Warning,
+            ));
         }
 
         match opened.auth {
-            "fail" => notices.push(crate::ui::destructive(fl!(
-                "auth-fail",
-                domain = opened
-                    .message
-                    .sender()
-                    .map_or_else(String::new, |from| from.domain().to_owned())
-            ))),
-            "partial" => notices.push(widget::text::caption(fl!("auth-partial")).into()),
+            "fail" => notices.push(crate::ui::notice(
+                fl!(
+                    "auth-fail",
+                    domain = opened
+                        .message
+                        .sender()
+                        .map_or_else(String::new, |from| from.domain().to_owned())
+                ),
+                crate::ui::Tone::Warning,
+            )),
+            "partial" => notices.push(crate::ui::notice(
+                fl!("auth-partial"),
+                crate::ui::Tone::Note,
+            )),
             _ => {}
         }
 
         if opened.message.body.hidden_elided > 0 {
-            notices.push(
-                widget::text::caption(fl!(
-                    "hidden-content",
-                    count = opened.message.body.hidden_elided
-                ))
-                .wrapping(cosmic::iced::core::text::Wrapping::Word)
-                .into(),
-            );
+            notices.push(crate::ui::notice(
+                fl!("hidden-content", count = opened.message.body.hidden_elided),
+                crate::ui::Tone::Note,
+            ));
         }
 
         if opened.message.has_remote_content {
-            notices.push(widget::text::caption(fl!("remote-content-blocked")).into());
+            notices.push(crate::ui::notice(
+                fl!("remote-content-blocked"),
+                crate::ui::Tone::Note,
+            ));
         }
 
         notices
     }
 
+    /// What came with the message, as objects rather than as a list of file
+    /// names.
+    ///
+    /// One card per attachment, on the same ground the notices use. An
+    /// attachment is not part of what the sender wrote — it is a thing
+    /// fastened to it — and a caption line among the prose is the one shape
+    /// that does not say so. The card also gives the name room to be read at
+    /// body size: a file name is the only evidence the reader has about what
+    /// they are being asked to save.
     fn attachments(&self, opened: &'a Opened) -> Element<'a, Message> {
         let spacing = cosmic::theme::spacing();
-        let attachments: Vec<_> = opened
-            .message
-            .attachments
-            .iter()
-            .filter(|a| !a.inline)
-            .collect();
 
-        let mut column = widget::column::with_capacity(attachments.len() + 1)
-            .spacing(spacing.space_xxxs)
+        let mut column = widget::column::with_capacity(opened.message.attachments.len() + 1)
+            .spacing(spacing.space_xxs)
             .push(widget::text::heading(fl!("attachments")));
 
         for (index, attachment) in opened
@@ -454,26 +505,39 @@ impl<'a> Reader<'a> {
             let importable = attachment
                 .mime_type
                 .eq_ignore_ascii_case("application/pgp-keys");
+
+            let described = widget::column::with_capacity(2)
+                .spacing(spacing.space_xxxs)
+                .push(
+                    widget::text::body(attachment.name.clone())
+                        .wrapping(cosmic::iced::core::text::Wrapping::None)
+                        .ellipsize(cosmic::iced::core::text::Ellipsize::End(
+                            cosmic::iced::core::text::EllipsizeHeightLimit::Lines(1),
+                        )),
+                )
+                .push(crate::ui::muted(format!(
+                    "{} · {}",
+                    attachment.mime_type,
+                    crate::ui::size(attachment.size)
+                )))
+                .width(Length::Fill);
+
+            let row = widget::row::with_capacity(4)
+                .align_y(Alignment::Center)
+                .spacing(spacing.space_s)
+                .push(widget::icon::from_name("mail-attachment-symbolic").size(16))
+                .push(described)
+                .push_maybe(importable.then(|| {
+                    widget::button::text(fl!("pgp-import-key"))
+                        .on_press(Message::PgpKeyImport(index))
+                }))
+                .push(widget::button::text(fl!("save")).on_press(Message::SaveAttachment(index)));
+
             column = column.push(
-                widget::row::with_capacity(3)
-                    .align_y(Alignment::Center)
-                    .spacing(spacing.space_xxs)
-                    .push_maybe(importable.then(|| {
-                        widget::button::text(fl!("pgp-import-key"))
-                            .on_press(Message::PgpKeyImport(index))
-                    }))
-                    .push(
-                        widget::text::caption(format!(
-                            "{} · {} · {}",
-                            attachment.name,
-                            attachment.mime_type,
-                            crate::ui::size(attachment.size)
-                        ))
-                        .width(Length::Fill),
-                    )
-                    .push(
-                        widget::button::text(fl!("save")).on_press(Message::SaveAttachment(index)),
-                    ),
+                widget::container(row)
+                    .padding([spacing.space_xs, spacing.space_s])
+                    .width(Length::Fill)
+                    .class(cosmic::theme::Container::Card),
             );
         }
         column.into()

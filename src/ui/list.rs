@@ -98,7 +98,7 @@ impl<'a> List<'a> {
         });
 
         if conversation.flagged {
-            heading = heading.push(widget::icon::from_name("starred-symbolic").size(12));
+            heading = heading.push(widget::icon::from_name(crate::ui::STAR).size(12));
         }
         if conversation.has_attachments {
             heading = heading.push(widget::icon::from_name("mail-attachment-symbolic").size(12));
