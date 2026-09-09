@@ -64,10 +64,7 @@ impl<'a> Reader<'a> {
         }
 
         let Some(opened) = self.opened else {
-            return widget::text::body(fl!("no-message-selected"))
-                .apply(widget::container)
-                .center(Length::Fill)
-                .into();
+            return crate::ui::empty_state(fl!("no-message-selected"));
         };
 
         let message = &opened.message;

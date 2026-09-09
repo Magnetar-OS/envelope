@@ -140,13 +140,28 @@ impl<'a> Sidebar<'a> {
     }
 
     fn folder_list(&self) -> Element<'a, Message> {
+        let spacing = cosmic::theme::spacing();
+
         if self.folders.is_empty() {
-            return widget::text::caption(fl!("no-folders"))
-                .wrapping(cosmic::iced::core::text::Wrapping::Word)
+            // The one empty state with something to be done about it, so it
+            // carries the doing. A sentence that names a fix and leaves the
+            // reader to find it is a sentence that could have been a button.
+            return widget::column::with_capacity(2)
+                .spacing(spacing.space_s)
+                .push(
+                    crate::ui::muted(fl!("no-folders"))
+                        .wrapping(cosmic::iced::core::text::Wrapping::Word),
+                )
+                .push(
+                    widget::button::text(fl!("set-up-mail"))
+                        .width(Length::Fill)
+                        .class(crate::ui::row_class())
+                        .on_press(Message::OpenAccounts),
+                )
+                .padding(spacing.space_xs)
                 .into();
         }
 
-        let spacing = cosmic::theme::spacing();
         let mut column =
             widget::column::with_capacity(self.folders.len()).spacing(spacing.space_xxxs);
 

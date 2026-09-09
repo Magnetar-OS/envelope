@@ -58,6 +58,35 @@ pub fn relative_date(date: Option<DateTime<Utc>>) -> String {
 pub static PALETTE_ID: std::sync::LazyLock<cosmic::widget::Id> =
     std::sync::LazyLock::new(|| cosmic::widget::Id::new("palette"));
 
+/// Text in the muted tone labels and secondary notes share.
+#[must_use]
+pub fn muted(text: String) -> cosmic::widget::Text<'static, cosmic::Theme> {
+    cosmic::widget::text::body(text).class(cosmic::theme::Text::Custom(|theme| {
+        cosmic::iced::widget::text::Style {
+            color: Some(theme.cosmic().on_bg_color().into()),
+            ..Default::default()
+        }
+    }))
+}
+
+/// What a pane says when it has nothing to show.
+///
+/// Centred and muted, in every pane that has one. An empty state is not the
+/// content — it is a note about the absence of it — and at full contrast in
+/// the top-left corner it reads as the first row of a list that never
+/// arrives. Centring also puts it where the eye already is when a pane turns
+/// out to be empty.
+#[must_use]
+pub fn empty_state<M: 'static>(text: String) -> cosmic::Element<'static, M> {
+    use cosmic::Apply as _;
+    muted(text)
+        .align_x(cosmic::iced::alignment::Horizontal::Center)
+        .apply(cosmic::widget::container)
+        .center(cosmic::iced::Length::Fill)
+        .padding(cosmic::theme::spacing().space_m)
+        .into()
+}
+
 /// How wide a field's label column is.
 ///
 /// One number for every form in the application. Labels that do not share a

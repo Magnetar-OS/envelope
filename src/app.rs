@@ -886,6 +886,9 @@ pub enum Message {
     Forward,
     /// The composer's From dropdown.
     ComposeFromSelected(usize),
+    /// Open the Accounts page — the sidebar's empty state offers it, since
+    /// that is the one thing to do about having no folders.
+    OpenAccounts,
     /// Reveal the Cc and Bcc rows.
     ComposeShowCc,
     ComposeToChanged(String),
@@ -2297,6 +2300,7 @@ impl AppModel {
                 }
                 Task::none()
             }
+            Message::OpenAccounts => self.act(Action::Accounts),
             Message::ComposeShowCc => self.with_composer(|c| c.show_cc = true),
             Message::ComposeToChanged(text) => self.with_composer(|c| c.to = text),
             Message::ComposeCcChanged(text) => self.with_composer(|c| c.cc = text),

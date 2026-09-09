@@ -58,10 +58,7 @@ impl<'a> List<'a> {
             } else {
                 fl!("empty-folder")
             };
-            return widget::text::body(text)
-                .apply(widget::container)
-                .padding(spacing.space_m)
-                .into();
+            return crate::ui::empty_state(text);
         }
 
         let mut column =
@@ -148,7 +145,7 @@ impl<'a> List<'a> {
 
         widget::button::custom(body)
             .width(Length::Fill)
-            .padding(spacing.space_xs)
+            .padding([spacing.space_xxs, spacing.space_s])
             .selected(selected)
             .class(crate::ui::row_class())
             .on_press(Message::ConversationSelected(index))
@@ -167,7 +164,7 @@ pub fn drafts(saved: &[cosmic_pim_mail::drafts::Saved]) -> Element<'_, Message> 
     if saved.is_empty() {
         return widget::column::with_capacity(2)
             .spacing(spacing.space_xxs)
-            .push(widget::text::body(fl!("no-drafts")))
+            .push(crate::ui::muted(fl!("no-drafts")))
             .push(widget::text::caption(fl!("drafts-sync-note")))
             .apply(widget::container)
             .padding(spacing.space_m)
@@ -209,7 +206,7 @@ pub fn drafts(saved: &[cosmic_pim_mail::drafts::Saved]) -> Element<'_, Message> 
                 .push(
                     widget::button::custom(body)
                         .width(Length::Fill)
-                        .padding(spacing.space_xs)
+                        .padding([spacing.space_xxs, spacing.space_s])
                         .class(crate::ui::row_class())
                         .on_press(Message::DraftOpened(draft.id.clone())),
                 )
@@ -297,7 +294,7 @@ pub fn results<'a>(
         column = column.push(
             widget::button::custom(body)
                 .width(Length::Fill)
-                .padding(spacing.space_xs)
+                .padding([spacing.space_xxs, spacing.space_s])
                 .class(crate::ui::row_class())
                 .on_press(Message::HitOpened(index)),
         );
@@ -381,10 +378,7 @@ pub fn unified(entries: &[crate::mail::UnifiedConversation]) -> Element<'_, Mess
     let spacing = cosmic::theme::spacing();
 
     if entries.is_empty() {
-        return widget::text::body(fl!("empty-folder"))
-            .apply(widget::container)
-            .padding(spacing.space_m)
-            .into();
+        return crate::ui::empty_state(fl!("empty-folder"));
     }
 
     let mut column = widget::column::with_capacity(entries.len()).spacing(spacing.space_xxxs);
@@ -431,7 +425,7 @@ pub fn unified(entries: &[crate::mail::UnifiedConversation]) -> Element<'_, Mess
         column = column.push(
             widget::button::custom(body)
                 .width(Length::Fill)
-                .padding(spacing.space_xs)
+                .padding([spacing.space_xxs, spacing.space_s])
                 .class(crate::ui::row_class())
                 .on_press(Message::UnifiedOpened(index)),
         );
