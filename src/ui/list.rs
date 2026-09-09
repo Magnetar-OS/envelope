@@ -289,19 +289,37 @@ pub fn results<'a>(
             hit.date_ms,
         )));
 
-        let body = widget::column::with_capacity(3)
+        // The index picks the column the query actually matched, so a hit on
+        // the subject comes back with the subject as its snippet — printed
+        // under the subject it is a copy of. The folder still has to be said,
+        // so the line stays; only the repetition goes.
+        let context = if echoes(&hit.snippet, &hit.subject) {
+            String::new()
+        } else {
+            hit.snippet.clone()
+        };
+
+        // The folder rides on the subject line rather than on a line of its
+        // own: with the echo removed most hits have no snippet left, and a
+        // lone right-aligned "in Sent" under an empty half-line reads as a
+        // row that failed to load.
+        let mut body = widget::column::with_capacity(3)
             .spacing(spacing.space_xxxs)
             .push(heading)
-            .push(one_line(widget::text::body(hit.subject.clone())))
             .push(
                 widget::row::with_capacity(2)
+                    .align_y(Alignment::Center)
                     .spacing(spacing.space_xxs)
-                    .push(one_line(widget::text::caption(hit.snippet.clone())).width(Length::Fill))
+                    .push(one_line(widget::text::body(hit.subject.clone())).width(Length::Fill))
                     .push(widget::text::caption(fl!(
                         "in-folder",
                         folder = folder.to_owned()
                     ))),
             );
+
+        if !context.is_empty() {
+            body = body.push(one_line(widget::text::caption(context)));
+        }
 
         column = column.push(
             widget::button::custom(body)
@@ -326,6 +344,16 @@ pub fn results<'a>(
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+}
+
+/// Is this snippet just the subject again?
+///
+/// Compared on the leading words rather than for equality: the index elides
+/// the tail of a long match with an ellipsis, so the snippet for a matched
+/// subject is a *prefix* of it rather than a copy.
+fn echoes(snippet: &str, subject: &str) -> bool {
+    let snippet = snippet.trim().trim_end_matches('…').trim();
+    !snippet.is_empty() && subject.trim().starts_with(snippet)
 }
 
 /// The outbox, in the same column the conversations use.
