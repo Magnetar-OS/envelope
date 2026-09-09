@@ -186,9 +186,9 @@ pub fn drafts(saved: &[cosmic_pim_mail::drafts::Saved]) -> Element<'_, Message> 
     let mut column = widget::column::with_capacity(saved.len() + 1)
         .spacing(spacing.space_xxs)
         .push(
-            widget::text::caption(fl!("drafts-sync-note"))
+            crate::ui::muted(fl!("drafts-sync-note"))
                 .apply(widget::container)
-                .padding(spacing.space_xxs),
+                .padding([spacing.space_xxs, spacing.space_s]),
         );
 
     for draft in saved {
@@ -222,11 +222,15 @@ pub fn drafts(saved: &[cosmic_pim_mail::drafts::Saved]) -> Element<'_, Message> 
                         .class(crate::ui::multiline_row_class(false))
                         .on_press(Message::DraftOpened(draft.id.clone())),
                 )
-                .push(
-                    widget::button::text(fl!("delete"))
-                        .class(cosmic::theme::Button::Destructive)
-                        .on_press(Message::DraftDeleted(draft.id.clone())),
-                ),
+                // A trash icon rather than a red slab. Every row carrying a
+                // filled destructive button made a list of unfinished writing
+                // look like a list of warnings, and the button the eye landed
+                // on first was the one that throws the writing away.
+                .push(crate::ui::icon_button(
+                    "user-trash-symbolic",
+                    fl!("delete"),
+                    Message::DraftDeleted(draft.id.clone()),
+                )),
         );
     }
 
@@ -372,7 +376,8 @@ pub fn outbox(queued: &[cosmic_pim_mail::outbox::Queued]) -> Element<'_, Message
     for message in queued {
         let mut body = widget::column::with_capacity(3)
             .spacing(spacing.space_xxxs)
-            .push(one_line(widget::text::body(message.describe())));
+            .push(one_line(widget::text::body(message.describe())))
+            .width(Length::Fill);
 
         // A stopped message says so, in the theme's alarming colour: one
         // sitting in a queue the user thinks is working is the worst thing an
@@ -382,15 +387,14 @@ pub fn outbox(queued: &[cosmic_pim_mail::outbox::Queued]) -> Element<'_, Message
         }
         if let Some(error) = &message.last_error {
             body = body.push(
-                widget::text::caption(error.clone())
-                    .wrapping(cosmic::iced::core::text::Wrapping::Word),
+                crate::ui::muted(error.clone()).wrapping(cosmic::iced::core::text::Wrapping::Word),
             );
         }
 
         let mut row = widget::row::with_capacity(3)
             .align_y(Alignment::Center)
-            .spacing(spacing.space_xxs)
-            .push(widget::container(body).width(Length::Fill));
+            .spacing(spacing.space_s)
+            .push(body);
 
         if message.given_up {
             row = row.push(
@@ -398,13 +402,20 @@ pub fn outbox(queued: &[cosmic_pim_mail::outbox::Queued]) -> Element<'_, Message
                     .on_press(Message::QueuedRetried(message.id.clone())),
             );
         }
-        row = row.push(
-            widget::button::text(fl!("discard"))
-                .class(cosmic::theme::Button::Destructive)
-                .on_press(Message::QueuedDiscarded(message.id.clone())),
-        );
+        // Quiet, like the drafts list: a queue of things the user is waiting
+        // on should not be a column of red.
+        row = row.push(crate::ui::icon_button(
+            "user-trash-symbolic",
+            fl!("discard"),
+            Message::QueuedDiscarded(message.id.clone()),
+        ));
 
-        column = column.push(widget::container(row).padding(spacing.space_xs));
+        column = column.push(
+            widget::container(row)
+                .padding([spacing.space_xs, spacing.space_s])
+                .width(Length::Fill)
+                .class(cosmic::theme::Container::Card),
+        );
     }
 
     widget::scrollable(column.padding(spacing.space_xxs))

@@ -238,6 +238,14 @@ impl<'a> Sidebar<'a> {
                 .into();
         }
 
+        // Which folder is *remembered* is not the same as which view is on
+        // screen. Opening Drafts left the last folder still drawn as selected,
+        // so the sidebar showed two selected rows and neither of them was a
+        // lie — the folder is still where the list will return to. It just
+        // is not what is being looked at.
+        let showing_a_folder =
+            !(self.showing_drafts || self.showing_outbox || self.showing_unified);
+
         let mut column =
             widget::column::with_capacity(self.folders.len()).spacing(spacing.space_xxxs);
 
@@ -256,7 +264,7 @@ impl<'a> Sidebar<'a> {
                 row_name(folder),
                 self.unread.get(&folder.wire_name).copied().unwrap_or(0),
                 indent,
-                self.selected_folder == Some(index),
+                showing_a_folder && self.selected_folder == Some(index),
                 Message::FolderSelected(index),
             ));
         }
