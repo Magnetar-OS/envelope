@@ -24,7 +24,7 @@ pub fn view<'a>(config: &Config, interval: &'a str, send_delay: &'a str) -> Elem
                 .control(
                     widget::text_input("120", interval)
                         .on_input(Message::PollSecondsChanged)
-                        .width(cosmic::iced::Length::Fixed(120.0)),
+                        .width(cosmic::iced::Length::Fixed(crate::ui::CONTROL_WIDTH)),
                 ),
         )
         .add(
@@ -38,7 +38,7 @@ pub fn view<'a>(config: &Config, interval: &'a str, send_delay: &'a str) -> Elem
                 .control(
                     widget::text_input("10", send_delay)
                         .on_input(Message::SendDelayChanged)
-                        .width(cosmic::iced::Length::Fixed(120.0)),
+                        .width(cosmic::iced::Length::Fixed(crate::ui::CONTROL_WIDTH)),
                 ),
         );
 

@@ -340,3 +340,6 @@ quote-depth = { $depth } levels deep
 
 # Composer
 redo = Redo
+
+# Composer
+show-cc = Cc/Bcc

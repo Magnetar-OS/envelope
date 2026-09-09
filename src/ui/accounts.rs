@@ -131,14 +131,14 @@ fn add_form<'a>(add: &'a AddForm, sign_in: &SignIn<'a>) -> Element<'a, Message> 
             widget::settings::item::builder(fl!("add-account-name")).control(
                 widget::text_input(String::new(), &add.name)
                     .on_input(Message::AddFormNameChanged)
-                    .width(Length::Fixed(220.0)),
+                    .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
             ),
         )
         .add(
             widget::settings::item::builder(fl!("add-account-address")).control(
                 widget::text_input("you@example.com", &add.email)
                     .on_input(Message::AddFormEmailChanged)
-                    .width(Length::Fixed(220.0)),
+                    .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
             ),
         );
 
@@ -175,7 +175,7 @@ fn add_form<'a>(add: &'a AddForm, sign_in: &SignIn<'a>) -> Element<'a, Message> 
                     widget::secure_input(fl!("password"), &add.password, None, true)
                         .on_input(Message::AddFormPasswordChanged)
                         .on_submit(|_| Message::AddFormConfirm)
-                        .width(Length::Fixed(220.0)),
+                        .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
                 ),
         );
     }
@@ -236,21 +236,21 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                     widget::dropdown(PROTOCOL_LABELS, Some(form.protocol_index()), |index| {
                         Message::MailFormProtocolChanged(PROTOCOLS[index])
                     })
-                    .width(Length::Fixed(220.0)),
+                    .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
                 ),
         )
         .add(
             widget::settings::item::builder(fl!("imap-host")).control(
                 widget::text_input("imap.example.com", &form.host)
                     .on_input(Message::MailFormHostChanged)
-                    .width(Length::Fixed(220.0)),
+                    .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
             ),
         )
         .add(
             widget::settings::item::builder(fl!("port")).control(
                 widget::text_input("993", &form.port)
                     .on_input(Message::MailFormPortChanged)
-                    .width(Length::Fixed(220.0)),
+                    .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
             ),
         )
         .add(
@@ -258,7 +258,7 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                 widget::dropdown(TRANSPORT_LABELS, Some(form.transport_index()), |index| {
                     Message::MailFormTransportChanged(TRANSPORTS[index])
                 })
-                .width(Length::Fixed(220.0)),
+                .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
             ),
         )
         .add(
@@ -267,7 +267,7 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                 .control(
                     widget::text_input("https://…/.well-known/jmap", &form.jmap_url)
                         .on_input(Message::MailFormJmapUrlChanged)
-                        .width(Length::Fixed(220.0)),
+                        .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
                 ),
         )
         .add(
@@ -276,7 +276,7 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                 .control(
                     widget::text_input(form.account_username.clone(), &form.username)
                         .on_input(Message::MailFormUsernameChanged)
-                        .width(Length::Fixed(220.0)),
+                        .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
                 ),
         );
 
@@ -288,14 +288,14 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                 .control(
                     widget::text_input("you@example.com", &form.from_address)
                         .on_input(Message::MailFormFromAddressChanged)
-                        .width(Length::Fixed(220.0)),
+                        .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
                 ),
         )
         .add(
             widget::settings::item::builder(fl!("from-name")).control(
                 widget::text_input(String::new(), &form.from_name)
                     .on_input(Message::MailFormFromNameChanged)
-                    .width(Length::Fixed(220.0)),
+                    .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
             ),
         )
         .add(aliases(form))
@@ -305,14 +305,14 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                 .control(
                     widget::text_input(form.host.clone(), &form.smtp_host)
                         .on_input(Message::MailFormSmtpHostChanged)
-                        .width(Length::Fixed(220.0)),
+                        .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
                 ),
         )
         .add(
             widget::settings::item::builder(fl!("smtp-port")).control(
                 widget::text_input("465", &form.smtp_port)
                     .on_input(Message::MailFormSmtpPortChanged)
-                    .width(Length::Fixed(220.0)),
+                    .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
             ),
         )
         .add(
@@ -322,7 +322,7 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                     Some(form.smtp_transport_index()),
                     |index| Message::MailFormSmtpTransportChanged(TRANSPORTS[index]),
                 )
-                .width(Length::Fixed(220.0)),
+                .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
             ),
         );
 

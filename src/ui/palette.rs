@@ -56,11 +56,8 @@ impl<'a> Palette<'a> {
             column = column.push(
                 widget::button::custom(row)
                     .width(Length::Fill)
-                    .class(if index == self.selected {
-                        cosmic::theme::Button::Suggested
-                    } else {
-                        cosmic::theme::Button::Text
-                    })
+                    .selected(index == self.selected)
+                    .class(crate::ui::row_class())
                     .on_press(Message::PaletteInvoked(*action)),
             );
         }
@@ -70,7 +67,7 @@ impl<'a> Palette<'a> {
                 column
                     .padding(spacing.space_s)
                     .apply(widget::container)
-                    .width(Length::Fixed(480.0)),
+                    .width(Length::Fixed(crate::ui::PICKER_WIDTH)),
             )
             .into()
     }

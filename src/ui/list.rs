@@ -149,11 +149,8 @@ impl<'a> List<'a> {
         widget::button::custom(body)
             .width(Length::Fill)
             .padding(spacing.space_xs)
-            .class(if selected {
-                cosmic::theme::Button::Suggested
-            } else {
-                cosmic::theme::Button::Text
-            })
+            .selected(selected)
+            .class(crate::ui::row_class())
             .on_press(Message::ConversationSelected(index))
             .into()
     }
@@ -213,7 +210,7 @@ pub fn drafts(saved: &[cosmic_pim_mail::drafts::Saved]) -> Element<'_, Message> 
                     widget::button::custom(body)
                         .width(Length::Fill)
                         .padding(spacing.space_xs)
-                        .class(cosmic::theme::Button::Text)
+                        .class(crate::ui::row_class())
                         .on_press(Message::DraftOpened(draft.id.clone())),
                 )
                 .push(
@@ -301,7 +298,7 @@ pub fn results<'a>(
             widget::button::custom(body)
                 .width(Length::Fill)
                 .padding(spacing.space_xs)
-                .class(cosmic::theme::Button::Text)
+                .class(crate::ui::row_class())
                 .on_press(Message::HitOpened(index)),
         );
     }
@@ -435,7 +432,7 @@ pub fn unified(entries: &[crate::mail::UnifiedConversation]) -> Element<'_, Mess
             widget::button::custom(body)
                 .width(Length::Fill)
                 .padding(spacing.space_xs)
-                .class(cosmic::theme::Button::Text)
+                .class(crate::ui::row_class())
                 .on_press(Message::UnifiedOpened(index)),
         );
     }

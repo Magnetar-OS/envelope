@@ -47,6 +47,20 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- The columns are yours to size: drag the edge beside the sidebar or the
+  message list, and both widths are remembered. The edge stays a hairline —
+  only the pointer changes over it.
+- The composer is one surface rather than a stack of boxes. From, To and the
+  subject sit on a shared left edge under muted labels, separated by
+  hairlines, with the body running on from them borderless and inset to the
+  same edge. Cc and Bcc stay out of the way behind a Cc/Bcc button until
+  they are wanted, and appear on their own whenever a draft already carries
+  either — a reply-all, or a draft reopened.
+- Rows react to the pointer. Every list in the application — folders,
+  messages, drafts, the outbox, search results, the palette — now uses the
+  desktop's own list-row styling, so hovering highlights and the selection
+  is marked with the accent instead of being filled with it.
+
 - Mail is written and read in windows of its own. Composing, replying and
   forwarding open a window per message, the way every desktop mail client
   does it, so a reply sits beside the thread it answers instead of

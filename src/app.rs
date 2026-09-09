@@ -314,6 +314,15 @@ pub struct Composer {
     /// accumulating a file per edit.
     pub draft_id: Option<String>,
     pub sending: bool,
+    /// Whether the Cc and Bcc rows are showing.
+    ///
+    /// Hidden until asked for. The overwhelming majority of messages go to
+    /// one person, and two permanently empty fields in front of every one of
+    /// them is furniture between the writer and the writing. Revealed
+    /// automatically whenever the draft arrives carrying either — a
+    /// reply-all, a reopened draft — because a hidden populated field is a
+    /// hidden recipient.
+    pub show_cc: bool,
     pub error: Option<String>,
     /// Undo and redo for the body.
     ///
@@ -325,6 +334,8 @@ pub struct Composer {
 
 impl Composer {
     fn new(draft: cosmic_pim_mail::Draft, answering: Option<(Folder, u32)>) -> Self {
+        // Read before the draft is moved into the struct below.
+        let show_cc = !draft.cc.is_empty() || !draft.bcc.is_empty();
         Self {
             to: join(&draft.to),
             cc: join(&draft.cc),
@@ -339,6 +350,7 @@ impl Composer {
             draft,
             answering,
             draft_id: None,
+            show_cc,
             sending: false,
             error: None,
         }
@@ -874,6 +886,8 @@ pub enum Message {
     Forward,
     /// The composer's From dropdown.
     ComposeFromSelected(usize),
+    /// Reveal the Cc and Bcc rows.
+    ComposeShowCc,
     ComposeToChanged(String),
     ComposeCcChanged(String),
     ComposeBccChanged(String),
@@ -2283,6 +2297,7 @@ impl AppModel {
                 }
                 Task::none()
             }
+            Message::ComposeShowCc => self.with_composer(|c| c.show_cc = true),
             Message::ComposeToChanged(text) => self.with_composer(|c| c.to = text),
             Message::ComposeCcChanged(text) => self.with_composer(|c| c.cc = text),
             Message::ComposeBccChanged(text) => self.with_composer(|c| c.bcc = text),

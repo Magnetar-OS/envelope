@@ -10,9 +10,6 @@ use cosmic_pim_mail::folder::Folder;
 use crate::app::Message;
 use crate::fl;
 
-/// Padding either side of the sidebar's contents.
-const GUTTER: u16 = 8;
-
 pub struct Sidebar<'a> {
     pub accounts: &'a [cosmic_pim_accounts::Account],
     pub selected_account: Option<&'a str>,
@@ -55,7 +52,7 @@ impl<'a> Sidebar<'a> {
                     .apply(widget::scrollable)
                     .height(Length::Fill),
             )
-            .padding(GUTTER)
+            .padding(spacing.space_xxs)
             .apply(widget::container)
             // Wears the desktop's own nav-bar surface, so it matches the
             // sidebar in cosmic-files and cosmic-settings rather than
@@ -80,14 +77,13 @@ impl<'a> Sidebar<'a> {
         for account in self.accounts {
             let selected = self.selected_account == Some(account.id.as_str());
             column = column.push(
-                widget::button::text(account.display_name.clone())
-                    .width(Length::Fill)
-                    .class(if selected {
-                        cosmic::theme::Button::Suggested
-                    } else {
-                        cosmic::theme::Button::Text
-                    })
-                    .on_press(Message::AccountSelected(account.id.clone())),
+                widget::button::custom(
+                    widget::text::body(account.display_name.clone()).width(Length::Fill),
+                )
+                .width(Length::Fill)
+                .selected(selected)
+                .class(crate::ui::row_class())
+                .on_press(Message::AccountSelected(account.id.clone())),
             );
         }
         column.into()
@@ -99,11 +95,8 @@ impl<'a> Sidebar<'a> {
         }
         widget::button::custom(widget::text::body(fl!("all-inboxes")).width(Length::Fill))
             .width(Length::Fill)
-            .class(if self.showing_unified {
-                cosmic::theme::Button::Suggested
-            } else {
-                cosmic::theme::Button::Text
-            })
+            .selected(self.showing_unified)
+            .class(crate::ui::row_class())
             .on_press(Message::ShowUnified)
             .into()
     }
@@ -121,11 +114,8 @@ impl<'a> Sidebar<'a> {
 
         widget::button::custom(row)
             .width(Length::Fill)
-            .class(if self.showing_drafts {
-                cosmic::theme::Button::Suggested
-            } else {
-                cosmic::theme::Button::Text
-            })
+            .selected(self.showing_drafts)
+            .class(crate::ui::row_class())
             .on_press(Message::ShowDrafts)
             .into()
     }
@@ -143,11 +133,8 @@ impl<'a> Sidebar<'a> {
 
         widget::button::custom(row)
             .width(Length::Fill)
-            .class(if self.showing_outbox {
-                cosmic::theme::Button::Suggested
-            } else {
-                cosmic::theme::Button::Text
-            })
+            .selected(self.showing_outbox)
+            .class(crate::ui::row_class())
             .on_press(Message::ShowOutbox)
             .into()
     }
@@ -171,7 +158,11 @@ impl<'a> Sidebar<'a> {
             // tree: a mail folder tree is browsed far more often than it is
             // restructured, and every expander is a click between the user and
             // a folder they can already see.
-            let indent = f32::from(u16::try_from(folder.depth().min(4)).unwrap_or(0)) * 12.0;
+            // One step of the theme's own rhythm per level, capped at four:
+            // deeper than that and the name has nowhere left to go.
+            let indent = f32::from(
+                u16::try_from(folder.depth().min(4)).unwrap_or(0) * u16::from(spacing.space_s),
+            );
 
             let mut row = widget::row::with_capacity(3)
                 .align_y(cosmic::iced::Alignment::Center)
@@ -186,11 +177,8 @@ impl<'a> Sidebar<'a> {
             column = column.push(
                 widget::button::custom(row)
                     .width(Length::Fill)
-                    .class(if selected {
-                        cosmic::theme::Button::Suggested
-                    } else {
-                        cosmic::theme::Button::Text
-                    })
+                    .selected(selected)
+                    .class(crate::ui::row_class())
                     .on_press(Message::FolderSelected(index)),
             );
         }

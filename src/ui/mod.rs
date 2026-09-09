@@ -58,6 +58,40 @@ pub fn relative_date(date: Option<DateTime<Utc>>) -> String {
 pub static PALETTE_ID: std::sync::LazyLock<cosmic::widget::Id> =
     std::sync::LazyLock::new(|| cosmic::widget::Id::new("palette"));
 
+/// How wide a field's label column is.
+///
+/// One number for every form in the application. Labels that do not share a
+/// column read as several forms stacked rather than one, and the eye has to
+/// find the start of each value instead of running down a single edge.
+pub const LABEL_WIDTH: f32 = 72.0;
+
+/// How wide a settings control is.
+pub const CONTROL_WIDTH: f32 = 220.0;
+
+/// How wide a dialog that holds a list is.
+///
+/// Wide enough for a subject or a folder path, narrow enough to stay a
+/// dialog rather than becoming a second window.
+pub const PICKER_WIDTH: f32 = 480.0;
+
+/// The class a selectable row wears.
+///
+/// `ListItem` rather than a filled `Suggested` button, and the difference is
+/// the whole look of the window. `Suggested` is the accent-filled call to
+/// action — right on a Send button, wrong on the forty rows of a mailbox,
+/// where it turns the selection into the loudest thing on screen and leaves
+/// nothing for hover to say. `ListItem` takes its rest, hover and pressed
+/// colours from the theme's own list component and its selected state from
+/// the accent, so a row reacts to the pointer the way every other COSMIC list
+/// does, and the accent still marks the selection without shouting.
+///
+/// The radius is the theme's, so rows round exactly as the surfaces around
+/// them do.
+#[must_use]
+pub fn row_class() -> cosmic::theme::Button {
+    cosmic::theme::Button::ListItem(cosmic::theme::active().cosmic().corner_radii.radius_s)
+}
+
 /// How wide a column handle's grab zone is.
 ///
 /// The line itself stays a hairline; this is the area the pointer actually

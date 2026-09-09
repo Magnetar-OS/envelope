@@ -146,6 +146,9 @@ impl<'a> LabelPicker<'a> {
                     move |on| Message::LabelToggled(name.clone(), on)
                 }))
                 .push(widget::text::body(name.clone()).width(Length::Fill));
+            // A row rather than a container: a container cannot hover, and a
+            // picker whose rows do not react to the pointer reads as a list
+            // of labels rather than a list of choices.
             column = column.push(
                 widget::container(line)
                     .padding([spacing.space_xxxs, spacing.space_xxs])
@@ -153,7 +156,8 @@ impl<'a> LabelPicker<'a> {
                         cosmic::theme::Container::List
                     } else {
                         cosmic::theme::Container::Transparent
-                    }),
+                    })
+                    .width(Length::Fill),
             );
         }
 
@@ -179,7 +183,7 @@ impl<'a> LabelPicker<'a> {
                 column
                     .padding(spacing.space_s)
                     .apply(widget::container)
-                    .width(Length::Fixed(420.0)),
+                    .width(Length::Fixed(crate::ui::PICKER_WIDTH)),
             )
             .secondary_action(
                 widget::button::standard(fl!("close")).on_press(Message::FolderDialogCancelled),
@@ -229,11 +233,8 @@ impl<'a> MovePicker<'a> {
             column = column.push(
                 widget::button::custom(line)
                     .width(Length::Fill)
-                    .class(if row == self.selected {
-                        cosmic::theme::Button::Suggested
-                    } else {
-                        cosmic::theme::Button::Text
-                    })
+                    .selected(row == self.selected)
+                    .class(crate::ui::row_class())
                     .on_press(Message::MovePicked(*folder_index)),
             );
         }
@@ -243,7 +244,7 @@ impl<'a> MovePicker<'a> {
                 column
                     .padding(spacing.space_s)
                     .apply(widget::container)
-                    .width(Length::Fixed(480.0)),
+                    .width(Length::Fixed(crate::ui::PICKER_WIDTH)),
             )
             .into()
     }
