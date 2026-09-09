@@ -71,7 +71,12 @@ impl<'a> Reader<'a> {
         let mut column = widget::column::with_capacity(8)
             .spacing(spacing.space_s)
             .padding(spacing.space_m)
-            .push(widget::text::title3(if message.subject.is_empty() {
+            // Title 4 rather than Title 3. A subject is a label on the
+            // message, not a headline: at 24px an ordinary two-clause subject
+            // takes three lines of a narrow reading pane and pushes the
+            // message itself under the fold, which is the one thing the pane
+            // exists to show.
+            .push(widget::text::title4(if message.subject.is_empty() {
                 fl!("no-subject")
             } else {
                 message.subject.clone()
@@ -215,13 +220,15 @@ impl<'a> Reader<'a> {
         let spacing = cosmic::theme::spacing();
         let message = &opened.message;
 
-        let sender = message.sender().map_or_else(
-            || fl!("unknown-sender"),
-            |from| match &from.name {
-                Some(name) => format!("{name} <{}>", from.address),
-                None => from.address.clone(),
-            },
-        );
+        // Who wrote it, then where from. One line held both — "Marta
+        // Halvorsen <marta@fjordline.no>" — which reads as an address with a
+        // name attached rather than as a person. The name is what identifies
+        // the sender to the reader; the address is what identifies them to
+        // the machine, and is the part worth checking rather than the part
+        // worth reading first.
+        let from = message.sender();
+        let name = from.and_then(|from| from.name.clone());
+        let address = from.map_or_else(|| fl!("unknown-sender"), |from| from.address.clone());
 
         let recipients = message
             .to
@@ -231,28 +238,52 @@ impl<'a> Reader<'a> {
             .collect::<Vec<_>>()
             .join(", ");
 
+        let mut identity = widget::column::with_capacity(2).spacing(spacing.space_xxxs);
+        identity = match name {
+            Some(name) => identity
+                .push(widget::text::heading(name))
+                .push(crate::ui::muted(address).size(12)),
+            // Mail from an address with no display name says the address
+            // once, in the place the name would have been, rather than
+            // twice down two lines.
+            None => identity.push(widget::text::heading(address)),
+        };
+
         let mut column = widget::column::with_capacity(3)
-            .spacing(spacing.space_xxxs)
+            .spacing(spacing.space_xxs)
             .push(
                 widget::row::with_capacity(2)
-                    .align_y(Alignment::Center)
+                    .align_y(Alignment::Start)
                     .spacing(spacing.space_xxs)
-                    .push(widget::text::body(sender).width(Length::Fill))
+                    .push(identity.width(Length::Fill))
                     .push(widget::text::caption(crate::ui::relative_date(
                         message.date,
                     ))),
             );
 
         if !recipients.is_empty() {
-            column = column.push(widget::text::caption(fl!(
-                "to-line",
-                recipients = recipients
-            )));
+            column =
+                column.push(crate::ui::muted(fl!("to-line", recipients = recipients)).size(12));
         }
 
         column.into()
     }
 
+    /// Everything that can be done to the open message, in one bar.
+    ///
+    /// One row rather than two. Split into "answering" and "filing" they read
+    /// as two toolbars with a rule of their own between them, and the second
+    /// one — the row holding Archive and Delete — looked like a warning strip.
+    /// [`widget::flex_row`] wraps them onto as many lines as the pane's width
+    /// needs, which is the same thing the split was trying to achieve without
+    /// asserting a grouping that is not there.
+    ///
+    /// Only Reply is filled. A toolbar where two buttons are filled has no
+    /// primary action, and Delete filled in the theme's destructive colour
+    /// made the loudest thing in the reader a button that moves a message to
+    /// Trash — recoverable, and pressed dozens of times a day. The destructive
+    /// fill is kept for what it is for: the confirm button of a dialog about
+    /// something that cannot be undone.
     fn actions(&self, opened: &'a Opened) -> Element<'a, Message> {
         let spacing = cosmic::theme::spacing();
 
@@ -265,59 +296,61 @@ impl<'a> Reader<'a> {
             }
         };
 
-        let answering = widget::row::with_capacity(3)
-            .spacing(spacing.space_xxs)
-            .push(
-                reply(fl!("reply"), Message::Reply { all: false })
-                    .class(cosmic::theme::Button::Suggested),
-            )
-            .push(reply(fl!("reply-all"), Message::Reply { all: true }))
-            .push(reply(fl!("forward"), Message::Forward));
-
-        let mut filing = widget::row::with_capacity(7)
-            .spacing(spacing.space_xxs)
-            .push(
-                widget::button::text(if opened.flags.seen {
-                    fl!("mark-unread")
-                } else {
-                    fl!("mark-read")
-                })
-                .on_press(Message::ToggleRead),
-            )
-            .push(
-                widget::button::text(if opened.flags.flagged {
-                    fl!("unstar")
-                } else {
-                    fl!("star")
-                })
-                .on_press(Message::ToggleFlagged),
-            )
-            .push(widget::button::text(fl!("archive")).on_press(Message::Archive))
-            .push(
-                widget::button::text(fl!("delete"))
-                    .class(cosmic::theme::Button::Destructive)
-                    .on_press(Message::Delete),
-            )
-            .push(widget::button::text(fl!("save-as-file")).on_press(Message::ExportMessage));
+        let mut buttons: Vec<Element<'a, Message>> = vec![
+            reply(fl!("reply"), Message::Reply { all: false })
+                .class(cosmic::theme::Button::Suggested)
+                .into(),
+            reply(fl!("reply-all"), Message::Reply { all: true }).into(),
+            reply(fl!("forward"), Message::Forward).into(),
+            widget::button::text(if opened.flags.seen {
+                fl!("mark-unread")
+            } else {
+                fl!("mark-read")
+            })
+            .on_press(Message::ToggleRead)
+            .into(),
+            widget::button::text(if opened.flags.flagged {
+                fl!("unstar")
+            } else {
+                fl!("star")
+            })
+            .on_press(Message::ToggleFlagged)
+            .into(),
+            widget::button::text(fl!("archive"))
+                .on_press(Message::Archive)
+                .into(),
+            widget::button::text(fl!("delete"))
+                .on_press(Message::Delete)
+                .into(),
+            widget::button::text(fl!("save-as-file"))
+                .on_press(Message::ExportMessage)
+                .into(),
+        ];
 
         // A window of its own, so the list can move on without losing the
         // message. Not offered in a window that already is one.
         if self.detachable {
-            filing = filing.push(widget::button::text(fl!("detach")).on_press(Message::Detach));
+            buttons.push(
+                widget::button::text(fl!("detach"))
+                    .on_press(Message::Detach)
+                    .into(),
+            );
         }
 
         // Only for mail that is a mailing, which is exactly what the header's
         // presence says. Everything else showing an Unsubscribe button would
         // be a button that does nothing on most of the mailbox.
         if crate::mail::unsubscribe_route(&opened.message).is_some() {
-            filing = filing
-                .push(widget::button::text(fl!("unsubscribe")).on_press(Message::Unsubscribe));
+            buttons.push(
+                widget::button::text(fl!("unsubscribe"))
+                    .on_press(Message::Unsubscribe)
+                    .into(),
+            );
         }
 
-        widget::column::with_capacity(2)
+        widget::flex_row(buttons)
             .spacing(spacing.space_xxs)
-            .push(answering)
-            .push(filing)
+            .width(Length::Fill)
             .into()
     }
 

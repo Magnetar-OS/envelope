@@ -1273,6 +1273,17 @@ impl cosmic::Application for AppModel {
                 .active(self.core().nav_bar_active())
                 .on_toggle(Message::Act(Action::ToggleSidebar))
                 .into(),
+            // The one thing a mail client is for that is not reading. It was
+            // reachable only from the menu and from `c`, which makes writing
+            // a message the one common action with no button — every mail
+            // client worth measuring against puts it in the toolbar, first.
+            widget::tooltip(
+                widget::button::icon(widget::icon::from_name("mail-message-new-symbolic"))
+                    .on_press(Message::Act(Action::Compose)),
+                widget::text::body(fl!("compose")),
+                widget::tooltip::Position::Bottom,
+            )
+            .into(),
             menu::bar(vec![menu::Tree::with_children(
                 menu::root(fl!("app-title")).apply(Element::from),
                 menu::items(

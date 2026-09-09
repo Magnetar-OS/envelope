@@ -5,10 +5,55 @@
 use cosmic::iced::Length;
 use cosmic::widget;
 use cosmic::{Apply as _, Element};
-use cosmic_pim_mail::folder::Folder;
+use cosmic_pim_mail::folder::{Folder, SpecialUse};
 
 use crate::app::Message;
 use crate::fl;
+
+/// How big a row's icon is.
+///
+/// Sixteen: the size the symbolic icons are drawn for, and the size every
+/// COSMIC list puts in front of a row of body text. Scaled icons are the
+/// difference between a sidebar that looks native and one that looks
+/// approximated.
+const ICON: u16 = 16;
+
+/// The name a mailbox goes by here.
+///
+/// A server's own name for a special mailbox is a fact about that server:
+/// IMAP requires the inbox to be spelled `INBOX`, and a Greek provider calls
+/// the sent folder `Απεσταλμένα`. What the user is looking for is the *role*,
+/// so the role is what the row says. A folder with no role keeps the name its
+/// owner gave it, which is the only name it has.
+fn row_name(folder: &Folder) -> String {
+    match folder.special_use {
+        Some(SpecialUse::Inbox) => fl!("folder-inbox"),
+        Some(SpecialUse::Sent) => fl!("folder-sent"),
+        Some(SpecialUse::Drafts) => fl!("folder-drafts"),
+        Some(SpecialUse::Archive) => fl!("folder-archive"),
+        Some(SpecialUse::Junk) => fl!("folder-junk"),
+        Some(SpecialUse::Trash) => fl!("folder-trash"),
+        None => folder.leaf_name().to_owned(),
+    }
+}
+
+/// The icon for a mailbox's role.
+///
+/// Shape is found faster than text, and the five mailboxes with roles are the
+/// five a person aims at all day. Everything else is a folder and says so —
+/// a distinct icon per user folder would be decoration competing with the
+/// names.
+fn row_icon(folder: &Folder) -> &'static str {
+    match folder.special_use {
+        Some(SpecialUse::Inbox) => "mail-folder-inbox-symbolic",
+        Some(SpecialUse::Sent) => "mail-send-symbolic",
+        Some(SpecialUse::Drafts) => "emblem-documents-symbolic",
+        Some(SpecialUse::Archive) => "mail-archive-symbolic",
+        Some(SpecialUse::Junk) => "mail-mark-junk-symbolic",
+        Some(SpecialUse::Trash) => "user-trash-symbolic",
+        None => "folder-symbolic",
+    }
+}
 
 pub struct Sidebar<'a> {
     pub accounts: &'a [cosmic_pim_accounts::Account],
@@ -38,7 +83,7 @@ impl<'a> Sidebar<'a> {
         let spacing = cosmic::theme::spacing();
 
         widget::column::with_capacity(5)
-            .spacing(spacing.space_s)
+            .spacing(spacing.space_xxs)
             .push(self.unified_row())
             .push(self.account_picker())
             .push(self.drafts_row())
@@ -64,6 +109,46 @@ impl<'a> Sidebar<'a> {
             .into()
     }
 
+    /// One sidebar row: icon, name, and a count when there is one.
+    ///
+    /// Every row in the sidebar is built here, so the icon column lines up
+    /// down the whole pane — including through the drafts and outbox rows,
+    /// which are not folders but sit among them and would otherwise start
+    /// their text at a different edge.
+    fn row(
+        icon: &'static str,
+        name: String,
+        count: usize,
+        indent: f32,
+        selected: bool,
+        press: Message,
+    ) -> Element<'a, Message> {
+        let spacing = cosmic::theme::spacing();
+        let mut row = widget::row::with_capacity(4)
+            .align_y(cosmic::iced::Alignment::Center)
+            .spacing(spacing.space_xxs);
+
+        if indent > 0.0 {
+            row = row.push(widget::Space::new().width(Length::Fixed(indent)));
+        }
+
+        row = row
+            .push(widget::icon::from_name(icon).size(ICON))
+            .push(widget::text::body(name).width(Length::Fill));
+
+        if count > 0 {
+            row = row.push(widget::text::caption(count.to_string()));
+        }
+
+        widget::button::custom(row)
+            .width(Length::Fill)
+            .padding([spacing.space_xxs, spacing.space_xs])
+            .selected(selected)
+            .class(crate::ui::row_class())
+            .on_press(press)
+            .into()
+    }
+
     /// Only shown when there is a choice to make.
     ///
     /// One account is the overwhelmingly common case, and a picker with one
@@ -76,15 +161,14 @@ impl<'a> Sidebar<'a> {
             .spacing(cosmic::theme::spacing().space_xxxs);
         for account in self.accounts {
             let selected = self.selected_account == Some(account.id.as_str());
-            column = column.push(
-                widget::button::custom(
-                    widget::text::body(account.display_name.clone()).width(Length::Fill),
-                )
-                .width(Length::Fill)
-                .selected(selected)
-                .class(crate::ui::row_class())
-                .on_press(Message::AccountSelected(account.id.clone())),
-            );
+            column = column.push(Self::row(
+                "mail-unread-symbolic",
+                account.display_name.clone(),
+                0,
+                0.0,
+                selected,
+                Message::AccountSelected(account.id.clone()),
+            ));
         }
         column.into()
     }
@@ -93,50 +177,42 @@ impl<'a> Sidebar<'a> {
         if !self.offer_unified {
             return widget::Space::new().height(Length::Fixed(0.0)).into();
         }
-        widget::button::custom(widget::text::body(fl!("all-inboxes")).width(Length::Fill))
-            .width(Length::Fill)
-            .selected(self.showing_unified)
-            .class(crate::ui::row_class())
-            .on_press(Message::ShowUnified)
-            .into()
+        Self::row(
+            "mail-folder-inbox-symbolic",
+            fl!("all-inboxes"),
+            0,
+            0.0,
+            self.showing_unified,
+            Message::ShowUnified,
+        )
     }
 
     fn drafts_row(&self) -> Element<'a, Message> {
         if self.drafts == 0 && !self.showing_drafts {
             return widget::Space::new().height(Length::Fixed(0.0)).into();
         }
-        let spacing = cosmic::theme::spacing();
-        let row = widget::row::with_capacity(2)
-            .align_y(cosmic::iced::Alignment::Center)
-            .spacing(spacing.space_xxs)
-            .push(widget::text::body(fl!("drafts")).width(Length::Fill))
-            .push(widget::text::caption(self.drafts.to_string()));
-
-        widget::button::custom(row)
-            .width(Length::Fill)
-            .selected(self.showing_drafts)
-            .class(crate::ui::row_class())
-            .on_press(Message::ShowDrafts)
-            .into()
+        Self::row(
+            "emblem-documents-symbolic",
+            fl!("drafts"),
+            self.drafts,
+            0.0,
+            self.showing_drafts,
+            Message::ShowDrafts,
+        )
     }
 
     fn outbox_row(&self) -> Element<'a, Message> {
         if self.outbox == 0 && !self.showing_outbox {
             return widget::Space::new().height(Length::Fixed(0.0)).into();
         }
-        let spacing = cosmic::theme::spacing();
-        let row = widget::row::with_capacity(2)
-            .align_y(cosmic::iced::Alignment::Center)
-            .spacing(spacing.space_xxs)
-            .push(widget::text::body(fl!("outbox")).width(Length::Fill))
-            .push(widget::text::caption(self.outbox.to_string()));
-
-        widget::button::custom(row)
-            .width(Length::Fill)
-            .selected(self.showing_outbox)
-            .class(crate::ui::row_class())
-            .on_press(Message::ShowOutbox)
-            .into()
+        Self::row(
+            "mail-folder-outbox-symbolic",
+            fl!("outbox"),
+            self.outbox,
+            0.0,
+            self.showing_outbox,
+            Message::ShowOutbox,
+        )
     }
 
     fn folder_list(&self) -> Element<'a, Message> {
@@ -166,36 +242,23 @@ impl<'a> Sidebar<'a> {
             widget::column::with_capacity(self.folders.len()).spacing(spacing.space_xxxs);
 
         for (index, folder) in self.folders.iter().enumerate() {
-            let selected = self.selected_folder == Some(index);
-            let unread = self.unread.get(&folder.wire_name).copied().unwrap_or(0);
-
             // Nesting is shown by indentation rather than by a collapsible
             // tree: a mail folder tree is browsed far more often than it is
             // restructured, and every expander is a click between the user and
             // a folder they can already see.
             // One step of the theme's own rhythm per level, capped at four:
             // deeper than that and the name has nowhere left to go.
-            let indent = f32::from(
-                u16::try_from(folder.depth().min(4)).unwrap_or(0) * u16::from(spacing.space_s),
-            );
+            let indent =
+                f32::from(u16::try_from(folder.depth().min(4)).unwrap_or(0) * spacing.space_s);
 
-            let mut row = widget::row::with_capacity(3)
-                .align_y(cosmic::iced::Alignment::Center)
-                .spacing(spacing.space_xxs)
-                .push(widget::Space::new().width(Length::Fixed(indent)))
-                .push(widget::text::body(folder.leaf_name().to_owned()).width(Length::Fill));
-
-            if unread > 0 {
-                row = row.push(widget::text::caption(unread.to_string()));
-            }
-
-            column = column.push(
-                widget::button::custom(row)
-                    .width(Length::Fill)
-                    .selected(selected)
-                    .class(crate::ui::row_class())
-                    .on_press(Message::FolderSelected(index)),
-            );
+            column = column.push(Self::row(
+                row_icon(folder),
+                row_name(folder),
+                self.unread.get(&folder.wire_name).copied().unwrap_or(0),
+                indent,
+                self.selected_folder == Some(index),
+                Message::FolderSelected(index),
+            ));
         }
 
         column.into()

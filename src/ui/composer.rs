@@ -74,10 +74,16 @@ pub fn view<'a>(
                 .on_action(|action| Message::ComposeBodyAction(Box::new(action))),
         );
 
-    column = column.push(attachments(composer));
+    // Only what is actually attached. An empty composer showing an
+    // attachments section is a section about nothing.
+    if !composer.draft.attachments.is_empty() {
+        column = column.push(attachments(composer));
+    }
 
     if let Some(error) = &composer.error {
-        column = column.push(crate::ui::destructive(error.clone()));
+        column = column.push(
+            widget::container(crate::ui::destructive(error.clone())).padding([0, spacing.space_m]),
+        );
     }
 
     let send = widget::button::text(if composer.sending {
@@ -93,15 +99,23 @@ pub fn view<'a>(
     let idle = !composer.sending;
 
     column
+        // The seam the header has, at the other end: the bar underneath is
+        // about the message rather than part of it, and without a line the
+        // buttons float on the same ground as the text being written.
+        .push(widget::divider::horizontal::light())
         .push(
             widget::row::with_capacity(5)
+                .align_y(Alignment::Center)
                 .spacing(spacing.space_xs)
+                // Attaching a file belongs with the other things done *to*
+                // the message, not on a line of its own above them.
+                .push(button(fl!("attach"), idle, Message::AttachFile))
+                .push(button(fl!("save-draft"), idle, Message::ComposeCancel))
                 .push(destructive_button(
                     fl!("discard"),
                     idle,
                     Message::ComposeDiscard,
                 ))
-                .push(button(fl!("save-draft"), idle, Message::ComposeCancel))
                 .push(widget::Space::new().width(Length::Fill))
                 .push(button(
                     fl!("send-later"),
@@ -114,18 +128,29 @@ pub fn view<'a>(
                     send.on_press(Message::ComposeSend)
                 } else {
                     send
-                }),
+                })
+                .padding([spacing.space_xs, spacing.space_m]),
         )
         .into()
 }
 
+/// Destructive in colour, not in mass.
+///
+/// The theme's `Destructive` class is a filled red slab, which made the
+/// loudest thing in the composer a button that throws the message away — and
+/// left Send, the thing the window is for, quieter than it. The fill belongs
+/// on the confirm button of a dialog about something irreversible; here the
+/// warning is carried by the label's colour, which is enough on a button that
+/// says "Discard".
 fn destructive_button(label: String, enabled: bool, message: Message) -> Element<'static, Message> {
-    let button = widget::button::text(label).class(cosmic::theme::Button::Destructive);
-    if enabled {
-        button.on_press(message).into()
-    } else {
-        button.into()
+    if !enabled {
+        // A red label on a button that cannot be pressed reads as pressable.
+        return widget::button::text(label).into();
     }
+    widget::button::custom(crate::ui::destructive(label))
+        .class(cosmic::theme::Button::Text)
+        .on_press(message)
+        .into()
 }
 
 fn button(label: String, enabled: bool, message: Message) -> Element<'static, Message> {
@@ -144,25 +169,12 @@ fn attachments(composer: &Composer) -> Element<'_, Message> {
 
     let mut column = widget::column::with_capacity(attached.len() + 1)
         .spacing(spacing.space_xxxs)
-        .push(
-            widget::row::with_capacity(2)
-                .align_y(Alignment::Center)
-                .spacing(spacing.space_xxs)
-                .push(button(
-                    fl!("attach"),
-                    !composer.sending,
-                    Message::AttachFile,
-                ))
-                .push(if attached.is_empty() {
-                    widget::text::caption(String::new())
-                } else {
-                    widget::text::caption(fl!(
-                        "attachments-total",
-                        count = attached.len(),
-                        size = crate::ui::size(composer.draft.attachment_bytes())
-                    ))
-                }),
-        );
+        .padding([spacing.space_xxs, spacing.space_m])
+        .push(crate::ui::muted(fl!(
+            "attachments-total",
+            count = attached.len(),
+            size = crate::ui::size(composer.draft.attachment_bytes())
+        )));
 
     for (index, attachment) in attached.iter().enumerate() {
         column = column.push(
@@ -261,6 +273,10 @@ fn to_row(composer: &Composer) -> Element<'_, Message> {
         control = control.push(
             widget::button::text(fl!("show-cc"))
                 .class(cosmic::theme::Button::Text)
+                // A button's own padding is taller than a field's, and every
+                // header row has to be the same height or the label column
+                // stops reading as a column.
+                .padding([0, spacing.space_xxs])
                 .on_press(Message::ComposeShowCc),
         );
     }
@@ -280,7 +296,7 @@ fn seamless(
     cosmic::widget::text_editor::Style {
         background: cosmic::iced::Background::Color(cosmic::iced::Color::TRANSPARENT),
         border: cosmic::iced::Border::default(),
-        placeholder: cosmic.on_bg_color().into(),
+        placeholder: crate::ui::muted_color(theme),
         value: cosmic.on_bg_color().into(),
         selection: cosmic.accent.base.into(),
     }

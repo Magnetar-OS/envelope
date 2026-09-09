@@ -5,6 +5,12 @@ accounts = Accounts
 
 # Sidebar
 no-folders = No folders yet. Set up a mail server, then sync.
+folder-inbox = Inbox
+folder-sent = Sent
+folder-drafts = Drafts
+folder-archive = Archive
+folder-junk = Junk
+folder-trash = Trash
 
 # Account setup
 no-accounts = No accounts configured.

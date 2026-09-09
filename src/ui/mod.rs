@@ -58,12 +58,32 @@ pub fn relative_date(date: Option<DateTime<Utc>>) -> String {
 pub static PALETTE_ID: std::sync::LazyLock<cosmic::widget::Id> =
     std::sync::LazyLock::new(|| cosmic::widget::Id::new("palette"));
 
+/// How much of the foreground secondary text keeps.
+///
+/// libcosmic's own convention for a secondary line is a smaller size —
+/// `text::caption` under a `text::body` — and nothing else; the theme has no
+/// secondary *colour* to ask for. That works for a settings row and not for a
+/// label beside a value or an empty state, where the text has to stay
+/// readable at body size and still stand back from what it is describing.
+/// Alpha on the theme's own foreground is the one dimming that cannot clash
+/// with a palette: it is the same hue on the same ground in every theme the
+/// user might pick.
+const MUTED_ALPHA: f32 = 0.7;
+
+/// The foreground, dimmed. See [`MUTED_ALPHA`].
+#[must_use]
+pub fn muted_color(theme: &cosmic::Theme) -> cosmic::iced::Color {
+    let mut color = theme.cosmic().on_bg_color();
+    color.alpha *= MUTED_ALPHA;
+    color.into()
+}
+
 /// Text in the muted tone labels and secondary notes share.
 #[must_use]
 pub fn muted(text: String) -> cosmic::widget::Text<'static, cosmic::Theme> {
     cosmic::widget::text::body(text).class(cosmic::theme::Text::Custom(|theme| {
         cosmic::iced::widget::text::Style {
-            color: Some(theme.cosmic().on_bg_color().into()),
+            color: Some(muted_color(theme)),
             ..Default::default()
         }
     }))

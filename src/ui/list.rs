@@ -61,8 +61,13 @@ impl<'a> List<'a> {
             return crate::ui::empty_state(text);
         }
 
+        // The gap between rows is deliberately wider than the gap between a
+        // row's own lines. That difference is the whole reason a three-line
+        // row reads as one thing: with both set to the same step the lines
+        // pool into an undifferentiated column of text, and the eye has to
+        // parse the content to find out where each message begins.
         let mut column =
-            widget::column::with_capacity(self.conversations.len()).spacing(spacing.space_xxxs);
+            widget::column::with_capacity(self.conversations.len()).spacing(spacing.space_xxs);
 
         for (index, conversation) in self.conversations.iter().enumerate() {
             column = column.push(self.row(index, conversation));
@@ -135,17 +140,24 @@ impl<'a> List<'a> {
             }
         }
 
-        let body = widget::column::with_capacity(3)
+        let mut body = widget::column::with_capacity(3)
             .spacing(spacing.space_xxxs)
             .push(heading)
-            .push(subject_line)
-            .push(one_line(widget::text::caption(
+            .push(subject_line);
+
+        // A message whose body is empty — or whose only content is an
+        // attachment — gets two lines rather than two lines and a gap. An
+        // empty third line is indistinguishable from a rendering fault, and
+        // it breaks the row rhythm exactly where the eye is relying on it.
+        if !conversation.snippet.trim().is_empty() {
+            body = body.push(one_line(widget::text::caption(
                 conversation.snippet.clone(),
             )));
+        }
 
         widget::button::custom(body)
             .width(Length::Fill)
-            .padding([spacing.space_xxs, spacing.space_s])
+            .padding([spacing.space_xs, spacing.space_s])
             .selected(selected)
             .class(crate::ui::row_class())
             .on_press(Message::ConversationSelected(index))
@@ -172,7 +184,7 @@ pub fn drafts(saved: &[cosmic_pim_mail::drafts::Saved]) -> Element<'_, Message> 
     }
 
     let mut column = widget::column::with_capacity(saved.len() + 1)
-        .spacing(spacing.space_xxxs)
+        .spacing(spacing.space_xxs)
         .push(
             widget::text::caption(fl!("drafts-sync-note"))
                 .apply(widget::container)
@@ -206,7 +218,7 @@ pub fn drafts(saved: &[cosmic_pim_mail::drafts::Saved]) -> Element<'_, Message> 
                 .push(
                     widget::button::custom(body)
                         .width(Length::Fill)
-                        .padding([spacing.space_xxs, spacing.space_s])
+                        .padding([spacing.space_xs, spacing.space_s])
                         .class(crate::ui::row_class())
                         .on_press(Message::DraftOpened(draft.id.clone())),
                 )
@@ -255,7 +267,7 @@ pub fn results<'a>(
             .into();
     }
 
-    let mut column = widget::column::with_capacity(hits.len() + 1).spacing(spacing.space_xxxs);
+    let mut column = widget::column::with_capacity(hits.len() + 1).spacing(spacing.space_xxs);
 
     for (index, hit) in hits.iter().enumerate() {
         // The folder is half of what the user wanted to know: a search that
@@ -294,7 +306,7 @@ pub fn results<'a>(
         column = column.push(
             widget::button::custom(body)
                 .width(Length::Fill)
-                .padding([spacing.space_xxs, spacing.space_s])
+                .padding([spacing.space_xs, spacing.space_s])
                 .class(crate::ui::row_class())
                 .on_press(Message::HitOpened(index)),
         );
@@ -327,7 +339,7 @@ pub fn outbox(queued: &[cosmic_pim_mail::outbox::Queued]) -> Element<'_, Message
             .into();
     }
 
-    let mut column = widget::column::with_capacity(queued.len()).spacing(spacing.space_xxxs);
+    let mut column = widget::column::with_capacity(queued.len()).spacing(spacing.space_xxs);
 
     for message in queued {
         let mut body = widget::column::with_capacity(3)
@@ -381,7 +393,7 @@ pub fn unified(entries: &[crate::mail::UnifiedConversation]) -> Element<'_, Mess
         return crate::ui::empty_state(fl!("empty-folder"));
     }
 
-    let mut column = widget::column::with_capacity(entries.len()).spacing(spacing.space_xxxs);
+    let mut column = widget::column::with_capacity(entries.len()).spacing(spacing.space_xxs);
 
     for (index, entry) in entries.iter().enumerate() {
         let conversation = &entry.conversation;
@@ -425,7 +437,7 @@ pub fn unified(entries: &[crate::mail::UnifiedConversation]) -> Element<'_, Mess
         column = column.push(
             widget::button::custom(body)
                 .width(Length::Fill)
-                .padding([spacing.space_xxs, spacing.space_s])
+                .padding([spacing.space_xs, spacing.space_s])
                 .class(crate::ui::row_class())
                 .on_press(Message::UnifiedOpened(index)),
         );
