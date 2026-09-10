@@ -1986,12 +1986,41 @@ impl AppModel {
                                 conversations.iter().filter(|c| c.unread).count(),
                             );
                         }
+                        // The selection is an *index* into a list that just
+                        // changed underneath it, so it cannot be kept as it
+                        // is — but the conversation it pointed at usually
+                        // still exists, one row up or down, and dropping the
+                        // selection outright left the reader showing a
+                        // message that nothing was selecting. Every action
+                        // that needs a selection — label, move, snooze —
+                        // then did nothing at all, silently, while the user
+                        // was looking at the message they meant it for. A
+                        // reload happens on its own after a sync, so this
+                        // arrived without anybody touching anything.
+                        //
+                        // The thread id survives the reload, so the selection
+                        // is re-found by identity rather than by position.
+                        let was = self
+                            .selected_conversation
+                            .and_then(|index| self.conversations.get(index))
+                            .map(|conversation| conversation.thread_id.clone());
+
                         self.conversations = conversations;
                         self.conversation_labels = labels;
-                        // The selection is an index into a list that just
-                        // changed underneath it; keeping it would open an
-                        // unrelated conversation.
-                        self.selected_conversation = None;
+                        self.selected_conversation = was.and_then(|thread| {
+                            self.conversations
+                                .iter()
+                                .position(|conversation| conversation.thread_id == thread)
+                        });
+
+                        // Gone for good — filed elsewhere, or deleted on
+                        // another device. The reader stops showing it rather
+                        // than keeping a message on screen that the list no
+                        // longer has a row for.
+                        if self.selected_conversation.is_none() {
+                            self.opened = None;
+                            self.reader_error = None;
+                        }
                     }
                     Err(why) => {
                         self.conversations.clear();
