@@ -57,9 +57,9 @@ Everything Geary does, and whether Envelope does it.
 | Feature | Status | Notes |
 |---|---|---|
 | Conversation view | have | JWZ threading, deterministic thread ids, rebuildable index. |
-| HTML message display | rejected | 04's display-security position: text extraction only, no renderer, so there is no sanitiser for a renderer to disagree with and nothing remote can load. **ROADMAP flags the reversal**: text-first stays the default, but an opt-in, per-message *sanitized* HTML view (no remote content, no scripts) is a Milestone 3 decision — a receipt or boarding pass is unreadable as extracted text. Until that lands, this is the one baseline row not covered. |
+| HTML message display | partial | **Structure, not appearance.** An HTML message is read into a Nib document and shown with its headings, lists, tables, links and blockquotes; `text/plain` keeps the folding reader, because a document has no `>` markers to fold. The display-security position is unchanged and now holds as properties rather than as a mechanism: nothing loads (there is no image loader to disable), nothing scripts or styles (the schema is the allow-list, so `<script>`/`<style>`/`style=` are unrepresentable rather than stripped), and there is still one html5ever parse. Sender styling *is* here, as the safe subset: colour, background, weight, size and alignment, from `style=` and from the `bgcolor`/`<font>` attributes mail generators still emit. What is not here is layout — no box model, no floats, no positioning — so a message designed as a poster reads as its structure. And a colour cannot hide text: it is checked against the pixels it will land on and replaced with the reader’s own below 3:1 contrast, so white-on-white is closed by construction rather than by detection. |
 | Remote image blocking | have | Structurally: nothing loads, so the setting cannot be got wrong; the reader says when a message *wanted* to phone home. Stronger than Geary's per-sender allow. |
-| Inline images (CID) | gap | Follows from the HTML decision; listed as attachments instead. Resolves with the sanitized view or stays rejected with it. |
+| Inline images (CID) | gap | An `<img>` draws its alt text — `[Quarterly chart]` — and never a request. Not a policy choice any more but an engine one: `image` is an inline node, and iced's `Span` has no width or advance, so there is no way to reserve inline space for a replaced element inside a shaped paragraph. Showing them needs inline replaced-element layout in Nib — a real engine feature, not wiring. The bytes are local, so nothing about the security position blocks it. |
 | Hidden-text detection | have | Exceeds Geary: `display:none`, white-on-white, zero-width splices counted and reported. |
 | Mark read / unread, star | have | |
 | Desktop notifications for new mail | gap | Geary has them; Envelope has push (IMAP IDLE) but posts no notification. |
@@ -70,7 +70,7 @@ Everything Geary does, and whether Envelope does it.
 | Feature | Status | Notes |
 |---|---|---|
 | Compose, reply, reply-all, forward | have | Plain text, quoting on fields not bytes. |
-| Rich-text (HTML) composer | rejected | The reader shows text; an HTML composer would write in a format the application cannot display. Per ROADMAP, revisit only after the opt-in sanitized HTML view exists — the argument then dissolves on its own. |
+| Rich-text (HTML) composer | gap | The argument that blocked it has dissolved: the reader shows structure, so a composer emitting structure is no longer writing in a format the application cannot display. The composer's body is already a document, and `nib-html` serialises as well as parses — what is missing is the second body on the `Draft`, not the means to produce one. |
 | Spell check | gap | Geary has it in the composer. |
 | Drafts, server-synced | have | Just landed (see intro). Replace-not-accumulate; offline discards leave tombstones and retire the server copy on the next sweep. Proven against live Dovecot; rest of the server zoo unexercised. |
 | Per-account signature | gap | One From identity per account, no signature text. |
@@ -113,8 +113,9 @@ Everything Geary does, and whether Envelope does it.
 | Save message as file | have | Byte-exact `.eml`. |
 | mbox import | have | Uploads into the open folder, so the archive becomes server mail. Geary has neither direction. |
 
-**Baseline verdict:** covered, except — HTML display (rejected, reversal
-flagged for Milestone 3), and the small-but-real Geary rows: notifications,
+**Baseline verdict:** covered, except — HTML display (partial: structure
+without CSS, and CID images still alt text), and the small-but-real Geary
+rows: notifications,
 spell check, signatures, junk verb, print, undo send. None of these is
 data-loss-shaped; all are listed as gaps, not waved away.
 
@@ -231,6 +232,9 @@ import are off the list), then extended:
 13. **iMIP handoff to Slate** — Milestone 4; the suite's answer to
     Thunderbird's built-in calendar.
 14. **Print.**
-15. **The sanitized HTML view** — listed last not because it is minor but
-    because it is a *decision* scheduled for Milestone 3, not a backlog item;
-    once taken, it also reopens rich-text compose on 04's own terms.
+15. **Visual fidelity for HTML** — the structural reader has landed, and with
+    it the decision 04 had scheduled. What remains is CSS, and that is a
+    rendering engine in the trust boundary rather than a backlog item: it
+    needs its own argument, not a checkbox. Inline CID images sit behind the
+    same question at a smaller scale — they need inline replaced-element
+    layout in Nib, and no security position blocks them.

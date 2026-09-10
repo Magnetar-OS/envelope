@@ -38,9 +38,9 @@ separates "not done yet" from "not doing".
 | Store | SQLCipher-encrypted SQLite | maildir + rebuildable index |
 | Threading | JWZ, server thread ids where offered | JWZ |
 | Folder tree | full, drag-reorder | full, read-only |
-| Read | sandboxed iframe + DOMPurify + CSP | text only, no renderer |
+| Read | sandboxed iframe + DOMPurify + CSP | schema-bound document, no renderer |
 | Auth results | badges + explainer | failures shown, passes not |
-| Compose | TipTap rich text, 3 window modes | plain text, one pane |
+| Compose | TipTap rich text, 3 window modes | Nib document, sent as plain text, one pane |
 | Attachments | send, receive, drag-drop, inline CID | send, receive, save |
 | Drafts | server-synced | local |
 | Import/export | mbox/eml both ways | mbox import, .eml export |
@@ -56,11 +56,50 @@ In rough order of how much they are missed: **server-side drafts**, **rules**,
 
 ### Not doing, and why
 
-- **Rich-text compose.** The reader shows text; an HTML composer would write in
-  a format this application cannot display.
-- **An HTML renderer.** Text-only is the stronger display-security position, not
-  a lesser one — there is no sanitiser for a renderer to disagree with, and no
-  remote content can load because nothing loads.
+- **Rich-text compose.** The reader shows an HTML message's structure but the
+  composer still writes `text/plain`. The body is a document rather than a
+  string, so the machinery for a second HTML part exists; what is missing is
+  the decision to send one, not the ability.
+- **An HTML *renderer*.** Not a renderer — a *reader*. The distinction is the
+  whole of the display-security position, and it survived the reversal below
+  intact.
+
+### The display-security position, stated as properties
+
+The original spelling of this was "text-only". That was the mechanism, not the
+position, and it has been replaced by the properties it was standing in for.
+An HTML message now shows its structure — headings, lists, tables, and the
+blockquotes a thread is genuinely made of — read into a Nib document. What
+holds, and why:
+
+- **Nothing can load.** Not blocked; absent. There is no image loader anywhere
+  in the path, so "block remote content" is not a setting that can be got
+  wrong — there is no code path it would switch off. A tracking pixel could
+  not fire before and cannot now.
+- **Nothing can script or style.** A `<script>`, a `<style>` and an inline
+  `style=` are not stripped: the schema is the allow-list and there is nowhere
+  in the model to put them, so they cannot survive the read. That is a
+  property of the data structure, not the coverage of a filter.
+- **There is still one parser.** `nib-html` reads with html5ever — the same
+  parser the text extractor walks. Nothing downstream re-parses, so there is
+  still no sanitiser for a renderer to disagree with.
+
+Sender styling is honoured as a subset — colour, background, weight, size and
+alignment — enforced the same way the elements are: a declaration maps onto one
+of those properties or it does not exist. A fourth property falls out of it:
+
+- **Colour cannot hide text.** An authored colour is checked against the pixels
+  it will actually land on and replaced with the reader's own below 3:1
+  contrast. White-on-white is closed by construction rather than by detection —
+  there is no list of suspicious colours to keep current, because the check is
+  on the composited result rather than on the spelling, and transparency
+  resolves before the ratio is taken.
+
+What this deliberately does **not** buy is visual *layout*. There is no box
+model: no floats, no positioning, no sizing. A message designed as a poster
+reads as its structure. That is a smaller promise than the `blitz`/`stylo` plan
+the roadmap once carried, and it is the one that could be made without a
+rendering engine in the trust boundary.
 - **An encrypted store.** Files-as-truth is the suite's promise. Encryption at
   rest is the disk's job on a Linux desktop.
 - **The AI layer, the energy system, message typing, and the alternative inbox

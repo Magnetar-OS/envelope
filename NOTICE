@@ -1,8 +1,9 @@
 Envelope
 Copyright (c) 2026 Dominikos Pritis and contributors
 
-Envelope links the cosmic-pim substrate, and the binaries distributed from this
-repository therefore contain code from the projects below. The notices are
+Envelope links the cosmic-pim substrate and the Nib text engine, and the
+binaries distributed from this repository therefore contain code from the
+projects below. The notices are
 reproduced here because the obligation travels with the binary, not with the
 source repository the code happens to live in.
 

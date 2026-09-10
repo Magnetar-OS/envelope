@@ -27,6 +27,8 @@ use cosmic::{Apply as _, Element};
 use cosmic_pim_accounts::{Account, AccountStore, MailEndpoint, MailProtocol, Transport};
 use cosmic_pim_mail::folder::{Folder, SpecialUse};
 use cosmic_pim_mail::model::Flags;
+use nib_model::history::Options as HistoryOptions;
+use nib_model::state::EditorState;
 
 use crate::actions::{self, Action, Resolved};
 use crate::config::Config;
@@ -34,6 +36,14 @@ use crate::fl;
 use crate::mail::{self, Connection, Conversation, Opened, SyncReport};
 
 const APP_ID: &str = "com.magnetaros.Envelope";
+/// Where an outgoing `text/plain` body is wrapped.
+///
+/// RFC 5322 asks for lines under 78 characters; 72 is the convention on top of
+/// it, and the headroom is what lets the message survive being quoted twice
+/// without the wrap collapsing. Named here rather than taken from
+/// `nib_text::Options::default` so that the number a test asserts on and the
+/// number the composer passes are the same one.
+const WRAP_COLUMNS: usize = 72;
 /// Read from the manifest rather than repeated here, so the About page cannot
 /// name a repository the package does not come from.
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
@@ -297,13 +307,17 @@ fn read_title(subject: &str) -> String {
 /// explained.
 pub struct Composer {
     pub draft: cosmic_pim_mail::Draft,
-    /// The body being typed.
+    /// The body being typed, as a document rather than a string.
     ///
-    /// Editor content rather than the draft's `String`, because a message is
-    /// prose: it has paragraphs, and it is edited around rather than only
-    /// appended to. The draft keeps the string — it is what gets serialised,
-    /// mirrored and sent — and [`Composer::resolved`] is where the two meet.
-    pub body: widget::text_editor::Content,
+    /// A message is prose: it has paragraphs, it is quoted, and it is edited
+    /// around rather than only appended to. Holding it as a Nib document is
+    /// what makes a quote a `blockquote` node instead of two characters at the
+    /// front of a line — so Enter inside one continues it because the caret is
+    /// *in* it, not because something re-read the line and copied its prefix.
+    ///
+    /// The draft keeps the string; it is what gets serialised, mirrored and
+    /// sent, and [`Composer::resolved`] is where the two meet.
+    pub body: EditorState,
     pub to: String,
     pub cc: String,
     pub bcc: String,
@@ -324,12 +338,6 @@ pub struct Composer {
     /// hidden recipient.
     pub show_cc: bool,
     pub error: Option<String>,
-    /// Undo and redo for the body.
-    ///
-    /// The composer's, not the application's: `text_editor` remembers nothing,
-    /// and before this Ctrl+Z in a half-written message reached past the
-    /// composer and undid the last *mail* operation. See [`crate::text`].
-    pub history: crate::text::History,
 }
 
 impl Composer {
@@ -341,12 +349,15 @@ impl Composer {
             cc: join(&draft.cc),
             bcc: join(&draft.bcc),
             // Seeded from the draft, which is how a reply opens with the
-            // quoted text it was built with — several lines of it.
-            body: widget::text_editor::Content::with_text(&draft.body),
-            // The floor undo stops at is the body as it opened — for a reply,
-            // the quoted message. Undoing past that would empty a composer
-            // the user never emptied.
-            history: crate::text::History::new(draft.body.clone()),
+            // quoted text it was built with — several lines of it, parsed back
+            // into the blockquote it was written as.
+            //
+            // The history plugin is installed here rather than left to the
+            // widget, because it is what makes undo stop at the body the
+            // composer opened with: an empty history over the *quoted* document
+            // has nothing below it to walk back to, so Ctrl+Z cannot throw away
+            // a reply's quoted message the user never typed.
+            body: Self::state(&draft.body),
             draft,
             answering,
             draft_id: None,
@@ -362,85 +373,101 @@ impl Composer {
     /// — a Drafts list full of blanks is how the feature stops being useful.
     fn is_worth_saving(&self) -> bool {
         !self.draft.subject.trim().is_empty()
-            || !self.body.text().trim().is_empty()
+            || !self.body.doc().text_content().trim().is_empty()
             || !self.to.trim().is_empty()
             || !self.cc.trim().is_empty()
             || !self.bcc.trim().is_empty()
     }
 
-    /// Performs one editor action on the body, and remembers what it did.
+    /// A fresh editor state over `body`, with a history.
     ///
-    /// Two things happen here that the widget does not do on its own:
-    ///
-    /// - **Enter continues what the line was.** A `> ` quote, a `- ` bullet, a
-    ///   numbered item. The quote is the case that matters: a reply written
-    ///   inside quoted text that silently stops being quoted halfway down
-    ///   attributes the rest of the paragraph to the person being quoted.
-    /// - **Edits are recorded**, coalesced into steps a person would recognise
-    ///   as one action. Cursor movement records nothing but still updates where
-    ///   undo will return to.
-    fn edit(&mut self, action: widget::text_editor::Action) {
-        use widget::text_editor::{Action, Edit};
-
-        let before = self.body.cursor().position;
-        let before = (before.line, before.column);
-        let kind = crate::text::EditKind::of(&action);
-
-        match (&action, self.continuation()) {
-            // An empty continued line: Enter clears it rather than making a
-            // second empty one. That is how a list or a quote is left.
-            (Action::Edit(Edit::Enter), Some(prefix)) if prefix.is_empty() => {
-                self.body
-                    .perform(Action::Move(widget::text_editor::Motion::Home));
-                self.body
-                    .perform(Action::Select(widget::text_editor::Motion::End));
-                self.body.perform(Action::Edit(Edit::Delete));
-            }
-            (Action::Edit(Edit::Enter), Some(prefix)) => {
-                self.body.perform(Action::Edit(Edit::Enter));
-                self.body
-                    .perform(Action::Edit(Edit::Paste(std::sync::Arc::new(prefix))));
-            }
-            _ => self.body.perform(action),
-        }
-
-        let after = self.body.cursor().position;
-        let after = (after.line, after.column);
-        match kind {
-            Some(kind) => self.history.record(self.body.text(), before, after, kind),
-            // Not an edit — but the cursor may have moved, and undo should
-            // come back to where the user actually is.
-            None => self.history.moved(after),
-        }
+    /// `nib_text::parse` is the inverse of what [`Self::text`] writes: quoted
+    /// runs come back as blockquotes, blank-line-separated runs as paragraphs,
+    /// and the single newlines inside a hard-wrapped paragraph as the hard
+    /// breaks they were. A round trip through the two is what lets a draft be
+    /// saved as `text/plain` and reopened as a document.
+    fn state(body: &str) -> EditorState {
+        let schema = nib_model::basic::schema();
+        let doc = writing_space(&schema, nib_text::parse(&schema, body), body);
+        EditorState::new(schema, doc)
+            .with_plugins(vec![nib_model::history::history(HistoryOptions::default())])
     }
 
-    /// What Enter on the current line should open the next one with.
-    fn continuation(&self) -> Option<String> {
-        let line = self.body.cursor().position.line;
-        crate::text::continuation(&self.body.line(line)?.text)
+    /// Performs one editor action on the body.
+    ///
+    /// Almost nothing happens here, and that is the change: continuing a quote
+    /// on Enter, coalescing a run of typing into one undo step and restoring
+    /// the caret where an edit began were all this composer's problem when the
+    /// body was a string beside a widget that remembered nothing. They are the
+    /// document's problem now — Enter is `split_block` against a schema that
+    /// knows the caret is inside a `blockquote`, and undo is a step inverted
+    /// against the document it applied to.
+    ///
+    /// What is left is the two things the *application* has an opinion about:
+    /// which transactions to accept, and what a link click means.
+    fn edit(&mut self, action: nib::Action) {
+        match action {
+            nib::Action::Edit(tr) => self.body = self.body.applied(*tr),
+            // A link in a composer is text being written, not a destination —
+            // but the user pointed at it deliberately, and the same click in
+            // the reader opens a browser. Consistency is worth more here than
+            // the keystroke it saves.
+            nib::Action::Link(href) => {
+                if let Err(error) = open::that_detached(&href) {
+                    tracing::warn!(%href, %error, "could not open link");
+                }
+            }
+            // The rest are the widget telling the application about itself.
+            // Prompt and Mode only ever arrive with modal editing turned on,
+            // which a composer does not turn on: a message is written, not
+            // navigated.
+            nib::Action::Focused
+            | nib::Action::Blurred
+            | nib::Action::Context { .. }
+            | nib::Action::Prompt(_)
+            | nib::Action::Mode(_) => {}
+        }
     }
 
     /// Steps the body back one edit. Returns false when there is nothing to
     /// step back to, so the caller can fall through to whatever else Ctrl+Z
     /// might have meant.
     fn undo(&mut self) -> bool {
-        let Some((text, caret)) = self.history.undo() else {
+        let Some(tr) = nib_model::history::undo(&self.body) else {
             return false;
         };
-        let text = text.to_owned();
-        crate::text::replace(&mut self.body, &text);
-        crate::text::restore(&mut self.body, caret);
+        self.body = self.body.applied(tr);
         true
     }
 
     fn redo(&mut self) -> bool {
-        let Some((text, caret)) = self.history.redo() else {
+        let Some(tr) = nib_model::history::redo(&self.body) else {
             return false;
         };
-        let text = text.to_owned();
-        crate::text::replace(&mut self.body, &text);
-        crate::text::restore(&mut self.body, caret);
+        self.body = self.body.applied(tr);
         true
+    }
+
+    /// The body as `text/plain`, wrapped or not.
+    ///
+    /// Wrapping is a property of the *serialiser* rather than a pass over the
+    /// result, which is the whole reason the body is a document: a wrapped
+    /// quoted line continues with the markers its blockquote implies, because
+    /// the prefix is written from the structure rather than copied off the
+    /// line above. The string-level wrapper this replaces had to find the
+    /// prefix by re-reading what it had just written.
+    fn text(&self, wrap: Option<usize>) -> String {
+        nib_text::to_text(
+            self.body.doc(),
+            nib_text::Options {
+                wrap,
+                // A mail body is prose, not a document with a table of
+                // contents: a heading underlined with `===` reads as somebody
+                // typing equals signs.
+                underline_headings: false,
+                ..nib_text::Options::default()
+            },
+        )
     }
 
     /// The draft as it should go out: [`Self::resolved`] with the body
@@ -452,7 +479,7 @@ impl Composer {
     /// which the line lengths are anyone else's problem.
     fn outgoing(&self) -> cosmic_pim_mail::Draft {
         let mut draft = self.resolved();
-        draft.body = crate::text::wrap(&draft.body, crate::text::WRAP_COLUMNS);
+        draft.body = self.text(Some(WRAP_COLUMNS));
         draft
     }
 
@@ -462,7 +489,10 @@ impl Composer {
         draft.to = parse_addresses(&self.to);
         draft.cc = parse_addresses(&self.cc);
         draft.bcc = parse_addresses(&self.bcc);
-        draft.body = self.body.text();
+        // Unwrapped: a *draft* keeps what was typed. Wrapping on every save
+        // would reformat the user's paragraphs under them the next time they
+        // opened it.
+        draft.body = self.text(None);
         draft
     }
 
@@ -471,6 +501,47 @@ impl Composer {
     pub fn problem(&self) -> Option<&'static str> {
         self.resolved().problem()
     }
+}
+
+/// Puts back the empty paragraph a reply is written in.
+///
+/// `Draft::reply` spells "here is where you write" as the two newlines its body
+/// opens with. A document has no blank lines to carry that — `nib_text::parse`
+/// sees nothing before the attribution and starts the document at it — so a
+/// reply would open with the caret in front of "On Tuesday, Ada wrote:" and
+/// the first keystroke would land inside the attribution line.
+///
+/// Keyed off the leading newline rather than applied always, because a draft
+/// being reopened has already had this done to it: adding a paragraph on every
+/// open would grow a blank line at the top of a draft each time it was looked
+/// at.
+fn writing_space(
+    schema: &nib_model::schema::Schema,
+    doc: nib_model::node::Node,
+    body: &str,
+) -> nib_model::node::Node {
+    use nib_model::fragment::Fragment;
+    use nib_model::mark::Marks;
+
+    if !body.starts_with('\n') {
+        return doc;
+    }
+    let Some(paragraph) = schema.node_id(nib_model::basic::nodes::PARAGRAPH) else {
+        return doc;
+    };
+    let Ok(empty) = schema.create(paragraph, None, Fragment::empty(), Marks::none()) else {
+        return doc;
+    };
+    let mut content = vec![empty];
+    content.extend(doc.content().iter().cloned());
+    schema
+        .create(
+            doc.type_id(),
+            Some(doc.attrs()),
+            Fragment::from_vec(content),
+            Marks::none(),
+        )
+        .unwrap_or(doc)
 }
 
 fn join(mailboxes: &[cosmic_pim_mail::Mailbox]) -> String {
@@ -814,6 +885,13 @@ pub struct Drag {
 #[derive(Clone, Debug)]
 pub enum Message {
     LaunchUrl(String),
+    /// Nothing to do.
+    ///
+    /// The reader's editor reports focus, blur and right-clicks as well as the
+    /// link activations it is wired up for, and a handler has to return
+    /// *something* for each. This is that something — a message the dispatcher
+    /// answers with `Task::none()` rather than four variants nothing acts on.
+    Ignored,
     ToggleContextPage(ContextPage),
 
     AccountSelected(String),
@@ -897,7 +975,7 @@ pub enum Message {
     ComposeSubjectChanged(String),
     /// One edit in the body: a keystroke, a paste, a selection drag. The
     /// editor owns the text and reports what happened to it.
-    ComposeBodyAction(Box<widget::text_editor::Action>),
+    ComposeBodyAction(Box<nib::Action>),
     /// Close and keep what was typed.
     ComposeCancel,
     /// Close and throw it away — the explicit choice, not the default.
@@ -1857,6 +1935,8 @@ impl AppModel {
     #[allow(clippy::too_many_lines)]
     fn dispatch(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Ignored => Task::none(),
+
             Message::LaunchUrl(url) => {
                 if let Err(why) = open::that_detached(&url) {
                     tracing::warn!(url, %why, "could not open the link");
@@ -2444,19 +2524,22 @@ impl AppModel {
                 // exist before it can be focused and at that point the window
                 // has only been asked for.
                 //
-                // Only a *new* message gets the cursor. A reply's To is
-                // already filled, so focusing it would aim the keyboard at the
-                // recipient list; the field that wants the cursor there is the
-                // body, and the body cannot take it — giving libcosmic's
-                // `text_editor` an id (the only way to name it for a focus
-                // operation) panics the moment any widget operation reaches
+                // A new message gets the cursor in To, a reply gets it in the
+                // body — which is where the writing actually starts when the
+                // recipient is already filled in.
+                //
+                // The body could not take it before. Giving libcosmic's
+                // `text_editor` an id — the only way to name it for a focus
+                // operation — panics the moment any widget operation reaches
                 // it: "Downcast on stateless state", in the wrapper's
-                // `operate`. Verified against the pinned revision. So a reply
-                // opens unfocused rather than focused on the wrong thing.
+                // `operate`. Nib's editor is a widget with real state and a
+                // real `operate`, so a reply now opens focused where it should
+                // rather than unfocused because the alternative crashed.
                 let focus = match self.windows.get(&id) {
                     Some(Detached::Compose(composer)) if composer.to.trim().is_empty() => {
                         widget::text_input::focus(crate::ui::COMPOSE_TO_ID.clone())
                     }
+                    Some(Detached::Compose(_)) => nib::focus(crate::ui::COMPOSE_BODY_ID.clone()),
                     _ => Task::none(),
                 };
 
@@ -5729,19 +5812,42 @@ mod tests {
         composer
     }
 
+    /// A clock reading for a keystroke in an uninterrupted run of typing.
+    ///
+    /// The history groups changes that arrive within `new_group_delay` of each
+    /// other, so a test that leaves every transaction unstamped gets one undo
+    /// step per keystroke and proves nothing about grouping. The widget stamps
+    /// the real clock; a test stamps a fixed one, so what it asserts does not
+    /// depend on how fast the machine running it is.
+    const TYPING: u64 = 1_000;
+
     /// Types `text` a character at a time, the way the editor delivers it.
     fn type_into(composer: &mut Composer, text: &str) {
         for character in text.chars() {
-            composer.edit(widget::text_editor::Action::Edit(
-                widget::text_editor::Edit::Insert(character),
-            ));
+            let mut tr = composer.body.tr().at(TYPING);
+            tr.insert_text(character.encode_utf8(&mut [0; 4]))
+                .expect("a character can always be typed at the caret");
+            composer.edit(nib::Action::Edit(Box::new(tr)));
         }
     }
 
+    /// Enter, through the same keymap the widget consults — so what this
+    /// exercises is the binding the user actually gets rather than a
+    /// rehearsal of it.
     fn press_enter(composer: &mut Composer) {
-        composer.edit(widget::text_editor::Action::Edit(
-            widget::text_editor::Edit::Enter,
-        ));
+        use nib_model::keymap::{Binding, Key, Keymap};
+        let keymap = Keymap::base(composer.body.schema());
+        let tr = keymap
+            .handle(&composer.body, &Binding::plain(Key::Enter))
+            .expect("Enter is bound");
+        composer.edit(nib::Action::Edit(Box::new(tr)));
+    }
+
+    /// Puts the caret at the end of the document, where a reply is written.
+    fn to_end(composer: &mut Composer) {
+        let mut tr = composer.body.tr();
+        tr.set_selection(nib_model::state::Selection::at_end(composer.body.doc()));
+        composer.edit(nib::Action::Edit(Box::new(tr)));
     }
 
     #[test]
@@ -5750,13 +5856,16 @@ mod tests {
         // the paragraph stops being marked as quoted, so the recipient reads
         // the sender's words as the words of whoever was being quoted.
         let mut composer = composing("> what do you think?");
-        composer.edit(widget::text_editor::Action::Move(
-            widget::text_editor::Motion::DocumentEnd,
-        ));
+        to_end(&mut composer);
         press_enter(&mut composer);
         type_into(&mut composer, "agreed");
 
-        assert_eq!(composer.body.text(), "> what do you think?\n> agreed");
+        // Two paragraphs inside the quote, which plain text spells as a bare
+        // `>` between them. The old string-level composer produced a single
+        // line break because it had no notion of a paragraph; this is the
+        // same reply, correctly quoted, in the spelling a recipient's client
+        // will re-quote without collapsing.
+        assert_eq!(composer.text(None), "> what do you think?\n>\n> agreed");
     }
 
     #[test]
@@ -5766,34 +5875,49 @@ mod tests {
         // with list continuation uses for leaving a list, and the one people
         // already have in their fingers.
         let mut composer = composing("> what do you think?");
-        composer.edit(widget::text_editor::Action::Move(
-            widget::text_editor::Motion::DocumentEnd,
-        ));
+        to_end(&mut composer);
         press_enter(&mut composer);
         press_enter(&mut composer);
         type_into(&mut composer, "mine now");
 
-        assert_eq!(composer.body.text(), "> what do you think?\nmine now");
+        // A blank line between the quote and what follows it: the blockquote
+        // ended and a paragraph began, and running the two together is what
+        // makes the next client quote the reply as part of the history.
+        assert_eq!(composer.text(None), "> what do you think?\n\nmine now");
     }
 
     #[test]
-    fn undo_walks_back_by_word_and_stops_at_the_quoted_reply() {
-        // The floor matters as much as the steps: undoing past the body the
+    fn undo_stops_at_the_quoted_reply_it_opened_with() {
+        // The floor matters more than the step size: undoing past the body the
         // composer opened with would throw away the quoted message the user
-        // never typed and cannot get back.
-        let opened = "> original\n\n";
+        // never typed and cannot get back. The history is created over the
+        // *quoted* document, so there is nothing below it to walk back to.
+        //
+        // The body is shaped the way `Draft::reply` shapes one — the space to
+        // write in first, then the attribution and the quote — and the caret
+        // opens in that space, which is why nothing here moves it.
+        let opened = "\n\nOn Tue, Ada wrote:\n> original";
+        // What the same reply is once it has been through the document: the
+        // attribution and the quote are separate blocks, so a blank line falls
+        // between them, and the empty paragraph the reply is written in is
+        // still there at the top. Both survive a save and a reopen — the
+        // leading newlines are read back as the writing space they were.
+        let quoted = "\n\nOn Tue, Ada wrote:\n\n> original";
         let mut composer = composing(opened);
-        composer.edit(widget::text_editor::Action::Move(
-            widget::text_editor::Motion::DocumentEnd,
-        ));
+
         type_into(&mut composer, "hello there");
-        assert_eq!(composer.body.text(), format!("{opened}hello there"));
+        assert_eq!(
+            composer.text(None),
+            format!("hello there{quoted}"),
+            "typing went somewhere other than the space the reply opens in"
+        );
 
-        assert!(composer.undo(), "the last word should come back off");
-        assert_eq!(composer.body.text(), format!("{opened}hello "));
-
-        while composer.undo() {}
-        assert_eq!(composer.body.text(), opened);
+        // One step, not two. An uninterrupted run of typing is one undo event
+        // — the history groups by how close together changes arrive, which is
+        // the model's rule rather than this composer's, and is why the
+        // word-at-a-time stepping the old snapshot history did is gone.
+        assert!(composer.undo(), "the run of typing should come back off");
+        assert_eq!(composer.text(None), quoted);
         assert!(!composer.undo(), "undo went past the body it opened with");
     }
 
@@ -5802,9 +5926,9 @@ mod tests {
         let mut composer = composing("");
         type_into(&mut composer, "hello");
         assert!(composer.undo());
-        assert_eq!(composer.body.text(), "");
+        assert_eq!(composer.text(None), "");
         assert!(composer.redo());
-        assert_eq!(composer.body.text(), "hello");
+        assert_eq!(composer.text(None), "hello");
         assert!(!composer.redo());
     }
 
@@ -5820,7 +5944,7 @@ mod tests {
         assert!(sent.lines().count() > 1, "the body went out unwrapped");
         for line in sent.lines() {
             assert!(
-                line.chars().count() <= crate::text::WRAP_COLUMNS,
+                line.chars().count() <= WRAP_COLUMNS,
                 "too long for text/plain: {line:?}"
             );
         }

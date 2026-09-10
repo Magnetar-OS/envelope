@@ -6,6 +6,61 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- An HTML message shows the sender's styling: colour, background, bold and
+  italic, text size and alignment, read from `style=` and from the `bgcolor`
+  and `<font>` attributes mail generators still emit. A receipt looks like a
+  receipt.
+
+  **A colour cannot hide text.** Every colour is checked against the pixels it
+  will actually land on and swapped for your own when it would fall below
+  readable contrast — so white-on-white, and the near-misses either side of it,
+  cannot be shown at all. Not a filter that might miss one: the check is on the
+  result, after transparency is resolved, so there is no way to phrase a colour
+  that gets past it. Anything that would fetch, position, or hide is refused
+  before it reaches the message at all.
+
+- An HTML message shows its structure. Headings, lists, tables, links and the
+  quoted blockquotes a thread is actually made of, instead of the flattened
+  text they were being reduced to. Plain-text messages are unchanged — their
+  quoted history still folds, which is what the `>` markers are for.
+
+  Nothing new can be fetched. The message is read into a document whose schema
+  is the allow-list: a `<script>`, a `<style>` and an inline `style=` have
+  nowhere to land, and an image draws its alt text because there is no image
+  loader anywhere in the path. A tracking pixel could not fire before and
+  still cannot.
+
+### Changed
+
+- The display-security position is now written as the properties it always
+  stood for — nothing loads, nothing scripts or styles, one parser — rather
+  than as "text only". `04-envelope.md`, `PARITY.md` and `ROADMAP.md` say what
+  actually shipped, including what did not: there is no CSS, so a visually
+  designed message reads as its structure, and inline CID images remain alt
+  text.
+
+- The composer's body is a document rather than a string, on the Nib text
+  engine. What you notice: a reply opens with the cursor already in it
+  instead of nowhere, Enter inside quoted text keeps the reply quoted
+  because the cursor is genuinely inside the quote, and a sent message is
+  wrapped from that structure — so a wrapped quoted line keeps its markers
+  instead of being re-read out of the finished text to guess where they went.
+
+- Undo steps back over a run of typing rather than a word. A pause starts a
+  new step, as does typing somewhere else; the floor is unchanged, so Ctrl+Z
+  in a reply still cannot eat the quoted message you never typed.
+
+- Two paragraphs inside a quote go out with a bare `>` between them, and a
+  reply written under a quote is separated from it by a blank line. Both are
+  what the structure means in `text/plain`, and both are what the next
+  client needs in order to re-quote the thread without collapsing it.
+
+- A plain-text message is no longer run through the HTML parser on its way to
+  the screen. The parser it came from invents an HTML version of any message
+  that has none, and that invention was being taken at face value.
+
 ### Fixed
 
 - What the app says, you now see. Every confirmation and warning — sent,

@@ -9,8 +9,9 @@ of the binaries it produces.
 |---|---|
 | This repository — Envelope and its binaries | **GPL-3.0-only** |
 | [cosmic-pim](https://github.com/Magnetar-OS/cosmic-pim), the shared substrate it links | **MPL-2.0** |
+| [cosmic-ext-nib](https://github.com/Magnetar-OS/cosmic-ext-nib), the text engine it links | **MPL-2.0** |
 
-The substrate is MPL-2.0 on purpose. Its boundary is the *file*: modify a file in
+Both are MPL-2.0 on purpose. Its boundary is the *file*: modify a file in
 cosmic-pim and you publish that file, but linking it imposes nothing on your own
 code. That lets one sync engine be shared by this app, by the rest of the suite,
 and by consumers that are not GPL — while improvements to the engine itself stay
@@ -21,8 +22,9 @@ binary distributed from this repository is GPL-3 as a whole, and the MPL'd files
 remain MPL for anyone who extracts them.
 
 **The trap.** MPL-2.0 Exhibit B ("Incompatible With Secondary Licenses") turns
-that compatibility off. If it ever appears on a file in cosmic-pim, this
-application can no longer legally link it. The headers there are Exhibit A only:
+that compatibility off. If it ever appears on a file in cosmic-pim or in Nib,
+this application can no longer legally link it. The headers in both are
+Exhibit A only:
 
 ```rust
 // SPDX-License-Identifier: MPL-2.0
@@ -32,8 +34,8 @@ application can no longer legally link it. The headers there are Exhibit A only:
 
 `LICENSE` is the GPL-3.0 text — the licence of Envelope and of the binaries it
 produces. `LICENSE.MPL-2.0` is the Mozilla Public License 2.0, shipped beside it
-because those binaries statically link MPL-2.0 files from cosmic-pim and a
-recipient is entitled to their terms. `NOTICE` carries the attribution
+because those binaries statically link MPL-2.0 files from cosmic-pim and from
+Nib, and a recipient is entitled to their terms. `NOTICE` carries the attribution
 obligations that travel with the binary.
 
 ## The full rationale

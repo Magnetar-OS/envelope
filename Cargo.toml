@@ -5,7 +5,7 @@ edition = "2024"
 license = "GPL-3.0-only"
 description = "Envelope — mail for the COSMIC desktop"
 repository = "https://github.com/Magnetar-OS/envelope"
-rust-version = "1.98.0"
+rust-version = "1.98.1"
 
 [dependencies]
 # --- the shared PIM substrate (MPL-2.0) ---
@@ -21,6 +21,32 @@ cosmic-pim-sync = { path = "../cosmic-pim/crates/cosmic-pim-sync" }
 # The OAuth flow: sign-in in the user's own browser, and token renewal. What
 # turns "Gmail needs an app password" into "sign in with Google".
 cosmic-pim-auth = { path = "../cosmic-pim/crates/cosmic-pim-auth" }
+
+# --- the text engine (MPL-2.0) ---
+# Nib began here, as the composer's quoting, wrapping and undo, and outgrew the
+# application. What went back out is the whole of what this file used to call
+# `crate::text`:
+#
+# - `nib-model` is the document — the schema, the positions, the steps, and the
+#   history that makes Ctrl+Z a property of the model rather than a stack of
+#   whole-body snapshots the composer kept beside the widget.
+# - `nib-text` is `text/plain` in and out: what a quote is, how deep it goes,
+#   where a signature starts, and the wrap column an outgoing body gets.
+# - `nib` is the widget, which — unlike libcosmic's `text_editor` — can be
+#   given an id and focused without panicking the pinned revision.
+#
+# Paths until Nib is on crates.io; then versions. Its libcosmic is unpinned and
+# from the same URL as ours, so cargo unifies the two rather than building both.
+nib = { path = "../cosmic-ext-nib/crates/nib", package = "cosmic-ext-nib" }
+# HTML into a document, for the reader. Not a renderer of arbitrary HTML: the
+# schema is the allow-list, so a `<script>`, a `<style>` and an inline
+# `style=` are dropped because there is nowhere in the model to put them —
+# and an `<img>` becomes a node that draws a placeholder rather than a
+# request. See `ui::reader` for why that is the display-security position
+# rather than a retreat from it.
+nib-html = { path = "../cosmic-ext-nib/crates/nib-html", package = "cosmic-ext-nib-html" }
+nib-model = { path = "../cosmic-ext-nib/crates/nib-model", package = "cosmic-ext-nib-model" }
+nib-text = { path = "../cosmic-ext-nib/crates/nib-text", package = "cosmic-ext-nib-text" }
 
 i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
 i18n-embed-fl = "0.10"

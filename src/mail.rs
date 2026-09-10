@@ -70,6 +70,19 @@ pub struct Opened {
     /// and the stored bytes — the verbatim original, which is the only thing
     /// a signature can be checked against.
     pub pgp: cosmic_pim_mail::pgp::Examined,
+    /// The message's HTML part as a Nib document, when it had one.
+    ///
+    /// Built once, here, rather than in the view: parsing a newsletter's HTML
+    /// on every frame is work proportional to how long somebody looks at it.
+    ///
+    /// This is not a step towards rendering mail HTML. `nib-html` reads into a
+    /// *schema*, and the schema is the allow-list: a `<script>`, a `<style>`
+    /// and an inline `style=` have nowhere in the model to land, so they are
+    /// gone before anything draws — not sanitised out, but never representable.
+    /// An `<img>` becomes a node that draws its alt text, because nothing in
+    /// Nib resolves a URL. The reader's guarantee is unchanged: a tracking
+    /// pixel cannot fire from a document that has no way to ask for one.
+    pub body_doc: Option<nib_model::state::EditorState>,
 }
 
 /// What one sync pass did, as the status line reports it.
@@ -1279,6 +1292,7 @@ pub fn open(connection: &Connection, folder: &Folder, uid: u32) -> Result<Opened
         .unwrap_or_default();
 
     Ok(Opened {
+        body_doc: body_document(&message),
         auth: cosmic_pim_mail::auth::rollup(&message.auth),
         bounces: bounces_in(&raw, &message),
         invitation: cosmic_pim_mail::calendar::invitation(&raw),
@@ -1288,6 +1302,23 @@ pub fn open(connection: &Connection, folder: &Folder, uid: u32) -> Result<Opened
         message,
         flags,
     })
+}
+
+/// The message's HTML part as a read-only document, when it has one.
+///
+/// `None` for a `text/plain` message, which the reader already shows better
+/// than a document would: its quoted history folds, and that fold is built on
+/// the `>` markers a plain-text body carries and a document does not.
+fn body_document(message: &Message) -> Option<nib_model::state::EditorState> {
+    let html = message.body.html.as_deref()?;
+    let schema = nib_model::basic::schema();
+    let doc = nib_html::Html::new(&schema).parse(html);
+    // An HTML part that survives the schema with nothing in it is a layout
+    // table and a spacer gif; the extracted text is the better showing.
+    if doc.text_content().trim().is_empty() {
+        return None;
+    }
+    Some(nib_model::state::EditorState::new(schema, doc))
 }
 
 /// The delivery failures a message reports, as `(recipient, reason)` lines.
@@ -2039,4 +2070,132 @@ fn file_to_sent(connection: &Connection, folders: &[Folder], raw: &[u8]) -> bool
 
 fn now_ms() -> i64 {
     Utc::now().timestamp_millis()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A message whose only part is the HTML given.
+    fn html_message(body: &str) -> Message {
+        let raw = format!(
+            "From: ada@example.com\r\nSubject: Test\r\nContent-Type: text/html\r\n\r\n{body}\r\n"
+        );
+        Message::parse(raw.as_bytes()).expect("parse")
+    }
+
+    #[test]
+    fn an_html_message_keeps_the_structure_the_extracted_text_threw_away() {
+        let opened = body_document(&html_message(
+            "<h1>Title</h1><ul><li>one</li><li>two</li></ul>",
+        ))
+        .expect("an HTML body becomes a document");
+        let doc = opened.doc();
+        let names: Vec<&str> = doc
+            .content()
+            .iter()
+            .map(nib_model::node::Node::type_name)
+            .collect();
+        assert!(names.contains(&"heading"), "{names:?}");
+        assert!(names.contains(&"bullet_list"), "{names:?}");
+    }
+
+    #[test]
+    fn a_plain_text_message_gets_no_document() {
+        // Its quoted history folds, which a document has no markers to do.
+        let raw = b"From: ada@example.com\r\nSubject: Test\r\n\r\njust words\r\n";
+        let message = Message::parse(raw).expect("parse");
+        assert!(body_document(&message).is_none());
+    }
+
+    #[test]
+    fn a_script_cannot_reach_the_document() {
+        // Not sanitised out — unrepresentable. There is no node type a
+        // `<script>` could become, so the schema drops it on the way in, and
+        // this is the guarantee the reader's security position rests on.
+        let doc = body_document(&html_message(
+            "<p>Hello</p><script>alert('x')</script><style>p{color:red}</style>",
+        ))
+        .expect("document");
+        let text = doc.doc().text_content();
+        assert!(!text.contains("alert"), "{text:?}");
+        assert!(!text.contains("color:red"), "{text:?}");
+        assert_eq!(text.trim(), "Hello");
+    }
+
+    #[test]
+    fn an_image_becomes_its_alt_text_and_never_a_request() {
+        // The `src` is carried in the model because a document should say what
+        // it holds, but nothing in Nib resolves one: the widget has no image
+        // loader, so what a reader sees is the alt text.
+        let doc = body_document(&html_message(
+            r#"<p>Before <img src="https://tracker.example/pixel.gif" alt="Chart"> after</p>"#,
+        ))
+        .expect("document");
+        let blocks = nib::blocks::flatten(doc.doc());
+        let drawn = &blocks[0].text;
+        assert!(drawn.contains("[Chart]"), "{drawn:?}");
+        assert!(
+            !drawn.contains("tracker.example"),
+            "a URL reached the drawn text: {drawn:?}"
+        );
+    }
+
+    #[test]
+    fn a_senders_styling_reaches_the_document() {
+        // Colour, weight and alignment are what make a receipt legible as
+        // something other than a wall of text.
+        let doc = body_document(&html_message(
+            r#"<p style="text-align:center; color:#cc0000"><b>Total</b></p>"#,
+        ))
+        .expect("document");
+        let paragraph = doc.doc().child(0).expect("a paragraph");
+        assert_eq!(
+            paragraph.attrs().get_str(nib_model::basic::attrs::ALIGN),
+            Some("center")
+        );
+        let marks: Vec<&str> = paragraph
+            .child(0)
+            .expect("text")
+            .marks()
+            .iter()
+            .map(nib_model::mark::Mark::name)
+            .collect();
+        assert!(
+            marks.contains(&nib_model::basic::marks::TEXT_COLOR),
+            "{marks:?}"
+        );
+    }
+
+    #[test]
+    fn a_style_that_would_fetch_never_reaches_the_document() {
+        // The reader's guarantee restated at the level the message actually
+        // arrives at: a CSS background image is a request, and there is nowhere
+        // in the model for one to land.
+        let doc = body_document(&html_message(
+            r#"<p style="background-image:url(https://tracker.example/p.gif)">Hi</p>"#,
+        ))
+        .expect("document");
+        let html = nib_html::Html::new(doc.schema()).to_html(doc.doc());
+        assert!(!html.contains("tracker.example"), "{html}");
+        assert!(!html.contains("url("), "{html}");
+    }
+
+    #[test]
+    fn hidden_text_is_shown_rather_than_hidden() {
+        // Honouring `display:none` would reintroduce the exact attack the
+        // extractor's hidden-text accounting exists to expose.
+        let doc = body_document(&html_message(
+            r#"<p>Visible</p><p style="display:none">Hidden</p>"#,
+        ))
+        .expect("document");
+        assert!(doc.doc().text_content().contains("Hidden"));
+    }
+
+    #[test]
+    fn a_layout_only_html_part_falls_back_to_the_extracted_text() {
+        // A spacer table with no words in it is not worth a document; the
+        // reader shows the extracted text instead.
+        assert!(body_document(&html_message("<table><tr><td></td></tr></table>")).is_none());
+    }
 }

@@ -32,7 +32,6 @@ pub mod i18n;
 pub mod mail;
 pub mod mailto;
 pub mod scheduling;
-pub mod text;
 pub mod ui;
 
 /// Runs the application.

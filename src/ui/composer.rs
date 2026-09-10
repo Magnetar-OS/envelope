@@ -2,10 +2,16 @@
 
 //! The composer.
 //!
-//! Plain text, one body, no formatting toolbar. See
-//! `cosmic_pim_mail::compose` for why that is a decision rather than a stage:
-//! the reader shows text, so an HTML composer would be writing in a format this
-//! application cannot display.
+//! One body, sent as `text/plain`. See `cosmic_pim_mail::compose` for why that
+//! is a decision rather than a stage: the reader shows text, so an HTML
+//! composer would be writing in a format this application cannot display.
+//!
+//! The editor underneath is Nib, and it holds a document rather than a string.
+//! That is not a step towards an HTML composer — it is what makes the plain
+//! text correct. A quote the caret can be *inside* continues itself on Enter,
+//! and `nib_text` writes the `>` markers and the wrap column from the
+//! structure on the way out, rather than a pass over a finished string trying
+//! to work out which lines were quoted.
 
 use cosmic::Element;
 use cosmic::iced::{Alignment, Length};
@@ -54,23 +60,20 @@ pub fn view<'a>(
         // the message is addressed to and what it says — the one division in
         // the window worth seeing without looking for it.
         .push(widget::divider::horizontal::light())
-        // A real editor, not a text field. `text_input` is single-line by
-        // construction — it fires `on_submit` for Enter and strips control
-        // characters from every paste — so a body built on it could not hold
-        // a paragraph break, and a reply opened with its quoted text
-        // flattened onto one line. This also brings selection, word motion,
-        // Home/End and a right-click menu, none of which had to be written.
+        // Nib, not a text field and no longer libcosmic's `text_editor`. The
+        // body is a document: a reply's quoted text is a `blockquote` the
+        // caret can be inside, which is what makes Enter continue the quote
+        // without anything re-reading the line to find its `> `.
         //
         // Borderless, and inset to the same left edge the field values sit
         // on, so the message reads as a continuation of what it is addressed
         // to rather than as a box dropped inside the window.
         .push(
-            widget::text_editor::text_editor(&composer.body)
+            nib::editor(&composer.body)
                 .placeholder(fl!("compose-body-placeholder"))
+                .id(crate::ui::COMPOSE_BODY_ID.clone())
                 .height(Length::Fill)
-                .padding([spacing.space_s, spacing.space_m])
-                .style(seamless)
-                .context_menu(true)
+                .style(seamless(&cosmic::theme::active()))
                 .on_action(|action| Message::ComposeBodyAction(Box::new(action))),
         );
 
@@ -284,22 +287,18 @@ fn to_row(composer: &Composer) -> Element<'_, Message> {
     row(fl!("to"), control.into())
 }
 
-/// The body's style: no box, no border, the window's own ground.
+/// The body's style: the theme's, at the size a message is read at.
 ///
-/// The editor is the largest thing in the window and the only one the user
-/// is actually looking at; drawing a frame around it would be drawing a
-/// frame around the message.
-fn seamless(
-    theme: &cosmic::Theme,
-    _status: cosmic::widget::text_editor::Status,
-) -> cosmic::widget::text_editor::Style {
-    let cosmic = theme.cosmic();
-    cosmic::widget::text_editor::Style {
-        background: cosmic::iced::Background::Color(cosmic::iced::Color::TRANSPARENT),
-        border: cosmic::iced::Border::default(),
-        placeholder: crate::ui::muted_color(theme),
-        value: cosmic.on_bg_color().into(),
-        selection: cosmic.accent.base.into(),
+/// Nib draws no frame of its own, so there is no box to turn off — the editor
+/// is the largest thing in the window and the only one the user is actually
+/// looking at, and a frame around it would be a frame around the message.
+/// What is set here is the inset, so the text runs down the same left edge the
+/// field values above it do.
+fn seamless(theme: &cosmic::Theme) -> nib::Style {
+    let spacing = cosmic::theme::spacing();
+    nib::Style {
+        padding: f32::from(spacing.space_m),
+        ..nib::Style::from_theme(theme)
     }
 }
 

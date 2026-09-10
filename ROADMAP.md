@@ -16,27 +16,48 @@ engines (five protocols vs one), search, and keyboard.
 Meltemi remains the *donor* benchmark (ports, not designs); Thunderbird is the
 *parity* benchmark (what users notice missing).
 
-## The one contradiction, resolved
+## The one contradiction, resolved — and how it actually resolved
 
 1:1 parity and "the reader renders text, not HTML" cannot both hold. Every
 mainstream client renders HTML because most mail *is* HTML, and a text
 extraction — however honest — is not pixel-anything against a message designed
 visually. The position was never "no HTML"; it was **no parser differential,
-no remote loads, no script**. Those survive the change:
+no remote loads, no script**.
 
-- **A native Rust renderer, not a webview.** The candidate is `blitz` (Servo's
-  `stylo` for CSS, `parley` for text, **wgpu** for paint). No JavaScript engine
-  exists in the pipeline, so "no script" is a property, not a setting.
-- **One tree.** The same html5ever parse that feeds today's text extractor
-  feeds the renderer. Nothing downstream re-parses, so there is still no
-  sanitiser for a renderer to disagree with.
-- **Remote content stays off** by default, per-sender allow, and the reader
-  keeps saying what the message *tried* to do. Hidden-text accounting survives
-  as a diagnostic even when the HTML view is showing.
-- **Text view remains one keystroke away**, and remains the source of quoting.
+This was planned as `blitz` — Servo's `stylo` for CSS, `parley` for text,
+**wgpu** for paint. That is not what shipped, and the difference is worth
+stating rather than quietly closing the box.
 
-Everything else in the roadmap orders around this, because it is the largest
-single gap and the only one that touches an architectural position.
+**What shipped** is a *structural* reader: `nib-html` reads the message into a
+Nib document against a schema, and Nib's widget draws it. The three properties
+hold, and hold more strongly than the plan promised:
+
+- **No script, no style** — not because no JavaScript engine is linked, but
+  because the schema is the allow-list. A `<script>`, a `<style>` and an
+  inline `style=` have nowhere in the model to land, so they are
+  unrepresentable rather than stripped.
+- **No remote loads** — not a default that could be flipped, but the absence
+  of a loader. Nothing in Nib resolves a URL; an `<img>` draws its alt text.
+- **One tree** — the same html5ever parse the text extractor walks. Nothing
+  downstream re-parses, so there is still no sanitiser to disagree with.
+- **Text view remains** the path for `text/plain`, and remains the source of
+  quoting: a document has no `>` markers to fold.
+
+**Styling shipped too**, as a subset rather than an engine. `nib-css` reads
+`style=` and the presentational attributes into marks: colour, background,
+weight, size, alignment. It is not a sanitiser — a declaration maps onto one of
+those or it does not exist downstream — and it refuses three things by
+construction: anything that fetches, anything that positions, and anything that
+hides, the last being reported rather than obeyed. A sender's colour is then
+checked against the pixels it will actually land on and dropped below 3:1
+contrast, which closes white-on-white without a list of suspicious colours to
+keep current.
+
+**What did not ship** is *layout*: no box model, no floats, no positioning, no
+sizing. A message designed as a poster reads as its structure. That is a
+smaller promise than `blitz`, and it is the one obtainable without putting a
+rendering engine inside the trust boundary. Whether to take the larger one is a
+live question, not a scheduled task: it needs its own argument.
 
 ---
 
@@ -94,18 +115,31 @@ The verbs daily users miss first, in the order they miss them
 
 The blitz decision above, executed:
 
-- [ ] **Decision record** in `04-envelope.md`: the display-security section
-      rewritten around properties (no script engine, no network by default,
+- [x] **Decision record** in `04-envelope.md`: the display-security section
+      rewritten around properties (nothing loads, nothing scripts or styles,
       one tree) rather than the text-only mechanism.
-- [ ] **HTML reading** behind the existing extractor's pipeline: html5ever →
-      stylo → wgpu paint inside the reader pane. CID inline images from the
-      message's own parts; remote parts blocked with the existing "wanted to
-      phone home" counter; per-sender allow list in cosmic-config.
+- [x] **HTML reading**, structurally: html5ever → `nib-html` → a schema-bound
+      document → Nib's widget, read-only, inside the reader pane. No `stylo`
+      and no per-sender remote allow list — there is no loader for an allow
+      list to govern.
+- [x] **Sender styling**, as `nib-css`'s subset: colour, background, weight,
+      size and alignment, with contrast enforced at the point of drawing so a
+      colour cannot hide text.
+- [ ] **CID inline images.** Blocked on Nib, not on policy: `image` is an
+      inline node and iced's `Span` carries no width, so there is no way to
+      reserve space for a replaced element inside a shaped paragraph. Needs
+      inline replaced-element layout in Nib. The bytes are local — nothing
+      about the security position is in the way.
+- [ ] **Visual layout.** The box model — floats, positioning, sizing, tables
+      as grids. The `blitz` plan, if it is taken at all: a rendering engine in
+      the trust boundary is a decision, not a task.
 - [ ] **Reader parity details**: zoom, print (via xdg portal), find-in-message,
       full header view, message source view.
 - [ ] **HTML composition** — the second body on the same `Draft`, text part
       always generated, exactly as the send path anticipated. Compose stays
-      structured (fields, not bytes) until `build()`.
+      structured (fields, not bytes) until `build()`. Closer than this list
+      suggests: the composer's body is already a Nib document, and
+      `nib-html` serialises as well as it parses.
 
 ## Phase 3 — Trust
 
@@ -206,7 +240,7 @@ Ship when all of these are true, not when a date arrives:
 | Identities / aliases | ✓ | ✗ | 1 |
 | Scheduled send / undo send | ✓ | ✗ | 1 |
 | Import (mbox, profiles) | ✓ | ✗ (export only) | 1 |
-| HTML reading | ✓ | ✗ text extraction | 2 |
+| HTML reading | ✓ | ~ structure + styling, no layout | 2 |
 | HTML composition | ✓ | ✗ plain text | 2 |
 | Print / find-in-message | ✓ | ✗ | 2 |
 | OpenPGP / S/MIME | ✓ | ✗ | 3 |

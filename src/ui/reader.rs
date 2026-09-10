@@ -4,29 +4,47 @@
 //!
 //! # What is deliberately not here
 //!
-//! An HTML renderer. Envelope shows the message's visible *text*, extracted by
-//! `cosmic_pim_mail::text` from a real html5ever tree. That is not a
-//! simplification to be undone later — it is the display-security position, and
-//! it is stronger than any sanitiser:
+//! A web engine, and anything that can make a request. The reader shows an
+//! HTML message's *structure* — its headings, lists, tables and the
+//! blockquotes a thread is genuinely made of — by reading it into a Nib
+//! document. That is not a retreat from the display-security position; it is
+//! the same position, and both halves of it still hold:
 //!
-//! - a tracking pixel cannot fire from text that was never given to a renderer,
-//!   so "block remote content" is not a setting that can be got wrong;
-//! - every sanitiser bypass in history is a renderer disagreeing with a
-//!   sanitiser about what some bytes mean, and there is only one parser here.
+//! - **A tracking pixel cannot fire.** Not because it is blocked, but because
+//!   nothing downstream can fetch: Nib has no image loader, and an `<img>`
+//!   becomes a node that draws its alt text. "Block remote content" remains a
+//!   setting that cannot be got wrong, because there is no code path it would
+//!   have to switch off.
+//! - **There is still one parser.** Every sanitiser bypass in history is a
+//!   renderer disagreeing with a sanitiser about what some bytes mean.
+//!   `nib-html` reads with html5ever — the same parser
+//!   `cosmic_pim_mail::text` walks — into a *schema*, and the schema is the
+//!   allow-list. A `<script>`, a `<style>` and an inline `style=` are not
+//!   stripped; there is nowhere in the model to put them, so they cannot
+//!   survive the read. That is a stronger claim than sanitising, because it
+//!   is a property of the data structure rather than of a filter's coverage.
 //!
-//! What the reader does instead is *tell the user what the message tried*: that
-//! it wanted to load remote content, that it hid text from them, and whether it
-//! was sent by the domain it claims.
+//! What the reader does on top of that is *tell the user what the message
+//! tried*: that it wanted to load remote content, that it hid text from them,
+//! and whether it was sent by the domain it claims.
 //!
-//! # What it does do with the text
+//! # Two bodies, two shapes
+//!
+//! A `text/plain` message keeps the older path, because it has structure a
+//! document does not: its quoted history is `>` markers, and folding that
+//! history is what makes the fifth reply in a thread readable. See
+//! [`nib_text::quote`]. A document has no markers to fold, so converting plain
+//! text into one would lose the fold to gain nothing.
+//!
+//! # What it does do with a plain-text body
 //!
 //! Show its structure. A plain-text body is not a paragraph, it is what was
-//! written now on top of what was written before, and [`crate::text::blocks`]
+//! written now on top of what was written before, and [`nib_text::quote`]
 //! is what separates the two. Quoted history arrives folded, because on the
 //! fifth reply of a thread the two lines that are new are the message and the
-//! forty below them are furniture. A Markdown renderer gets this for free
-//! from the syntax; a plain-text reader has to find it for itself, because a
-//! blockquote is a structure rather than indented prose.
+//! forty below them are furniture. An HTML message gets this from its
+//! `<blockquote>` elements; a plain-text reader has to find it for itself,
+//! because a blockquote is a structure rather than indented prose.
 
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget;
@@ -122,7 +140,7 @@ impl<'a> Reader<'a> {
 
         column = column
             .push(widget::divider::horizontal::default())
-            .push(self.body(&message.body.text));
+            .push(self.body(opened));
 
         widget::scrollable(column)
             .width(Length::Fill)
@@ -130,12 +148,46 @@ impl<'a> Reader<'a> {
             .into()
     }
 
-    /// The message text, as the structure it actually has.
-    fn body(&self, text: &str) -> Element<'a, Message> {
-        use crate::text::Block;
+    /// The message, as the structure it actually has.
+    ///
+    /// Two paths, because the two kinds of body have different structure to
+    /// show. An HTML message has its own — headings, lists, tables, the
+    /// blockquotes a thread is genuinely made of — and is rendered as a
+    /// read-only document. A `text/plain` message has only what its `>`
+    /// markers say, and that is what the folding path below reads.
+    fn body(&self, opened: &'a Opened) -> Element<'a, Message> {
+        match &opened.body_doc {
+            Some(doc) => self.rich_body(doc),
+            None => self.text_body(&opened.message.body.text),
+        }
+    }
+
+    /// An HTML message, as a document nothing can type into.
+    ///
+    /// Read-only is the whole point and it is enforced by the widget rather
+    /// than by not wiring a handler: without it the editor would still apply
+    /// edits to its own working copy, and a received message would appear to
+    /// accept typing that went nowhere.
+    ///
+    /// A link is the one thing that acts. It opens in the user's browser,
+    /// which is where a decision about visiting somebody else's URL belongs.
+    fn rich_body(&self, state: &'a nib_model::state::EditorState) -> Element<'a, Message> {
+        nib::editor(state)
+            .read_only()
+            .style(nib::Style::from_theme(&cosmic::theme::active()))
+            .on_action(|action| match action {
+                nib::Action::Link(href) => Message::LaunchUrl(href),
+                _ => Message::Ignored,
+            })
+            .into()
+    }
+
+    /// A `text/plain` message, split into what is new and what is quoted.
+    fn text_body(&self, text: &str) -> Element<'a, Message> {
+        use nib_text::quote::Block;
 
         let spacing = cosmic::theme::spacing();
-        let blocks = crate::text::blocks(text);
+        let blocks = nib_text::quote::blocks(text);
 
         // A body that is only quoting, or only a signature, still has to
         // appear — but a genuinely empty one gets nothing rather than an
