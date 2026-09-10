@@ -6,6 +6,10 @@ license = "GPL-3.0-only"
 description = "Envelope — mail for the COSMIC desktop"
 repository = "https://github.com/Magnetar-OS/envelope"
 rust-version = "1.98.1"
+# Not on crates.io: this application links libcosmic and the Nib widget, both
+# of which are git dependencies, and crates.io refuses any crate that carries
+# one. Envelope ships as a distribution package, not as a crate.
+publish = false
 
 [dependencies]
 # --- the shared PIM substrate (MPL-2.0) ---
