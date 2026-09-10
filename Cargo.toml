@@ -9,18 +9,18 @@ rust-version = "1.98.1"
 
 [dependencies]
 # --- the shared PIM substrate (MPL-2.0) ---
-# Paths until cosmic-pim is pushed; then git tags. `accounts` is shared with
+# Registry versions: cosmic-pim 1.0.0 is on crates.io. `accounts` is shared with
 # Slate and Circle — one account, one password, one file. `mail` is the engine:
 # the message model, the maildir store, threading, and IMAP.
-cosmic-pim-accounts = { path = "../cosmic-pim/crates/cosmic-pim-accounts" }
-cosmic-pim-mail = { path = "../cosmic-pim/crates/cosmic-pim-mail" }
+cosmic-pim-accounts = "1.0.0"
+cosmic-pim-mail = "1.0.0"
 # The dispatch layer: one sync pass per account, over whichever protocol the
 # account says. Envelope stopped running its own IMAP-only pass the day the
 # substrate could route all five.
-cosmic-pim-sync = { path = "../cosmic-pim/crates/cosmic-pim-sync" }
+cosmic-pim-sync = "1.0.0"
 # The OAuth flow: sign-in in the user's own browser, and token renewal. What
 # turns "Gmail needs an app password" into "sign in with Google".
-cosmic-pim-auth = { path = "../cosmic-pim/crates/cosmic-pim-auth" }
+cosmic-pim-auth = "1.0.0"
 
 # --- the text engine (MPL-2.0) ---
 # Nib began here, as the composer's quoting, wrapping and undo, and outgrew the
