@@ -1252,15 +1252,46 @@ impl cosmic::Application for AppModel {
     }
 
     fn header_end(&self) -> Vec<Element<'_, Self::Message>> {
-        let search = widget::text_input(fl!("search"), &self.search)
+        // `search_input` rather than a plain field with a clear button bolted
+        // on: it is the desktop's own search control — the magnifier, the
+        // Search style, and the insets that go with them — so this reads as
+        // the same field the file manager and the settings app have, and the
+        // placeholder stops starting hard against the border.
+        let mut search = widget::search_input(fl!("search"), &self.search)
             .id(SEARCH_ID.clone())
             .on_input(Message::SearchChanged)
-            .on_clear(Message::SearchCleared)
             // Every text field reports focus, so single-letter shortcuts know
             // to stay out of the way.
             .on_focus(Message::SearchFocused)
             .on_unfocus(Message::SearchUnfocused)
             .width(Length::Fixed(260.0));
+
+        // Only when there is something to clear. Attached unconditionally it
+        // put an accent-coloured button on an empty field — a control whose
+        // whole job was to do nothing, competing with the placeholder for the
+        // same few pixels.
+        //
+        // Built here rather than through `on_clear`, which hands the field a
+        // backspace glyph in a 32-pixel box: on a pill that tall the button's
+        // own ground fills the cap and the icon sits over the curve. A close
+        // mark in a smaller box, held off the right edge, is the same
+        // affordance without the collision — and it says "clear this" rather
+        // than "delete a character".
+        if !self.search.is_empty() {
+            let spacing = cosmic::theme::spacing();
+            search = search.trailing_icon(
+                widget::icon::from_name("window-close-symbolic")
+                    .size(16)
+                    .apply(widget::button::custom)
+                    .class(cosmic::theme::Button::Icon)
+                    .on_press(Message::SearchCleared)
+                    .padding(spacing.space_xxxs)
+                    .apply(widget::container)
+                    .padding([0, spacing.space_xxs, 0, 0])
+                    .into(),
+            );
+        }
+
         vec![search.into()]
     }
 
@@ -1312,6 +1343,16 @@ impl cosmic::Application for AppModel {
                     ],
                 ),
             )])
+            // `Dynamic` rather than the default `Uniform(30)`: uniform gives
+            // every entry the same row, dividers included, so each hairline
+            // separator claimed a full item's height and the menu read as
+            // three lists with gaps rather than one list with rules. Dynamic
+            // lets a button keep its own 36 and a divider be a divider.
+            .item_height(menu::ItemHeight::Dynamic(36))
+            // And 150 is not a width for entries like "Rename folder" beside
+            // a shortcut column — the label ellipsized and the accelerator
+            // had nowhere to sit.
+            .item_width(menu::ItemWidth::Uniform(260))
             .into(),
         ]
     }

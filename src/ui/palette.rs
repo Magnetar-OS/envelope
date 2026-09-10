@@ -85,14 +85,6 @@ impl<'a> Palette<'a> {
                     .max_height(ROWS_HEIGHT),
             );
 
-        widget::dialog()
-            .control(
-                column
-                    .padding(spacing.space_s)
-                    .apply(widget::container)
-                    .width(Length::Fixed(crate::ui::PICKER_WIDTH))
-                    .height(Length::Shrink),
-            )
-            .into()
+        crate::ui::picker(column.width(Length::Fill).height(Length::Shrink))
     }
 }

@@ -6,9 +6,9 @@
 //! exactly what will happen — "Create", "Rename", "Delete" — because a
 //! confirm button labelled OK is a question the user answers blind.
 
+use cosmic::Element;
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget;
-use cosmic::{Apply as _, Element};
 use cosmic_pim_mail::folder::Folder;
 
 use crate::app::Message;
@@ -177,18 +177,23 @@ impl<'a> LabelPicker<'a> {
             column = column.push(widget::text::caption(fl!("label-none")));
         }
 
-        widget::dialog()
-            .title(fl!("label-title"))
-            .control(
-                column
-                    .padding(spacing.space_s)
-                    .apply(widget::container)
-                    .width(Length::Fixed(crate::ui::PICKER_WIDTH)),
-            )
-            .secondary_action(
-                widget::button::standard(fl!("close")).on_press(Message::FolderDialogCancelled),
-            )
-            .into()
+        // The heading is a caption, not a Title 3: this box is one field and
+        // a list of checkboxes, and a heading twice the size of everything
+        // under it is a label shouting at its own contents.
+        crate::ui::picker(
+            widget::column::with_capacity(3)
+                .spacing(spacing.space_xs)
+                .push(widget::text::heading(fl!("label-title")))
+                .push(column.width(Length::Fill))
+                .push(
+                    widget::row::with_capacity(2)
+                        .push(widget::Space::new().width(Length::Fill))
+                        .push(
+                            widget::button::standard(fl!("close"))
+                                .on_press(Message::FolderDialogCancelled),
+                        ),
+                ),
+        )
     }
 }
 
@@ -225,10 +230,13 @@ impl<'a> MovePicker<'a> {
                 continue;
             };
             let indent = u16::try_from(folder.depth()).unwrap_or(0) * spacing.space_s;
+            // The same name the sidebar shows. A picker that offers "INBOX"
+            // while the sidebar says "Inbox" is offering a different-looking
+            // thing from the one the user is looking at.
             let line = widget::row::with_capacity(2)
                 .align_y(Alignment::Center)
                 .push(widget::Space::new().width(Length::Fixed(f32::from(indent))))
-                .push(widget::text::body(folder.display_name.clone()).width(Length::Fill));
+                .push(widget::text::body(crate::ui::folder_name(folder)).width(Length::Fill));
 
             column = column.push(
                 widget::button::custom(line)
@@ -239,13 +247,6 @@ impl<'a> MovePicker<'a> {
             );
         }
 
-        widget::dialog()
-            .control(
-                column
-                    .padding(spacing.space_s)
-                    .apply(widget::container)
-                    .width(Length::Fixed(crate::ui::PICKER_WIDTH)),
-            )
-            .into()
+        crate::ui::picker(column.width(Length::Fill))
     }
 }

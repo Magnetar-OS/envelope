@@ -279,7 +279,7 @@ pub fn results<'a>(
         let folder = folders
             .iter()
             .find(|folder| folder.wire_name == hit.mailbox)
-            .map_or(hit.mailbox.as_str(), |folder| folder.leaf_name());
+            .map_or_else(|| hit.mailbox.clone(), crate::ui::folder_name);
 
         let mut heading = widget::row::with_capacity(3)
             .align_y(Alignment::Center)
@@ -315,10 +315,7 @@ pub fn results<'a>(
                     .align_y(Alignment::Center)
                     .spacing(spacing.space_xxs)
                     .push(one_line(widget::text::body(hit.subject.clone())).width(Length::Fill))
-                    .push(widget::text::caption(fl!(
-                        "in-folder",
-                        folder = folder.to_owned()
-                    ))),
+                    .push(widget::text::caption(fl!("in-folder", folder = folder))),
             );
 
         if !context.is_empty() {

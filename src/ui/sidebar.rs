@@ -18,25 +18,6 @@ use crate::fl;
 /// approximated.
 const ICON: u16 = 16;
 
-/// The name a mailbox goes by here.
-///
-/// A server's own name for a special mailbox is a fact about that server:
-/// IMAP requires the inbox to be spelled `INBOX`, and a Greek provider calls
-/// the sent folder `Απεσταλμένα`. What the user is looking for is the *role*,
-/// so the role is what the row says. A folder with no role keeps the name its
-/// owner gave it, which is the only name it has.
-fn row_name(folder: &Folder) -> String {
-    match folder.special_use {
-        Some(SpecialUse::Inbox) => fl!("folder-inbox"),
-        Some(SpecialUse::Sent) => fl!("folder-sent"),
-        Some(SpecialUse::Drafts) => fl!("folder-drafts"),
-        Some(SpecialUse::Archive) => fl!("folder-archive"),
-        Some(SpecialUse::Junk) => fl!("folder-junk"),
-        Some(SpecialUse::Trash) => fl!("folder-trash"),
-        None => folder.leaf_name().to_owned(),
-    }
-}
-
 /// The icon for a mailbox's role.
 ///
 /// Shape is found faster than text, and the five mailboxes with roles are the
@@ -261,7 +242,7 @@ impl<'a> Sidebar<'a> {
 
             column = column.push(Self::row(
                 row_icon(folder),
-                row_name(folder),
+                crate::ui::folder_name(folder),
                 self.unread.get(&folder.wire_name).copied().unwrap_or(0),
                 indent,
                 showing_a_folder && self.selected_folder == Some(index),

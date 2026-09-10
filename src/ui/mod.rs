@@ -107,6 +107,26 @@ pub fn empty_state<M: 'static>(text: String) -> cosmic::Element<'static, M> {
         .into()
 }
 
+/// The name a mailbox goes by here.
+///
+/// A server's own name for a special mailbox is a fact about that server:
+/// IMAP requires the inbox to be spelled `INBOX`, and a Greek provider calls
+/// the sent folder `Απεσταλμένα`. What the user is looking for is the *role*,
+/// so the role is what the row says. A folder with no role keeps the name its
+/// owner gave it, which is the only name it has.
+#[must_use]
+pub fn folder_name(folder: &cosmic_pim_mail::folder::Folder) -> String {
+    match folder.special_use {
+        Some(cosmic_pim_mail::folder::SpecialUse::Inbox) => crate::fl!("folder-inbox"),
+        Some(cosmic_pim_mail::folder::SpecialUse::Sent) => crate::fl!("folder-sent"),
+        Some(cosmic_pim_mail::folder::SpecialUse::Drafts) => crate::fl!("folder-drafts"),
+        Some(cosmic_pim_mail::folder::SpecialUse::Archive) => crate::fl!("folder-archive"),
+        Some(cosmic_pim_mail::folder::SpecialUse::Junk) => crate::fl!("folder-junk"),
+        Some(cosmic_pim_mail::folder::SpecialUse::Trash) => crate::fl!("folder-trash"),
+        None => folder.leaf_name().to_owned(),
+    }
+}
+
 /// The star a flagged message wears.
 ///
 /// `insert-star-symbolic` rather than `starred-symbolic`: the second is not
@@ -131,7 +151,35 @@ pub const CONTROL_WIDTH: f32 = 220.0;
 ///
 /// Wide enough for a subject or a folder path, narrow enough to stay a
 /// dialog rather than becoming a second window.
+///
+/// This is the width of the *box*, not of the thing inside it. It used to be
+/// applied to the content, inside a dialog whose own default width is 570 —
+/// so a 480-pixel list sat in a 570-pixel box with 45 pixels of nothing down
+/// each side, on top of the dialog's own padding. The box is sized here and
+/// its content fills it.
 pub const PICKER_WIDTH: f32 = 480.0;
+
+/// The box a picker is drawn in.
+///
+/// Not `widget::dialog()`. That widget is built for a message and two
+/// buttons, and its metrics are fixed: twenty-four of padding, a Title-3
+/// heading, sixteen under it, thirty-two above the button row. Around a
+/// filter field and six rows that is far more frame than content — the box
+/// ended up twice the height of the thing being picked.
+///
+/// A picker is not a message to be acknowledged; it is a command surface,
+/// and its whole job is to put the list as close to the query as it can. The
+/// ground, the radius and the shadow are still the theme's own dialog
+/// styling, so it reads as the same kind of object.
+#[must_use]
+pub fn picker<'a, M: 'a>(content: impl Into<cosmic::Element<'a, M>>) -> cosmic::Element<'a, M> {
+    let spacing = cosmic::theme::spacing();
+    cosmic::widget::container(content)
+        .padding(spacing.space_xs)
+        .width(cosmic::iced::Length::Fixed(PICKER_WIDTH))
+        .class(cosmic::theme::Container::Dialog(true))
+        .into()
+}
 
 /// The class a selectable row wears.
 ///
