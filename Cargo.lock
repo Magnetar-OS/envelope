@@ -1299,11 +1299,12 @@ dependencies = [
 [[package]]
 name = "cosmic-ext-nib"
 version = "1.1.0"
+source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.1.0#6c14638cf83a2ceefab2f9c448976cc682396db0"
 dependencies = [
  "cosmic-ext-nib-css",
  "cosmic-ext-nib-html",
- "cosmic-ext-nib-model",
- "cosmic-ext-nib-text",
+ "cosmic-ext-nib-model 1.1.0 (git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.1.0)",
+ "cosmic-ext-nib-text 1.1.0 (git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.1.0)",
  "libcosmic",
  "unicode-segmentation",
 ]
@@ -1311,16 +1312,18 @@ dependencies = [
 [[package]]
 name = "cosmic-ext-nib-css"
 version = "1.1.0"
+source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.1.0#6c14638cf83a2ceefab2f9c448976cc682396db0"
 dependencies = [
- "cosmic-ext-nib-model",
+ "cosmic-ext-nib-model 1.1.0 (git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.1.0)",
 ]
 
 [[package]]
 name = "cosmic-ext-nib-html"
 version = "1.1.0"
+source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.1.0#6c14638cf83a2ceefab2f9c448976cc682396db0"
 dependencies = [
  "cosmic-ext-nib-css",
- "cosmic-ext-nib-model",
+ "cosmic-ext-nib-model 1.1.0 (git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.1.0)",
  "html5ever",
  "markup5ever_rcdom",
 ]
@@ -1335,10 +1338,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "cosmic-ext-nib-model"
+version = "1.1.0"
+source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.1.0#6c14638cf83a2ceefab2f9c448976cc682396db0"
+dependencies = [
+ "regex",
+ "thiserror 2.0.20",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "cosmic-ext-nib-text"
 version = "1.1.0"
 dependencies = [
- "cosmic-ext-nib-model",
+ "cosmic-ext-nib-model 1.1.0",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "cosmic-ext-nib-text"
+version = "1.1.0"
+source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.1.0#6c14638cf83a2ceefab2f9c448976cc682396db0"
+dependencies = [
+ "cosmic-ext-nib-model 1.1.0 (git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.1.0)",
  "unicode-segmentation",
 ]
 
@@ -1435,7 +1457,7 @@ version = "1.0.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
- "cosmic-ext-nib-text",
+ "cosmic-ext-nib-text 1.1.0",
  "cosmic-pim-core",
  "dirs 7.0.0",
  "ego-tree",
@@ -2288,8 +2310,8 @@ dependencies = [
  "chrono",
  "cosmic-ext-nib",
  "cosmic-ext-nib-html",
- "cosmic-ext-nib-model",
- "cosmic-ext-nib-text",
+ "cosmic-ext-nib-model 1.1.0 (git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.1.0)",
+ "cosmic-ext-nib-text 1.1.0 (git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.1.0)",
  "cosmic-pim-accounts",
  "cosmic-pim-auth",
  "cosmic-pim-mail",

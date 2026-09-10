@@ -35,18 +35,25 @@ cosmic-pim-auth = { path = "../cosmic-pim/crates/cosmic-pim-auth" }
 # - `nib` is the widget, which — unlike libcosmic's `text_editor` — can be
 #   given an id and focused without panicking the pinned revision.
 #
-# Paths until Nib is on crates.io; then versions. Its libcosmic is unpinned and
-# from the same URL as ours, so cargo unifies the two rather than building both.
-nib = { path = "../cosmic-ext-nib/crates/nib", package = "cosmic-ext-nib" }
+# All four from git, at a tag, rather than from crates.io — even the three that
+# are published there. The widget cannot be published at all, because it depends
+# on libcosmic and libcosmic is not on crates.io; and a build that took the
+# widget from git and the model from the registry would have two
+# `cosmic-ext-nib-model` crates from two sources, whose `Node` types are not the
+# same type. One source or the other, and the widget decides which.
+#
+# Nib's libcosmic is unpinned and from the same URL as ours, so cargo unifies
+# the two rather than building both.
+nib = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.1.0", package = "cosmic-ext-nib" }
 # HTML into a document, for the reader. Not a renderer of arbitrary HTML: the
 # schema is the allow-list, so a `<script>`, a `<style>` and an inline
 # `style=` are dropped because there is nowhere in the model to put them —
 # and an `<img>` becomes a node that draws a placeholder rather than a
 # request. See `ui::reader` for why that is the display-security position
 # rather than a retreat from it.
-nib-html = { path = "../cosmic-ext-nib/crates/nib-html", package = "cosmic-ext-nib-html" }
-nib-model = { path = "../cosmic-ext-nib/crates/nib-model", package = "cosmic-ext-nib-model" }
-nib-text = { path = "../cosmic-ext-nib/crates/nib-text", package = "cosmic-ext-nib-text" }
+nib-html = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.1.0", package = "cosmic-ext-nib-html" }
+nib-model = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.1.0", package = "cosmic-ext-nib-model" }
+nib-text = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.1.0", package = "cosmic-ext-nib-text" }
 
 i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
 i18n-embed-fl = "0.10"
