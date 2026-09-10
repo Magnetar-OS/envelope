@@ -69,7 +69,8 @@ check-json: (check '--message-format=json')
 # Checks formatting without rewriting anything
 #
 # Scoped to this package: `--all` would reach through the path dependency and
-# reformat the cosmic-pim checkout, which is a different repository.
+# reformat a sibling checkout if the `[patch]` block is ever uncommented for
+# local work, which would put another repository in this workspace.
 fmt-check:
     cargo fmt -p envelope -- --check
 

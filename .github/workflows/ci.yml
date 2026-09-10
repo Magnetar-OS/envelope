@@ -1,11 +1,6 @@
 # The gate `just check-all` implies, run on shared runners. The toolchain
 # comes from rust-toolchain.toml — the workflow deliberately passes none, per
 # the ecosystem convention, so a bump there is a bump everywhere at once.
-#
-# The substrate is a path dependency (`../cosmic-pim`), so CI clones it
-# beside this checkout at the same layout a contributor's disk has. Until
-# the crates are published this is the build's real shape; hiding it would
-# make CI pass where a fresh checkout fails.
 name: CI
 
 on:
@@ -22,13 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: envelope
-
-      - uses: actions/checkout@v4
-        with:
-          repository: Magnetar-OS/cosmic-pim
-          path: cosmic-pim
 
       - name: System libraries the build needs
         run: |
@@ -42,12 +30,9 @@ jobs:
       # needed, and none wanted: an action pinning its own default would
       # silently override the file.
       - name: Show the pinned toolchain
-        working-directory: envelope
         run: rustup show
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: envelope
 
       # Everything the justfile's check-all runs, in the order that fails
       # cheapest first: metadata validation, formatting, clippy, tests.
@@ -55,5 +40,4 @@ jobs:
       # URLs that only exist after merge; the networked pass belongs to a
       # scheduled run, not to review.
       - name: check-all
-        working-directory: envelope
         run: just check-all

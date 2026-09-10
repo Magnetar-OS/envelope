@@ -43,25 +43,6 @@ jobs:
       # the full install tree for nfpm's tree entry to package.
       build_command: |
         command -v just >/dev/null || { curl --proto '=https' --tlsv1.2 -sSfL https://just.systems/install.sh | sudo bash -s -- --to /usr/local/bin; }
-        # The substrate is still a path dependency (`../cosmic-pim`), and the
-        # kit checks out only this repository — so unlike ci.yml, which clones
-        # it as a second checkout, the release leg has to fetch it itself or
-        # `--locked` fails on a directory that is not there.
-        #
-        # Pinned to the exact commit recorded in cosmic-pim.sha, never to a
-        # branch. `--locked` pins every registry crate but says nothing about
-        # a path dependency, so tracking the substrate's default branch would
-        # mean signed artifacts built from whatever main happened to be that
-        # minute, and a rebuild of the same tag producing a different binary.
-        # The verify step is the point: a silent mismatch would defeat it.
-        #
-        # All of this retires the day cosmic-pim-* are on crates.io and the
-        # manifest moves to version dependencies.
-        SUBSTRATE_SHA="$(tr -d '[:space:]' < cosmic-pim.sha)"
-        [ -d ../cosmic-pim ] || git clone --filter=blob:none --no-checkout https://github.com/Magnetar-OS/cosmic-pim.git ../cosmic-pim
-        git -C ../cosmic-pim fetch --depth 1 origin "$SUBSTRATE_SHA"
-        git -C ../cosmic-pim checkout --detach "$SUBSTRATE_SHA"
-        [ "$(git -C ../cosmic-pim rev-parse HEAD)" = "$SUBSTRATE_SHA" ] || { echo "::error::cosmic-pim is not at $SUBSTRATE_SHA"; exit 1; }
         cargo build --release --locked
         just rootdir="$PWD/.release-kit/pkgroot" install
       binary_path: 'target/release/$RK_BINARY'
