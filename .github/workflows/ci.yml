@@ -23,7 +23,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-dev libssl-dev libsqlite3-dev pkg-config \
-            desktop-file-utils appstream just
+            desktop-file-utils appstream
 
       # rustup reads rust-toolchain.toml on the first cargo invocation and
       # installs the pinned channel with its components. No toolchain action
@@ -33,6 +33,11 @@ jobs:
         run: rustup show
 
       - uses: Swatinem/rust-cache@v2
+
+      # Not the apt package: noble's just predates `home_directory()`, which
+      # the justfile uses, and fails to parse the whole file before running
+      # any recipe.
+      - uses: extractions/setup-just@v3
 
       # Everything the justfile's check-all runs, in the order that fails
       # cheapest first: metadata validation, formatting, clippy, tests.
