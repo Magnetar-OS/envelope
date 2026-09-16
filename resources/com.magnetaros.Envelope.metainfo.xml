@@ -83,7 +83,7 @@
   </branding>
 
   <releases>
-    <release version="0.1.0" date="2026-08-24">
+    <release version="0.1.0" date="2026-08-24"> <!-- x-release-kit-version-date -->
       <description>
         <p>Initial release.</p>
       </description>
