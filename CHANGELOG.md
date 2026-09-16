@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-09-16
+
 ### Added
 
 - An HTML message shows the sender's styling: colour, background, bold and
@@ -216,3 +218,6 @@ All notable changes to this project are documented here. The format follows
   in the palette's shape, with undo.
 - A crash now leaves a report under the state directory, and the next launch
   says so once in the status line.
+
+[Unreleased]: https://github.com/Magnetar-OS/envelope/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/Magnetar-OS/envelope/releases/tag/v1.0.1
