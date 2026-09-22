@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The applications menu lists the app as Envelope, not "Mail", and files it
+  under Office next to Slate and Circle. It was under Network, which COSMIC's
+  app library has no folder for.
+
 ## [1.1.0] - 2026-09-22
 
 ### Changed

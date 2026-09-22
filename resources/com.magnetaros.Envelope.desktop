@@ -1,8 +1,8 @@
 [Desktop Entry]
-Name=Mail
+Name=Envelope
 GenericName=Email Client
 Comment=Read and write your mail
-Categories=Network;Email;
+Categories=COSMIC;Office;Email;
 Exec=envelope %u
 Icon=com.magnetaros.Envelope
 Terminal=false
