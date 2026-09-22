@@ -121,6 +121,12 @@ pub struct AppModel {
     /// The folder dialog, while one is open. At most one of this and the
     /// palette: opening either closes the other.
     folder_dialog: Option<FolderDialog>,
+    /// The window the folder dialog was opened from, and so the one it is
+    /// drawn over. `None` is the main window. Send later is pressed in a
+    /// composer, and a dialog drawn in the main window sat behind the
+    /// composer that asked for it — where its buttons also arrived unrouted,
+    /// with no composer to schedule.
+    folder_dialog_window: Option<window::Id>,
     /// The folders the move picker is showing, as indices into `folders`.
     /// Held in the model because `dialog()` hands out borrows.
     move_rows: Vec<usize>,
@@ -1241,6 +1247,7 @@ impl cosmic::Application for AppModel {
             signing_in: false,
             palette: None,
             folder_dialog: None,
+            folder_dialog_window: None,
             move_rows: Vec::new(),
             dragging: None,
             sidebar_width: crate::config::DEFAULT_SIDEBAR_WIDTH as f32,
@@ -1665,52 +1672,12 @@ impl cosmic::Application for AppModel {
     }
 
     fn dialog(&self) -> Option<Element<'_, Self::Message>> {
-        if let Some(dialog) = self.folder_dialog.as_ref() {
-            return match dialog {
-                FolderDialog::Create { name } => Some(crate::ui::folders::name_dialog(
-                    fl!("new-folder"),
-                    fl!("create"),
-                    name,
-                )),
-                FolderDialog::Rename { name } => Some(crate::ui::folders::name_dialog(
-                    fl!("rename-folder"),
-                    fl!("rename"),
-                    name,
-                )),
-                FolderDialog::Delete => {
-                    self.current_folder().map(crate::ui::folders::delete_dialog)
-                }
-                FolderDialog::RemoveAccount { name, .. } => {
-                    Some(crate::ui::folders::confirm_dialog(
-                        fl!("remove-account-title", name = name.clone()),
-                        fl!("remove-account-warning"),
-                        fl!("remove"),
-                    ))
-                }
-                FolderDialog::DeleteRule { name, .. } => Some(crate::ui::folders::confirm_dialog(
-                    fl!("delete-rule-title", name = name.clone()),
-                    fl!("delete-rule-warning"),
-                    fl!("delete"),
-                )),
-                FolderDialog::Snooze => Some(crate::ui::folders::snooze_dialog()),
-                FolderDialog::Label { query, selected } => Some(
-                    crate::ui::folders::LabelPicker {
-                        query,
-                        rows: &self.label_rows,
-                        selected: *selected,
-                    }
-                    .view(),
-                ),
-                FolderDialog::SendLater => Some(crate::ui::folders::send_later_dialog()),
-                FolderDialog::Move { query, selected } => Some(
-                    crate::ui::folders::MovePicker {
-                        query,
-                        matches: &self.move_rows,
-                        folders: &self.folders,
-                        selected: *selected,
-                    }
-                    .view(),
-                ),
+        if self.folder_dialog.is_some() {
+            // A dialog opened from a window of our own is drawn there, by
+            // `view_window`.
+            return match self.folder_dialog_window {
+                None => self.folder_dialog_view(),
+                Some(_) => None,
             };
         }
         let (query, selected) = self.palette.as_ref()?;
@@ -1867,7 +1834,7 @@ impl cosmic::Application for AppModel {
         // for the main window only.
         let maximized = self.maximized.contains(&id);
 
-        widget::column::with_capacity(2)
+        let window = widget::column::with_capacity(2)
             .push(
                 widget::header_bar()
                     .title(self.title(id))
@@ -1884,7 +1851,20 @@ impl cosmic::Application for AppModel {
                 widget::container(content)
                     .width(Length::Fill)
                     .height(Length::Fill),
-            )
+            );
+
+        // A dialog this window opened, over this window — the framework draws
+        // `dialog()` over the main window only. The popover is there with or
+        // without one, as in libcosmic's own template, so the widget tree
+        // does not change shape when a dialog comes and goes.
+        let mut window = widget::popover(window).modal(true);
+        if self.folder_dialog_window == Some(id)
+            && let Some(dialog) = self.folder_dialog_view()
+        {
+            window = window.popup(dialog);
+        }
+
+        window
             .apply(widget::container)
             .class(cosmic::theme::Container::WindowBackground)
             .width(Length::Fill)
@@ -2561,6 +2541,7 @@ impl AppModel {
                 // save. This is the model catching up.
                 self.windows.remove(&id);
                 self.maximized.remove(&id);
+                self.forget_window_dialog(id);
                 Task::none()
             }
             Message::WindowsClosing => {
@@ -3230,6 +3211,7 @@ impl AppModel {
                 self.palette = None;
                 self.palette_rows.clear();
                 self.folder_dialog = Some(dialog);
+                self.folder_dialog_window = self.routed;
                 self.refresh_move_rows();
                 cosmic::widget::text_input::focus(crate::ui::FOLDER_NAME_ID.clone())
             }
@@ -3757,6 +3739,53 @@ impl AppModel {
         &mut self.expanded_quotes
     }
 
+    /// The open folder dialog, for whichever window `folder_dialog_window`
+    /// names to draw.
+    fn folder_dialog_view(&self) -> Option<Element<'_, Message>> {
+        match self.folder_dialog.as_ref()? {
+            FolderDialog::Create { name } => Some(crate::ui::folders::name_dialog(
+                fl!("new-folder"),
+                fl!("create"),
+                name,
+            )),
+            FolderDialog::Rename { name } => Some(crate::ui::folders::name_dialog(
+                fl!("rename-folder"),
+                fl!("rename"),
+                name,
+            )),
+            FolderDialog::Delete => self.current_folder().map(crate::ui::folders::delete_dialog),
+            FolderDialog::RemoveAccount { name, .. } => Some(crate::ui::folders::confirm_dialog(
+                fl!("remove-account-title", name = name.clone()),
+                fl!("remove-account-warning"),
+                fl!("remove"),
+            )),
+            FolderDialog::DeleteRule { name, .. } => Some(crate::ui::folders::confirm_dialog(
+                fl!("delete-rule-title", name = name.clone()),
+                fl!("delete-rule-warning"),
+                fl!("delete"),
+            )),
+            FolderDialog::Snooze => Some(crate::ui::folders::snooze_dialog()),
+            FolderDialog::Label { query, selected } => Some(
+                crate::ui::folders::LabelPicker {
+                    query,
+                    rows: &self.label_rows,
+                    selected: *selected,
+                }
+                .view(),
+            ),
+            FolderDialog::SendLater => Some(crate::ui::folders::send_later_dialog()),
+            FolderDialog::Move { query, selected } => Some(
+                crate::ui::folders::MovePicker {
+                    query,
+                    matches: &self.move_rows,
+                    folders: &self.folders,
+                    selected: *selected,
+                }
+                .view(),
+            ),
+        }
+    }
+
     /// Opens a window, with the chrome a window of our own drawing needs.
     ///
     /// Undecorated on purpose: `view_window` draws a COSMIC header bar into
@@ -4041,7 +4070,17 @@ impl AppModel {
     fn drop_window(&mut self, id: window::Id) -> Task<Message> {
         self.windows.remove(&id);
         self.maximized.remove(&id);
+        self.forget_window_dialog(id);
         window::close(id)
+    }
+
+    /// Closes the dialog a window opened, when that window goes. Nothing would
+    /// draw it any more, and it would still take the next Escape.
+    fn forget_window_dialog(&mut self, id: window::Id) {
+        if self.folder_dialog_window == Some(id) {
+            self.folder_dialog = None;
+            self.folder_dialog_window = None;
+        }
     }
 
     /// Leaves the open message's list, by the least ceremonious route it

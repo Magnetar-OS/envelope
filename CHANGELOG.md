@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Send later opens over the composer it was pressed in. It used to open in the
+  main window, behind the composer, and choosing a time there scheduled
+  nothing.
+
 ## [1.0.1] - 2026-09-16
 
 ### Added
