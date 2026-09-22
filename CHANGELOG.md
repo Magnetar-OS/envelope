@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Rebuilt against the current COSMIC libraries (libcosmic `03c8f93`).
+
 ### Fixed
 
 - Send later opens over the composer it was pressed in. It used to open in the
