@@ -1250,6 +1250,18 @@ pub struct RuleForm {
     pub move_to: usize,
 }
 
+impl RuleForm {
+    /// Is there a rule here: something to match, and something to do?
+    ///
+    /// A rule with no action matched mail, did nothing to it, and sat in the
+    /// list looking like it worked.
+    #[must_use]
+    pub fn can_add(&self) -> bool {
+        !self.contains.trim().is_empty()
+            && (self.mark_read || self.star || self.delete || self.move_to > 0)
+    }
+}
+
 /// The menu's entries are registry actions, so a menu item and the keystroke
 /// beside it cannot mean different things.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3090,10 +3102,10 @@ impl AppModel {
             }
             Message::RuleFormSubmitted => {
                 use cosmic_pim_mail::rules::{Actions, Condition, Rule};
-                let contains = self.rule_form.contains.trim().to_owned();
-                if contains.is_empty() {
+                if !self.rule_form.can_add() {
                     return Task::none();
                 }
+                let contains = self.rule_form.contains.trim().to_owned();
                 let field = crate::ui::rules::FIELDS
                     .get(self.rule_form.field)
                     .copied()
@@ -6201,6 +6213,19 @@ mod tests {
             "the From choices are another account's: {:?}",
             composer.identity_labels
         );
+    }
+
+    #[test]
+    fn a_rule_that_does_nothing_is_not_added() {
+        let mut model = model();
+        model.rule_form.contains = "newsletter".into();
+
+        let _ = model.dispatch(Message::RuleFormSubmitted);
+        assert!(model.rules.is_empty(), "a rule with no action was added");
+
+        model.rule_form.mark_read = true;
+        let _ = model.dispatch(Message::RuleFormSubmitted);
+        assert_eq!(model.rules.len(), 1);
     }
 
     #[test]

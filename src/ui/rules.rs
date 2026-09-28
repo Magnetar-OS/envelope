@@ -116,9 +116,10 @@ impl<'a> Rules<'a> {
                     Message::RuleFormMoveSelected,
                 )),
             )
-            .add(widget::button::suggested(fl!("rule-add")).on_press_maybe(
-                (!self.form.contains.trim().is_empty()).then_some(Message::RuleFormSubmitted),
-            ));
+            .add(
+                widget::button::suggested(fl!("rule-add"))
+                    .on_press_maybe(self.form.can_add().then_some(Message::RuleFormSubmitted)),
+            );
 
         widget::column::with_capacity(2)
             .spacing(spacing.space_s)

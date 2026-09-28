@@ -54,6 +54,8 @@ All notable changes to this project are documented here. The format follows
   instead of at the next check.
 - Opening a server draft whose local copy cannot be read says so, instead of
   making a second local copy beside it.
+- A filter rule needs an action before it can be added; one without matched
+  mail and did nothing.
 
 ## [1.1.0] - 2026-09-22
 
