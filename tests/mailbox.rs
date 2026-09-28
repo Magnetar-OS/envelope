@@ -1675,3 +1675,48 @@ fn every_account_with_a_due_send_is_driven_and_no_other() {
         .collect();
     assert_eq!(attempted, ["Due"], "the wrong accounts were driven");
 }
+
+#[test]
+fn a_draft_whose_record_cannot_be_read_is_not_adopted_as_a_second_one() {
+    // Opening a mirror of one of this device's drafts reads the local record.
+    // When that read failed, the mirror was adopted as a new record beside
+    // the unreadable one — two records for one draft, and the sweep would
+    // keep both on the server.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let connection = connection(root);
+    let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "me@example.com".into(),
+    });
+    draft.subject = "Mine".into();
+    let id = mail::save_draft(&connection, None, &draft).expect("save");
+    let records = root.join(ACCOUNT).join(".drafts");
+    std::fs::write(records.join(format!("{id}.draft.json")), "not a record").expect("corrupt");
+
+    let drafts = folder::from_list_entry("Drafts", Some('/'), &[]);
+    let mirror = format!(
+        "Message-ID: <{id}.draft@example.com>\r\nFrom: me@example.com\r\n\
+         Subject: Mine\r\n\r\nWriting.\r\n"
+    );
+    MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &drafts))
+        .expect("open")
+        .upsert(&RemoteMessage {
+            uid: 1,
+            flags: Flags::default(),
+            raw: mirror.into_bytes(),
+            internal_date_ms: 60_000,
+        })
+        .expect("mirror");
+
+    assert!(
+        mail::edit_server_draft(&connection, &drafts, 1).is_err(),
+        "an unreadable record was treated as no record"
+    );
+    let count = std::fs::read_dir(&records)
+        .expect("records")
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".draft.json"))
+        .count();
+    assert_eq!(count, 1, "the mirror was adopted as a second record");
+}

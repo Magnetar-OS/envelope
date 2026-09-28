@@ -52,6 +52,8 @@ All notable changes to this project are documented here. The format follows
   server's Drafts folder.
 - A reply to an invitation, sent from the calendar, goes out straight away
   instead of at the next check.
+- Opening a server draft whose local copy cannot be read says so, instead of
+  making a second local copy beside it.
 
 ## [1.1.0] - 2026-09-22
 

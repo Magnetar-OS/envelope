@@ -934,9 +934,12 @@ pub fn edit_server_draft(
     let message = Message::parse(&raw).ok_or_else(|| "that draft could not be read".to_string())?;
     let drafts_store = drafts(connection)?;
 
-    // One of ours? The mirror's Message-ID carries the record's id.
+    // One of ours? The mirror's Message-ID carries the record's id. A record
+    // that is there but cannot be read is an error, not an absence: adopting
+    // the mirror beside it would make a second record for one draft, and the
+    // sweep would then keep two copies on the server.
     if let Some(id) = message.message_id.as_deref().and_then(own_draft_id)
-        && let Ok(Some(draft)) = load_draft(connection, id)
+        && let Some(draft) = load_draft(connection, id)?
     {
         return Ok((id.to_owned(), draft));
     }
