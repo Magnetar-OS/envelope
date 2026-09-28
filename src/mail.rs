@@ -450,7 +450,8 @@ pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
     Ok(report)
 }
 
-/// One account's substrate pass, one at a time per account.
+/// One account's substrate pass, one at a time per account, followed by the
+/// bookkeeping every drain of its outbox needs.
 ///
 /// One at a time because two passes over one account race twice over: both
 /// drain the outbox, and the outbox does not claim a message before sending
@@ -472,14 +473,20 @@ fn pass_held(
     options: SyncOptions,
 ) -> Result<cosmic_pim_sync::MailReport, String> {
     let credentials = fresh_credentials(connection)?;
-    cosmic_pim_sync::sync_account_mail(
+    let report = cosmic_pim_sync::sync_account_mail(
         &connection.account,
         &credentials,
         &connection.root,
         options,
         now_ms(),
     )
-    .map_err(|why| why.to_string())
+    .map_err(|why| why.to_string())?;
+    // Whatever the drain sent, the messages those replies answered are marked
+    // now — the same as an immediate send does.
+    if let Err(why) = settle_answered(connection) {
+        tracing::warn!(%why, "sent replies could not mark what they answered");
+    }
+    Ok(report)
 }
 
 /// Takes an account's lock. A poisoned lock only means another pass
@@ -652,7 +659,157 @@ pub fn retry_queued(connection: &Connection, id: &str) -> Result<(), String> {
 pub fn discard_queued(connection: &Connection, id: &str) -> Result<(), String> {
     outbox(connection)?
         .remove(id)
-        .map_err(|why| why.to_string())
+        .map_err(|why| why.to_string())?;
+    // Discarded, not sent: the message it answered stays unanswered.
+    take_answering(connection, id).map(|_| ())
+}
+
+/// The message a queued reply answers, by queue id, until the reply goes.
+///
+/// The outbox holds a message and nothing about where it came from, so the
+/// "mark the original answered" half of a send the grace delay or Send later
+/// put in the queue is kept here, beside the outbox. [`settle_answered`]
+/// applies it once the id has left the queue by being sent; taking the send
+/// back or discarding it drops it instead.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct AnsweringState {
+    #[serde(default)]
+    replies: BTreeMap<String, Answers>,
+}
+
+/// One answered message, pinned to the numbering it was read under.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct Answers {
+    /// The folder's wire name and delimiter, which is all a maildir path needs.
+    mailbox: String,
+    delimiter: char,
+    uid: u32,
+    /// A UID means nothing under another UIDVALIDITY: after a renumbering it
+    /// names a different message or none, and marking it would mark a
+    /// stranger's mail answered.
+    uid_validity: u32,
+}
+
+fn answering_path(connection: &Connection) -> PathBuf {
+    connection
+        .root
+        .join(&connection.account_id)
+        .join(".answering.json")
+}
+
+fn read_answering(connection: &Connection) -> Result<AnsweringState, String> {
+    match std::fs::read_to_string(answering_path(connection)) {
+        Ok(text) => serde_json::from_str(&text)
+            .map_err(|why| format!("the record of which replies answer what is unreadable: {why}")),
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => Ok(AnsweringState::default()),
+        Err(why) => Err(why.to_string()),
+    }
+}
+
+fn write_answering(connection: &Connection, state: &AnsweringState) -> Result<(), String> {
+    let path = answering_path(connection);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|why| why.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(state).map_err(|why| why.to_string())?;
+    // Write-then-rename, like the rules state: a torn file would forget every
+    // pending mark at once.
+    let temp = path.with_extension("json.new");
+    std::fs::write(&temp, json).map_err(|why| why.to_string())?;
+    std::fs::rename(&temp, path).map_err(|why| why.to_string())
+}
+
+/// Records that the queued message `id` answers `answering`.
+fn remember_answering(
+    connection: &Connection,
+    id: &str,
+    (folder, uid): &(Folder, u32),
+) -> Result<(), String> {
+    let uid_validity = MaildirStore::open(connection.mailbox_path(folder))
+        .and_then(|store| store.state())
+        .map_err(|why| why.to_string())?
+        .cursor
+        .uid_validity;
+    let mut state = read_answering(connection)?;
+    state.replies.insert(
+        id.to_owned(),
+        Answers {
+            mailbox: folder.wire_name.clone(),
+            delimiter: folder.delimiter,
+            uid: *uid,
+            uid_validity,
+        },
+    );
+    write_answering(connection, &state)
+}
+
+/// Forgets what the queued message `id` answers, returning it.
+fn take_answering(connection: &Connection, id: &str) -> Result<Option<(Folder, u32)>, String> {
+    let mut state = read_answering(connection)?;
+    let Some(answers) = state.replies.remove(id) else {
+        return Ok(None);
+    };
+    write_answering(connection, &state)?;
+    let folder =
+        cosmic_pim_mail::folder::from_list_entry(&answers.mailbox, Some(answers.delimiter), &[]);
+    Ok(Some((folder, answers.uid)))
+}
+
+/// Marks answered every message whose queued reply has gone.
+///
+/// A record whose id is still in the outbox is waiting, or has been given up
+/// on and waits for the user — either way nothing went. One whose id has
+/// left was sent: a take-back and a discard remove the record along with
+/// the message. Run after every pass that drains the outbox, whichever
+/// engine's drain sent the message. Returns how many were marked.
+pub fn settle_answered(connection: &Connection) -> Result<usize, String> {
+    let mut state = read_answering(connection)?;
+    if state.replies.is_empty() {
+        return Ok(0);
+    }
+    let waiting: std::collections::HashSet<String> = list_outbox(connection)?
+        .into_iter()
+        .map(|queued| queued.id)
+        .collect();
+    let gone: Vec<String> = state
+        .replies
+        .keys()
+        .filter(|id| !waiting.contains(*id))
+        .cloned()
+        .collect();
+    if gone.is_empty() {
+        return Ok(0);
+    }
+
+    let mut marked = 0;
+    for id in gone {
+        let Some(answers) = state.replies.remove(&id) else {
+            continue;
+        };
+        let folder = cosmic_pim_mail::folder::from_list_entry(
+            &answers.mailbox,
+            Some(answers.delimiter),
+            &[],
+        );
+        let same_numbering = MaildirStore::open(connection.mailbox_path(&folder))
+            .and_then(|store| store.state())
+            .is_ok_and(|mailbox| mailbox.cursor.uid_validity == answers.uid_validity);
+        if !same_numbering {
+            tracing::info!(
+                id,
+                mailbox = answers.mailbox,
+                "a reply went, but the mailbox it answered was renumbered; not marked"
+            );
+            continue;
+        }
+        set_flags(connection, &folder, &[answers.uid], |flags| Flags {
+            answered: true,
+            ..flags
+        })?;
+        marked += 1;
+    }
+    write_answering(connection, &state)?;
+    Ok(marked)
 }
 
 /// This account's drafts: local records, mirrored to the server.
@@ -875,6 +1032,7 @@ pub fn schedule_send(
     draft_id: Option<&str>,
     draft: &Draft,
     not_before_ms: i64,
+    answering: Option<&(Folder, u32)>,
 ) -> Result<String, String> {
     let id = match draft_id.filter(|id| drafts::is_valid_id(id)) {
         Some(id) => id.to_owned(),
@@ -883,6 +1041,14 @@ pub fn schedule_send(
     outbox(connection)?
         .schedule(&id, draft, not_before_ms)
         .map_err(|why| why.to_string())?;
+    // After the message is queued, so a record never exists for a queue entry
+    // that does not — which settle_answered would read as sent. Not fatal:
+    // the reply still goes, and saying the send failed would invite a second.
+    if let Some(answering) = answering
+        && let Err(why) = remember_answering(connection, &id, answering)
+    {
+        tracing::warn!(%why, "a scheduled reply will not mark the message it answers");
+    }
     if let Some(previous) = draft_id
         && let Err(why) = delete_draft(connection, previous)
     {
@@ -891,13 +1057,28 @@ pub fn schedule_send(
     Ok(id)
 }
 
+/// A scheduled send taken back: the draft to edit, and the message it was
+/// answering, so a reopened reply is still a reply.
+#[derive(Debug, Clone)]
+pub struct TakenBack {
+    pub draft: Draft,
+    pub answering: Option<(Folder, u32)>,
+}
+
 /// Takes a scheduled send back, returning the draft to edit. `None` means it
 /// already went — and the caller must say so, not reopen a composer for a
 /// message the recipients already have.
-pub fn cancel_send(connection: &Connection, id: &str) -> Result<Option<Draft>, String> {
-    outbox(connection)?
+pub fn cancel_send(connection: &Connection, id: &str) -> Result<Option<TakenBack>, String> {
+    let Some(draft) = outbox(connection)?
         .cancel(id)
-        .map_err(|why| why.to_string())
+        .map_err(|why| why.to_string())?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(TakenBack {
+        draft,
+        answering: take_answering(connection, id)?,
+    }))
 }
 
 /// Searches the account, applying the flag filters the index cannot.
@@ -2209,11 +2390,19 @@ pub fn send(
             return match id.and_then(|id| {
                 outbox(connection)?
                     .queue(&id, draft, &outcome, now_ms())
-                    .map_err(|why| why.to_string())
+                    .map_err(|why| why.to_string())?;
+                Ok(id)
             }) {
                 // The draft becomes the queued message; leaving both would show
                 // it twice and send it once.
-                Ok(()) => {
+                Ok(id) => {
+                    // The retry is a send like any other, and marks what it
+                    // answers when it goes.
+                    if let Some(answering) = answering.as_ref()
+                        && let Err(why) = remember_answering(connection, &id, answering)
+                    {
+                        tracing::warn!(%why, "a queued reply will not mark the message it answers");
+                    }
                     if let Some(previous) = draft_id
                         && let Err(why) = delete_draft(connection, previous)
                     {

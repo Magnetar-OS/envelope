@@ -15,7 +15,7 @@ use cosmic_pim_mail::imap::{Endpoint, Security};
 use cosmic_pim_mail::maildir::{self, MaildirStore};
 use cosmic_pim_mail::model::Flags;
 use cosmic_pim_mail::push::PushQueue;
-use cosmic_pim_mail::smtp::SmtpEndpoint;
+use cosmic_pim_mail::smtp::{Outcome, SmtpEndpoint};
 use cosmic_pim_mail::store::{MailStore, RemoteMessage};
 use envelope::mail::{self, Connection};
 
@@ -1523,6 +1523,115 @@ fn snoozing_is_refused_where_nothing_could_wake_the_mail() {
     assert!(store.pending().is_empty(), "a move was queued anyway");
 }
 
+/// Ada's message, delivered, and a reply to it scheduled in the outbox.
+fn scheduled_reply(root: &std::path::Path) -> (Connection, String) {
+    deliver(root, &[(1, &from_ada(1), Flags::default())]);
+    let connection = connection(root);
+    let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "me@example.com".into(),
+    });
+    draft.to.push(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "ada@example.com".into(),
+    });
+    draft.subject = "Re: 1".into();
+    let id =
+        mail::schedule_send(&connection, None, &draft, 0, Some(&(inbox(), 1))).expect("schedule");
+    (connection, id)
+}
+
+fn is_answered(root: &std::path::Path, uid: u32) -> bool {
+    let store = MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox())).expect("open");
+    store.state().expect("state").entries[&uid].answered
+}
+
+#[test]
+fn a_reply_that_leaves_the_outbox_marks_what_it_answers() {
+    // With the undo grace on — the default — every reply goes through the
+    // outbox, and the outbox has nowhere to keep what a message answers. The
+    // original was never marked answered, while a send with the grace off
+    // marked it. The drain is the substrate's own, as a sync pass runs it.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let (connection, _) = scheduled_reply(root);
+
+    mail::settle_answered(&connection).expect("settle while queued");
+    assert!(!is_answered(root, 1), "marked before the reply went");
+
+    let drained = mail::outbox(&connection)
+        .expect("outbox")
+        .drain_with(|_| Outcome::Sent(b"sent".to_vec()), i64::MAX)
+        .expect("drain");
+    assert_eq!(drained.sent.len(), 1);
+
+    assert_eq!(mail::settle_answered(&connection).expect("settle"), 1);
+    assert!(
+        is_answered(root, 1),
+        "the reply went and its original is unmarked"
+    );
+    let store = MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox())).expect("open");
+    assert!(
+        store.pending().iter().any(|entry| entry.op.uid() == 1),
+        "the mark is local only; the server never hears of it"
+    );
+}
+
+#[test]
+fn a_reply_taken_back_marks_nothing_and_still_knows_what_it_answers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let (connection, id) = scheduled_reply(root);
+
+    let taken = mail::cancel_send(&connection, &id)
+        .expect("cancel")
+        .expect("it had not gone");
+    assert_eq!(
+        taken.answering.map(|(folder, uid)| (folder.wire_name, uid)),
+        Some(("INBOX".to_owned(), 1)),
+        "the reopened reply would no longer mark its original when sent"
+    );
+
+    mail::settle_answered(&connection).expect("settle");
+    assert!(
+        !is_answered(root, 1),
+        "a reply that never went marked its original"
+    );
+}
+
+#[test]
+fn a_discarded_reply_marks_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let (connection, id) = scheduled_reply(root);
+
+    mail::discard_queued(&connection, &id).expect("discard");
+    mail::settle_answered(&connection).expect("settle");
+    assert!(
+        !is_answered(root, 1),
+        "a discarded reply marked its original"
+    );
+}
+
+#[test]
+fn a_reply_that_went_after_a_renumbering_marks_no_stranger() {
+    // The UID it answered now names another message, or none.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let (connection, _) = scheduled_reply(root);
+    renumber(root, 99, &[1]);
+
+    mail::outbox(&connection)
+        .expect("outbox")
+        .drain_with(|_| Outcome::Sent(b"sent".to_vec()), i64::MAX)
+        .expect("drain");
+    assert_eq!(mail::settle_answered(&connection).expect("settle"), 0);
+    assert!(
+        !is_answered(root, 1),
+        "a renumbered message was marked answered"
+    );
+}
+
 #[test]
 fn every_account_with_a_due_send_is_driven_and_no_other() {
     // Sends used to leave only in the selected account's sync, so a message
@@ -1551,8 +1660,8 @@ fn every_account_with_a_due_send_is_driven_and_no_other() {
         address: "ada@example.com".into(),
     });
     let now = 1_000_000;
-    mail::schedule_send(&later, None, &draft, now + 60_000).expect("schedule later");
-    mail::schedule_send(&due, None, &draft, now - 1).expect("schedule due");
+    mail::schedule_send(&later, None, &draft, now + 60_000, None).expect("schedule later");
+    mail::schedule_send(&due, None, &draft, now - 1, None).expect("schedule due");
 
     assert!(!mail::has_due_sends(&idle, now));
     assert!(!mail::has_due_sends(&later, now));

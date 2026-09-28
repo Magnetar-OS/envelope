@@ -1151,7 +1151,7 @@ pub enum Message {
     /// An undone send came back — or turned out to be gone. Carries the
     /// account it was queued in, which is the one a reopened composer
     /// belongs to.
-    SendCancelled(Box<(Scope, Result<Option<cosmic_pim_mail::Draft>, String>)>),
+    SendCancelled(Box<(Scope, Result<Option<mail::TakenBack>, String>)>),
     /// Send what is due in every account's outbox.
     DrainDue,
     /// Every account's due sends were attempted.
@@ -3281,11 +3281,17 @@ impl AppModel {
             Message::SendCancelled(cancelled) => {
                 let (scope, result) = *cancelled;
                 match result {
-                    Ok(Some(draft)) => {
+                    Ok(Some(taken)) => {
                         // The words the user wrote, back where they can be
-                        // edited — the entire point of the grace.
+                        // edited — the entire point of the grace. Still a
+                        // reply if it was one, so sending it again marks
+                        // what it answers.
                         self.say(fl!("send-taken-back"));
-                        return self.open_composer(Composer::new(scope, draft, None));
+                        return self.open_composer(Composer::new(
+                            scope,
+                            taken.draft,
+                            taken.answering,
+                        ));
                     }
                     Ok(None) => self.say(fl!("send-already-gone")),
                     Err(why) => self.say(why),
@@ -5440,6 +5446,9 @@ impl AppModel {
         composer.sending = true;
         composer.error = None;
         let draft_id = composer.draft_id.clone();
+        // Carried into the queue, so the reply marks what it answers when it
+        // goes, as an immediate send does.
+        let answering = composer.answering.clone();
         let scope = composer.scope.clone();
 
         cosmic::task::future(async move {
@@ -5449,6 +5458,7 @@ impl AppModel {
                     draft_id.as_deref(),
                     &draft,
                     not_before_ms,
+                    answering.as_ref(),
                 )
                 .map(|id| Scheduled {
                     scope,
@@ -6135,6 +6145,10 @@ mod tests {
             })
             .expect("the undo reopened the composer");
         assert_eq!(reopened.scope.connection.account_id, "a");
+        assert!(
+            reopened.answering.is_some(),
+            "the reopened reply forgot what it answers"
+        );
         assert!(mail::list_outbox(&a).expect("a's outbox").is_empty());
     }
 
