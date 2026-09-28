@@ -1738,6 +1738,15 @@ struct RulesState {
     /// Highest UID already offered to the rules, by wire name.
     #[serde(default)]
     processed: HashMap<String, u32>,
+    /// The UIDVALIDITY each mark was taken under, by wire name.
+    ///
+    /// A mark is a UID, and a renumbered mailbox voids every UID: the new
+    /// numbers may start below the old mark, which would leave new mail
+    /// unfiltered until they caught up, or above it, which would make the
+    /// whole refetched inbox look newly arrived. Absent from a file written
+    /// before it was recorded; such a mark is trusted once and then pinned.
+    #[serde(default)]
+    uid_validity: HashMap<String, u32>,
 }
 
 /// Applies the account's rules to mail that arrived since the last pass.
@@ -1760,7 +1769,9 @@ pub fn apply_rules(
         .unwrap_or_else(|| cosmic_pim_mail::folder::from_list_entry("INBOX", Some('/'), &[]));
     let store =
         MaildirStore::open(connection.mailbox_path(&inbox)).map_err(|why| why.to_string())?;
-    let entries = store.state().map_err(|why| why.to_string())?.entries;
+    let mailbox = store.state().map_err(|why| why.to_string())?;
+    let uid_validity = mailbox.cursor.uid_validity;
+    let entries = mailbox.entries;
     let newest = entries.keys().max().copied().unwrap_or(0);
 
     let state_path = connection
@@ -1772,9 +1783,22 @@ pub fn apply_rules(
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default();
 
-    let Some(&mark) = state.processed.get(&inbox.wire_name) else {
-        // First pass: record where "new" starts and touch nothing.
+    let same_numbering = state
+        .uid_validity
+        .get(&inbox.wire_name)
+        .is_none_or(|recorded| *recorded == uid_validity);
+    let Some(&mark) = state
+        .processed
+        .get(&inbox.wire_name)
+        .filter(|_| same_numbering)
+    else {
+        // First pass, or the first since the server renumbered the mailbox:
+        // record where "new" starts and touch nothing. What a renumbering
+        // brought back is the same mail under new numbers, not arrivals.
         state.processed.insert(inbox.wire_name.clone(), newest);
+        state
+            .uid_validity
+            .insert(inbox.wire_name.clone(), uid_validity);
         write_rules_state(&state_path, &state)?;
         return Ok(None);
     };
@@ -1839,6 +1863,9 @@ pub fn apply_rules(
     }
 
     state.processed.insert(inbox.wire_name.clone(), newest);
+    state
+        .uid_validity
+        .insert(inbox.wire_name.clone(), uid_validity);
     write_rules_state(&state_path, &state)?;
     Ok(Some(report))
 }

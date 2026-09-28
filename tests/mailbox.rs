@@ -1295,6 +1295,122 @@ Content-Type: application/octet-stream\r\n\
     assert!(opened.pgp.encrypted, "the sealed message read as plain");
 }
 
+/// A rule marking Ada's mail read, which is the whole rule set.
+fn marking_adas_mail_read(connection: &Connection) {
+    use cosmic_pim_mail::rules::{Actions, Condition, Field, Rule};
+    mail::save_rules(
+        connection,
+        &[Rule {
+            name: "Ada".into(),
+            conditions: vec![Condition {
+                field: Field::Sender,
+                contains: "ada@example.com".into(),
+            }],
+            actions: Actions {
+                mark_read: true,
+                ..Actions::default()
+            },
+            ..Rule::default()
+        }],
+    )
+    .expect("save the rules");
+}
+
+fn from_ada(n: u32) -> String {
+    message(
+        &format!("ada-{n}@x"),
+        "",
+        &format!("Note {n}"),
+        "Ada <ada@example.com>",
+        "Mon, 3 Feb 2025 09:00:00 +0000",
+        "Hello.",
+    )
+}
+
+/// What the server's renumbering does to the local mirror: every UID void,
+/// the mailbox fetched again under a new UIDVALIDITY.
+fn renumber(root: &std::path::Path, uid_validity: u32, uids: &[u32]) {
+    let path = maildir::mailbox_path(root, ACCOUNT, &inbox());
+    let mut store = MaildirStore::open(path).expect("open the maildir");
+    store.reset(uid_validity).expect("reset");
+    for uid in uids {
+        store
+            .upsert(&RemoteMessage {
+                uid: *uid,
+                flags: Flags::default(),
+                raw: from_ada(*uid).into_bytes(),
+                internal_date_ms: i64::from(*uid) * 60_000,
+            })
+            .expect("refetch");
+    }
+}
+
+fn is_seen(root: &std::path::Path, uid: u32) -> bool {
+    let store = MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox())).expect("open");
+    store.state().expect("state").entries[&uid].seen
+}
+
+#[test]
+fn rules_still_meet_new_mail_after_the_server_renumbers_the_inbox_lower() {
+    // A renumbered mailbox usually starts again from 1. A high-water mark
+    // kept from before would sit above every new UID, and the rules would
+    // quietly stop running until the new numbers caught up with the old.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let connection = connection(root);
+    marking_adas_mail_read(&connection);
+    let old: Vec<(u32, String)> = (1..=5).map(|uid| (uid, from_ada(uid))).collect();
+    let old: Vec<(u32, &str, Flags)> = old
+        .iter()
+        .map(|(uid, raw)| (*uid, raw.as_str(), Flags::default()))
+        .collect();
+    deliver(root, &old);
+    assert_eq!(
+        mail::apply_rules(&connection, &[]).expect("first pass"),
+        None,
+        "the first pass only records where new mail starts"
+    );
+
+    renumber(root, 2, &[1, 2, 3]);
+    mail::apply_rules(&connection, &[]).expect("the pass after the renumbering");
+    assert!(
+        !is_seen(root, 1),
+        "mail that came back with the renumbering is not new"
+    );
+
+    deliver(root, &[(4, &from_ada(4), Flags::default())]);
+    mail::apply_rules(&connection, &[]).expect("the next pass");
+    assert!(
+        is_seen(root, 4),
+        "new mail after a renumbering met no rules"
+    );
+}
+
+#[test]
+fn a_renumbering_to_higher_uids_is_not_mistaken_for_new_mail() {
+    // The other direction: if the server's new numbers start above the old
+    // mark, every message it re-sent would look newly arrived, and a rule
+    // written today would run over the whole inbox.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let connection = connection(root);
+    marking_adas_mail_read(&connection);
+    deliver(root, &[(1, &from_ada(1), Flags::default())]);
+    assert_eq!(
+        mail::apply_rules(&connection, &[]).expect("first pass"),
+        None
+    );
+
+    renumber(root, 2, &[10, 11, 12]);
+    mail::apply_rules(&connection, &[]).expect("the pass after the renumbering");
+    for uid in [10, 11, 12] {
+        assert!(
+            !is_seen(root, uid),
+            "a renumbered message was treated as new mail"
+        );
+    }
+}
+
 #[test]
 fn drafts_saved_in_the_same_instant_are_still_separate_drafts() {
     // Quitting with several unsaved composers open saves them in one loop,
