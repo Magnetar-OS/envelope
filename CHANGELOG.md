@@ -48,6 +48,8 @@ All notable changes to this project are documented here. The format follows
 - A reply sent with the undo delay or with Send later marks the message it
   answers once it goes, as an immediate send does. Taking such a send back
   reopens it as the reply it was.
+- Two draft saves close together no longer leave a duplicate copy in the
+  server's Drafts folder.
 
 ## [1.1.0] - 2026-09-22
 
