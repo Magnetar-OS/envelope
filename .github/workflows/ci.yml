@@ -16,7 +16,7 @@ jobs:
     name: metadata, fmt, clippy, tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: System libraries the build needs
         run: |
@@ -37,7 +37,7 @@ jobs:
       # Not the apt package: noble's just predates `home_directory()`, which
       # the justfile uses, and fails to parse the whole file before running
       # any recipe.
-      - uses: extractions/setup-just@v3
+      - uses: extractions/setup-just@v4
 
       # Everything the justfile's check-all runs, in the order that fails
       # cheapest first: metadata validation, formatting, clippy, tests.
