@@ -653,6 +653,14 @@ pub fn list_outbox(connection: &Connection) -> Result<Vec<Queued>, String> {
     outbox(connection)?.list().map_err(|why| why.to_string())
 }
 
+/// How many messages wait in an account's outbox under `root`, by account
+/// id alone — for an account being removed, which may not be the selected
+/// one and so has no connection.
+#[must_use]
+pub fn queued_count(root: &std::path::Path, account_id: &str) -> usize {
+    Outbox::open(root.join(account_id)).map_or(0, |outbox| outbox.count())
+}
+
 pub fn retry_queued(connection: &Connection, id: &str) -> Result<(), String> {
     outbox(connection)?.retry(id).map_err(|why| why.to_string())
 }

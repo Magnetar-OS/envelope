@@ -327,6 +327,10 @@ undo-unlabelled = Removed { $label }
 # Confirmations for the things that cannot be taken back
 remove-account-title = Remove { $name }?
 remove-account-warning = The account and its stored password are removed from this device. Mail already downloaded stays on disk, and nothing is deleted on the server.
+remove-account-queued = { $count ->
+        [one] One message waiting in its outbox will not be sent.
+       *[other] { $count } messages waiting in its outbox will not be sent.
+    }
 delete-rule-title = Delete { $name }?
 delete-rule-warning = The rule stops running. Mail it has already filed stays where it put it.
 

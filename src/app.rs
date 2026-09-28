@@ -903,6 +903,8 @@ pub enum FolderDialog {
     RemoveAccount {
         id: String,
         name: String,
+        /// Messages waiting in its outbox, which will then never be sent.
+        queued: usize,
     },
     /// Deleting a filter rule.
     DeleteRule {
@@ -2509,9 +2511,19 @@ impl AppModel {
                     .iter()
                     .find(|account| account.id == id)
                     .map_or_else(|| id.clone(), |account| account.display_name.clone());
+                // Said before, not discovered after: nothing sends from an
+                // account that is gone, and the messages would wait for good.
+                let root = self
+                    .connection
+                    .as_ref()
+                    .map_or_else(cosmic_pim_mail::maildir::default_root, |connection| {
+                        connection.root.clone()
+                    });
+                let queued = mail::queued_count(&root, &id);
                 self.update(Message::FolderDialogOpened(FolderDialog::RemoveAccount {
                     id,
                     name,
+                    queued,
                 }))
             }
             Message::SignInStarted(provider_id) => self.sign_in(&provider_id),
@@ -3990,11 +4002,19 @@ impl AppModel {
                 name,
             )),
             FolderDialog::Delete => self.current_folder().map(crate::ui::folders::delete_dialog),
-            FolderDialog::RemoveAccount { name, .. } => Some(crate::ui::folders::confirm_dialog(
-                fl!("remove-account-title", name = name.clone()),
-                fl!("remove-account-warning"),
-                fl!("remove"),
-            )),
+            FolderDialog::RemoveAccount { name, queued, .. } => {
+                let mut warning = fl!("remove-account-warning");
+                if *queued > 0 {
+                    warning.push(' ');
+                    let queued: usize = *queued;
+                    warning.push_str(&fl!("remove-account-queued", count = queued));
+                }
+                Some(crate::ui::folders::confirm_dialog(
+                    fl!("remove-account-title", name = name.clone()),
+                    warning,
+                    fl!("remove"),
+                ))
+            }
             FolderDialog::DeleteRule { name, .. } => Some(crate::ui::folders::confirm_dialog(
                 fl!("delete-rule-title", name = name.clone()),
                 fl!("delete-rule-warning"),
@@ -6243,6 +6263,36 @@ mod tests {
             composer.identity_labels[0], "Me at a",
             "the From choices are another account's: {:?}",
             composer.identity_labels
+        );
+    }
+
+    /// Account `a` selected, with one message scheduled in its outbox.
+    fn one_queued(root: &Path) -> (AppModel, String) {
+        let mut model = two_accounts(root);
+        let a = model.connection.clone().expect("a");
+        let mut draft = cosmic_pim_mail::Draft::new(a.identities[0].clone());
+        draft.to = parse_addresses("ada@example.com");
+        draft.subject = "Later".into();
+        let id = mail::schedule_send(&a, None, &draft, i64::MAX / 2, None).expect("schedule");
+        model.outbox = mail::list_outbox(&a).expect("outbox");
+        (model, id)
+    }
+
+    #[test]
+    fn removing_an_account_says_what_it_leaves_unsent() {
+        // Its queued messages would never go: nothing sends from an account
+        // that is gone. The confirmation did not say so.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut model, _) = one_queued(dir.path());
+
+        let _ = model.dispatch(Message::AccountRemove("a".into()));
+
+        assert!(
+            matches!(
+                model.folder_dialog,
+                Some(FolderDialog::RemoveAccount { queued: 1, .. })
+            ),
+            "the confirmation does not count the unsent message"
         );
     }
 
