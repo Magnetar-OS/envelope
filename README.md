@@ -68,8 +68,10 @@ Envelope reads, threads, syncs, and sends. What works:
 - **`mailto:` links**, so Circle's "send a message" and Slate's attendee
   addresses land here.
 
-- **Drafts**, kept on this device. Closing the composer saves; discarding is a
-  separate button that says so.
+- **Drafts**, kept on this device and mirrored to the server's Drafts folder
+  on IMAP accounts — one server copy per draft, replaced on each save rather
+  than piling up. Closing the composer saves; discarding is a separate button
+  that says so.
 - **Search** across folders — senders, subjects, and message bodies, best
   match first, with `from:`, `subject:`, `is:unread`, `is:starred`, and
   `has:attachment`. Result rows show the matching passage, and a half-typed
@@ -77,7 +79,12 @@ Envelope reads, threads, syncs, and sends. What works:
 - **Attachments** — received ones save to Downloads, and files can be attached
   to what you send. Nothing is ever opened for you.
 - **An outbox.** A send that could not reach the server waits there and goes out
-  on the next check, with its attachments.
+  on the next check, with its attachments. Undo send and Send later wait there
+  too. Every account's outbox is sent when due, whichever account is on
+  screen.
+- **Windows of their own.** A reply, or a message opened away from the list,
+  stays with the account it came from: switching accounts in the sidebar does
+  not move what an open window sends, saves or files.
 - **A unified inbox** — with two or more mail accounts, "All inboxes" merges
   them newest-first, each row saying whose it is. Opening a row switches to
   that account, so every reader action operates on the right one.
@@ -101,14 +108,12 @@ Envelope reads, threads, syncs, and sends. What works:
   `Ctrl+K` opens a command palette over the same registry — type any action's
   name to run it.
 
-What does not work yet: **HTML composition**, and that is a decision rather than
-a gap — the reader shows text, so an HTML composer would be writing in a format
-the application cannot display. **Drafts do not sync**, and the reason is in the
-next section.
-
-Also not here, in the order they are likely to matter: OpenPGP and S/MIME.
-Both exist in the donor and are ports, not designs. The larger picture of
-where this is heading is in [ROADMAP.md](ROADMAP.md).
+What does not work yet: **HTML composition**. The reader shows an HTML
+message's structure, so a composer emitting structure would no longer write in
+a format the application cannot display; what is missing is the second body on
+the draft. OpenPGP stops at verifying signatures — no decrypting or signing —
+and S/MIME is not here. [PARITY.md](PARITY.md) keeps the full list, and
+[ROADMAP.md](ROADMAP.md) the order.
 
 ## Sending
 
@@ -156,23 +161,26 @@ The shortcuts, the menu entries, and the `?` sheet all read one registry, so the
 sheet cannot be out of date — it is generated from the bindings the keyboard
 handler actually matches against.
 
-## Drafts are local
+## Drafts
 
-Saved drafts live on this machine, under `$XDG_DATA_HOME/mail/<account>/`, and
-are not uploaded to your server's Drafts folder. The sidebar says so.
+A draft lives on this machine first, under `$XDG_DATA_HOME/mail/<account>/`,
+and that record is the one the composer edits. On IMAP accounts it is also
+mirrored to the server's Drafts folder so other devices see it.
 
-The reason is that saving to the server means `APPEND`, and without the UIDPLUS
-extension the client is never told what UID the message was given — so the next
-sync pulls the draft back down as a message it cannot recognise as the one it
-just uploaded, and every edit leaves another copy. Doing it properly needs
-UIDPLUS where it exists, a `Message-ID` match where it does not, and a
-reconciliation pass for the servers that mangle both. That is worth building,
-and it is not worth shipping half of: a duplicated draft is worse than a local
-one.
+The hard part of mirroring is not the upload but the next one. Saving to the
+server means `APPEND`, and without the UIDPLUS extension the client is never
+told what UID the message was given — so a naive mirror pulls its own draft
+back down as a stranger, and every edit leaves another copy. The mirror stamps
+each upload with a `Message-ID` derived from the draft's id, retires the copy
+it replaces by that id, and runs one sweep per account at a time, so the server
+holds exactly one copy per draft. A draft written on another device opens here
+for editing and is replaced there on the first save.
 
 ## Display security
 
-Envelope renders **text**, not HTML. That is the position, not a limitation
+Envelope shows an HTML message's **structure**, not its appearance: headings,
+lists, tables, links and quotes, with the sender's colours and emphasis where
+they stay readable, and no layout. That is the position, not a limitation
 waiting to be lifted:
 
 - **Remote content cannot load.** A tracking pixel has nothing to fire from,
@@ -201,8 +209,9 @@ for tests — the same three moves that made the CalDAV port cheap.
 Ported essentially as-is (they had no dependency on the donor's storage):
 threading, `Authentication-Results` parsing, and the HTML text extractor.
 
-Still in the donor, still to port: `jmap.rs`, `graph.rs`, `gmail.rs`,
-`tantivy_search.rs`, `search_query.rs`, `pgp_mail.rs`, `smime.rs`, `dsn.rs`.
+Ported since: the JMAP, Gmail and Graph engines, delivery-status parsing, and
+the OpenPGP signature check. Still in the donor: S/MIME, and OpenPGP
+decryption and signing.
 
 **Licence.** Resolved: Meltemi's `LICENSING.md` grants the ported layers —
 `mail_sync.rs`, `threading.rs`, `model_text.rs`, `auth_results.rs` — under
@@ -218,7 +227,8 @@ just install-user     # into ~/.local, no root needed
 ```
 
 `just check-all` runs what CI does: metadata validation, formatting,
-clippy, and the tests. Requires a sibling checkout of `cosmic-pim`.
+clippy, and the tests. The substrate comes from crates.io, so no sibling
+checkout is needed.
 
 ## Licence
 

@@ -21,9 +21,9 @@ One correction to the other documents, found during this audit: **server-side
 drafts landed** (substrate commit "the drafts mirror", wired in
 `src/mail.rs` — a local draft record stays the authority, each sweep uploads
 what the server has not seen and retires the copy it replaces, via UIDPLUS
-where offered and a minted Message-ID everywhere else). README.md and
-04-envelope.md still describe drafts as local-only; they are behind the code,
-not the other way round.
+where offered and a minted Message-ID everywhere else). 04-envelope.md still
+describes drafts as local-only; it is behind the code, not the other way
+round. (README.md was corrected on 2026-09-29.)
 
 ---
 
@@ -75,7 +75,7 @@ Everything Geary does, and whether Envelope does it.
 | Drafts, server-synced | have | Just landed (see intro). Replace-not-accumulate; offline discards leave tombstones and retire the server copy on the next sweep. Proven against live Dovecot; rest of the server zoo unexercised. |
 | Per-account signature | gap | One From identity per account, no signature text. |
 | Attachment-missing reminder | verify | Geary warns when the text mentions an attachment none is attached; not found in Envelope's composer. |
-| Undo send (send delay) | gap | Geary 3.36+ has it. Registry has the slot; Milestone 2 item. |
+| Undo send (send delay) | have | A configurable grace (default 10 s, up to 120 s) before SMTP starts; `z` takes it back into the composer. Verified 2026-09-29. |
 
 ### Triage and search
 
@@ -131,7 +131,7 @@ Only the rows Thunderbird adds beyond the baseline table above.
 |---|---|---|
 | POP3 | have | |
 | Exchange | have | Via Microsoft Graph rather than EWS; same accounts covered by a different route. |
-| Multiple identities per account | gap | One From identity, set on the Accounts page. |
+| Multiple identities per account | have | Aliases on the Accounts page; the composer's From dropdown, and a reply goes out as the alias it was addressed to. Verified 2026-09-29. |
 | NNTP newsgroups | rejected | Not mail. Per 04's rule for Meltemi's non-mail layers: if it belongs in the suite it arrives as its own thing, not as a reason this client grows. |
 | RSS feeds | rejected | Same reason. |
 | Chat (IRC/XMPP/Matrix) | rejected | Same reason. |
@@ -141,9 +141,9 @@ Only the rows Thunderbird adds beyond the baseline table above.
 
 | Feature | Status | Notes |
 |---|---|---|
-| Message filters / rules | gap | Milestone 2: client-side filters first, Sieve where the server offers it. |
-| Tags / labels (IMAP keywords) | gap | Milestone 2. Substrate position recorded in 04: the five system flags today; when keywords come, implement Dovecot's `dovecot-keywords` mapping, not a private scheme no other tool can read. |
-| Snooze | gap | Milestone 2; registry slot exists. |
+| Message filters / rules | partial | Client-side, on INBOX arrivals: move, mark read, star, delete (to Trash). No Sieve. Verified 2026-09-29. |
+| Tags / labels (IMAP keywords) | have | IMAP keywords over Dovecot's `dovecot-keywords` mapping, with a label picker and chips in the list. Verified 2026-09-29. |
+| Snooze | partial | IMAP accounts only: waking needs an IMAP session, so other engines refuse rather than lose the mail. Verified 2026-09-29. |
 | Quick Filter bar | partial | Search with operators covers the queries; there is no live filter bar over the open list. |
 | Saved searches / virtual folders | gap | Milestone 3 long tail; the search parser is the reusable half. |
 | Junk classifier (Bayesian) | gap | No junk verb at all yet (see baseline); an adaptive classifier is a further, unscoped step. |
@@ -154,8 +154,8 @@ Only the rows Thunderbird adds beyond the baseline table above.
 |---|---|---|
 | Per-identity signatures | gap | |
 | Address autocomplete from contacts | gap | Planned via Circle (`core::model::Contact` is a library call away); Milestone 3/4. |
-| Scheduled send (Send Later) | gap | Meltemi had it; the outbox is the natural home. |
-| Return receipts (MDN) / DSN | gap | `dsn.rs` parsing is portable in the donor, deferred behind the send path. |
+| Scheduled send (Send Later) | have | Through the outbox, which every account drains when due. Verified 2026-09-29. |
+| Return receipts (MDN) / DSN | partial | DSN bounces are parsed after a sync and announced; no MDN. Verified 2026-09-29. |
 
 ### Reading and search
 
@@ -168,7 +168,7 @@ Only the rows Thunderbird adds beyond the baseline table above.
 
 | Feature | Status | Notes |
 |---|---|---|
-| OpenPGP | gap | Donor module exists (`pgp_mail.rs`, 1586 lines); port, not design. First of the two, per 04. |
+| OpenPGP | partial | Signatures are verified against imported keys, and a key a message carries can be imported; no decryption or signing yet. Verified 2026-09-29. |
 | S/MIME | gap | After OpenPGP (`smime.rs`, 887 lines). |
 | Encrypted local store | rejected | Files-as-truth is the suite's promise; encryption at rest is the disk's job on a Linux desktop. (Thunderbird's own store is plaintext too — this rejection is really against Meltemi's SQLCipher store, recorded here so the row is not a hole.) |
 

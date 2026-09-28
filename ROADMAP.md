@@ -233,17 +233,17 @@ Ship when all of these are true, not when a date arrives:
 | Search with operators | ✓ | ✓ (bodies, bm25) | tantivy tier: 5 |
 | Undo, outbox, offline queue | partial | ✓ | — |
 | Keyboard + palette | partial | ✓ (registry-generated) | — |
-| Server-side drafts | ✓ | ✗ local only | 1 |
-| Labels / tags | ✓ | ✗ | 1 |
-| Filters / rules | ✓ | ✗ | 1 |
-| Folder management | ✓ | ✗ read-only tree | 1 |
-| Identities / aliases | ✓ | ✗ | 1 |
-| Scheduled send / undo send | ✓ | ✗ | 1 |
-| Import (mbox, profiles) | ✓ | ✗ (export only) | 1 |
+| Server-side drafts | ✓ | ✓ (IMAP mirror, one copy per draft) | — |
+| Labels / tags | ✓ | ✓ | — |
+| Filters / rules | ✓ | ✓ (client-side, INBOX) | — |
+| Folder management | ✓ | ~ create, rename, delete, move; no drag | 1 |
+| Identities / aliases | ✓ | ✓ | — |
+| Scheduled send / undo send | ✓ | ✓ | — |
+| Import (mbox, profiles) | ✓ | ~ mbox; no profile import | 1 |
 | HTML reading | ✓ | ~ structure + styling, no layout | 2 |
 | HTML composition | ✓ | ✗ plain text | 2 |
 | Print / find-in-message | ✓ | ✗ | 2 |
-| OpenPGP / S/MIME | ✓ | ✗ | 3 |
+| OpenPGP / S/MIME | ✓ | ~ OpenPGP signature check only | 3 |
 | Calendar invites (iMIP) | ✓ in-app | → Slate handoff | 4 |
 | Notifications with actions | ✓ | ✗ | 4 |
 | Address book integration | ✓ in-app | → Circle | 4 |
