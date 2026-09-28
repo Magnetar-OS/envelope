@@ -1554,6 +1554,10 @@ fn snooze_schedule(connection: &Connection) -> Result<snooze::Schedule, String> 
 ///
 /// Returns what a move returns — the taken messages — so the caller's undo
 /// works exactly like archive's.
+///
+/// Only messages the schedule can wake are taken. A wake finds its message by
+/// `Message-ID`, so one without any stays where it is: moved to Snoozed it
+/// would have nothing on the schedule to bring it back.
 pub fn snooze(
     connection: &Connection,
     folder: &Folder,
@@ -1565,29 +1569,22 @@ pub fn snooze(
     // a person recognises rather than as a `Message-ID`.
     let store =
         MaildirStore::open(connection.mailbox_path(folder)).map_err(|why| why.to_string())?;
-    let deferred: Vec<(String, String)> = uids
+    let (wakeable, deferred): (Vec<u32>, Vec<(String, String)>) = uids
         .iter()
-        .filter_map(|uid| store.raw(*uid).ok().flatten())
-        .filter_map(|raw| Message::parse(&raw))
-        .filter_map(|message| {
-            let subject = message.subject;
-            message.message_id.map(|id| (id, subject))
+        .filter_map(|uid| Some((*uid, store.raw(*uid).ok().flatten()?)))
+        .filter_map(|(uid, raw)| Some((uid, Message::parse(&raw)?)))
+        .filter_map(|(uid, message)| {
+            let id = message.message_id.filter(|id| !id.trim().is_empty())?;
+            Some((uid, (id, message.subject)))
         })
-        .collect();
+        .unzip();
     if deferred.is_empty() {
         return Err("those messages carry no Message-ID, so nothing could bring them back".into());
     }
 
-    // Make sure there is somewhere to go. Cheap when it already exists — the
-    // server answers NO and the move proceeds against the existing folder.
-    if let Ok(mut session) = folder_session(connection) {
-        let _ = session.create_mailbox(SNOOZED_FOLDER);
-        let _ = session.logout();
-    }
-
-    let destination = cosmic_pim_mail::folder::from_list_entry(SNOOZED_FOLDER, Some('/'), &[]);
-    let taken = move_to(connection, folder, &destination, uids)?;
-
+    // The schedule first, the move second. A record whose message never left
+    // retires harmlessly at its wake — not finding it is success — whereas
+    // a message moved with no record would wait in Snoozed for good.
     let mut schedule = snooze_schedule(connection)?;
     let snoozed_at_ms = now_ms();
     for (message_id, subject) in deferred {
@@ -1605,7 +1602,16 @@ pub fn snooze(
             })
             .map_err(|why| why.to_string())?;
     }
-    Ok(taken)
+
+    // Make sure there is somewhere to go. Cheap when it already exists — the
+    // server answers NO and the move proceeds against the existing folder.
+    if let Ok(mut session) = folder_session(connection) {
+        let _ = session.create_mailbox(SNOOZED_FOLDER);
+        let _ = session.logout();
+    }
+
+    let destination = cosmic_pim_mail::folder::from_list_entry(SNOOZED_FOLDER, Some('/'), &[]);
+    move_to(connection, folder, &destination, &wakeable)
 }
 
 /// Returns every snoozed message whose time has come to where it came from.

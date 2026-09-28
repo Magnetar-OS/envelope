@@ -1295,6 +1295,56 @@ Content-Type: application/octet-stream\r\n\
     assert!(opened.pgp.encrypted, "the sealed message read as plain");
 }
 
+#[test]
+fn snoozing_never_takes_a_message_that_nothing_could_bring_back() {
+    // A snooze comes back by `Message-ID`. A message without one that went
+    // to the Snoozed folder anyway would sit there for good, with nothing on
+    // the schedule to wake it — deferred mail silently turned into lost mail.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let later = message(
+        "later@x",
+        "",
+        "Later",
+        "Ada <ada@example.com>",
+        "Mon, 3 Feb 2025 09:00:00 +0000",
+        "Deal with this.",
+    );
+    let anonymous = "From: Bob <bob@example.net>\r\n\
+                     To: me@example.com\r\n\
+                     References: <later@x>\r\n\
+                     Subject: Re: Later\r\n\
+                     Date: Mon, 3 Feb 2025 10:00:00 +0000\r\n\
+                     \r\n\
+                     And this.\r\n";
+    deliver(
+        root,
+        &[
+            (1, &later, Flags::default()),
+            (2, anonymous, Flags::default()),
+        ],
+    );
+
+    let connection = connection(root);
+    let taken = mail::snooze(&connection, &inbox(), &[1, 2], i64::MAX / 2).expect("snooze");
+
+    let uids: Vec<u32> = taken.iter().map(|message| message.uid).collect();
+    assert_eq!(uids, [1], "only the message the schedule can wake is taken");
+    let store = MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox())).expect("open");
+    assert!(
+        store.raw(1).expect("read").is_none(),
+        "the snoozed one left"
+    );
+    assert!(
+        store.raw(2).expect("read").is_some(),
+        "a message with no Message-ID was put away where nothing brings it back"
+    );
+    assert!(
+        store.pending().iter().all(|entry| entry.op.uid() != 2),
+        "a move was queued for a message the schedule cannot wake"
+    );
+}
+
 /// A rule marking Ada's mail read, which is the whole rule set.
 fn marking_adas_mail_read(connection: &Connection) {
     use cosmic_pim_mail::rules::{Actions, Condition, Field, Rule};

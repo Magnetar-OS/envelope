@@ -21,6 +21,8 @@ All notable changes to this project are documented here. The format follows
   ignore.
 - A `mailto:` link with a stray `%` in front of an accented letter no longer
   crashes the app, and `Mailto:` in any capitalisation opens a composer.
+- Snoozing a conversation leaves behind any message that carries no
+  `Message-ID`, instead of putting it away where nothing would bring it back.
 - Filter rules keep running on new mail after the server renumbers the
   inbox, and do not run over the whole inbox when the new numbers happen to
   be higher.
