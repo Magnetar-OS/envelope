@@ -31,9 +31,13 @@ use cosmic_pim_mail::{Draft, Mailbox};
 /// beyond those are dropped.
 #[must_use]
 pub fn prefill(url: &str, from: Mailbox) -> Option<Draft> {
+    // Case-insensitively, as RFC 3986 reads a scheme and as `Launch` already
+    // recognises one: `Mailto:` is a mailto link.
+    const SCHEME: &str = "mailto:";
     let rest = url
-        .strip_prefix("mailto:")
-        .or_else(|| url.strip_prefix("MAILTO:"))?;
+        .get(..SCHEME.len())
+        .filter(|scheme| scheme.eq_ignore_ascii_case(SCHEME))
+        .map(|_| &url[SCHEME.len()..])?;
 
     let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
 
@@ -233,6 +237,14 @@ mod tests {
         // means a space, then a one — not a control character.
         let draft = prefill("mailto:a@example.com?subject=%+1", me()).expect("a mailto");
         assert_eq!(draft.subject, "% 1");
+    }
+
+    #[test]
+    fn the_scheme_is_recognised_whatever_its_case() {
+        // RFC 3986 schemes are case-insensitive, and the launch path already
+        // accepts `Mailto:` — refusing it here opened nothing for the click.
+        let draft = prefill("Mailto:ada@example.com", me()).expect("a mailto");
+        assert_eq!(draft.to[0].address, "ada@example.com");
     }
 
     #[test]
