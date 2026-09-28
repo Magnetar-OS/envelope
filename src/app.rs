@@ -144,10 +144,6 @@ pub struct AppModel {
     /// What the label picker shows: `(name, applied to the selection)`.
     /// Held in the model because `dialog()` hands out borrows.
     label_rows: Vec<(String, bool)>,
-    /// The composer's From choices, as dropdown labels. Rebuilt with the
-    /// connection; held in the model because dropdown labels must outlive
-    /// the view.
-    identity_labels: Vec<String>,
     /// The account's filter rules, as loaded for the Rules page.
     rules: Vec<cosmic_pim_mail::rules::Rule>,
     rule_form: RuleForm,
@@ -243,6 +239,55 @@ pub enum Detached {
     Read(Box<Reading>),
 }
 
+impl Detached {
+    /// The account this window belongs to.
+    fn scope(&self) -> &Scope {
+        match self {
+            Self::Compose(composer) => &composer.scope,
+            Self::Read(reading) => &reading.scope,
+        }
+    }
+
+    fn scope_mut(&mut self) -> &mut Scope {
+        match self {
+            Self::Compose(composer) => &mut composer.scope,
+            Self::Read(reading) => &mut reading.scope,
+        }
+    }
+}
+
+/// The account a window was opened for, and what acting on it needs.
+///
+/// Carried by the window rather than looked up when a button is pressed. The
+/// sidebar can move to another account while a reply is half-written or a
+/// message is open in a window of its own, and a window that asked the model
+/// "which account" would get the list's answer, not its own: a reply sent over
+/// the other account's server, a draft saved into the other account, an
+/// Archive that files whichever of the other account's messages happens to
+/// share the UID. Kept current when the account it names is edited or synced;
+/// see [`AppModel::refresh_scopes`].
+#[derive(Clone, Debug)]
+pub struct Scope {
+    pub connection: Connection,
+    /// The account's folders, for the special-use ones — where Sent, Archive
+    /// and Trash are. Only a server listing says, so these are the last ones
+    /// a sync of this account brought.
+    pub folders: Vec<Folder>,
+}
+
+/// A message put in the outbox by the grace delay or Send later.
+#[derive(Clone, Debug)]
+pub struct Scheduled {
+    /// The account whose outbox holds it — where an undo has to look.
+    pub scope: Scope,
+    /// The queue id an undo needs.
+    pub id: String,
+    /// When it goes.
+    pub not_before_ms: i64,
+    /// The undo grace, rather than a time the user chose.
+    pub grace: bool,
+}
+
 /// A message open in a window of its own.
 ///
 /// Carries its own folder and conversation rather than reading the main
@@ -250,6 +295,7 @@ pub enum Detached {
 /// on. Archiving from a window opened an hour ago has to file the exchange
 /// that window is showing, not whatever happens to be selected now.
 pub struct Reading {
+    pub scope: Scope,
     pub folder: Folder,
     /// The whole conversation's uids, so filing from here files the exchange
     /// — the same rule the reading pane follows.
@@ -266,6 +312,10 @@ pub struct Reading {
 /// the answer to "which message" depends on which window asked, and a stored
 /// answer would be the stale one exactly when the two disagree.
 struct Target<'a> {
+    /// The account the message is in — the window's, or the selected one's.
+    connection: &'a Connection,
+    /// That account's folders, for the special-use destinations.
+    folders: &'a [Folder],
     folder: &'a Folder,
     /// The whole conversation, for the operations that file the exchange.
     uids: &'a [u32],
@@ -312,6 +362,13 @@ fn read_title(subject: &str) -> String {
 /// silently drops it. Parsing happens once, on send, where a failure can be
 /// explained.
 pub struct Composer {
+    /// The account this is being written from: whose server sends it, whose
+    /// drafts keep it, whose message it answers.
+    pub scope: Scope,
+    /// The From choices, as dropdown labels — this account's identities, not
+    /// the selected account's. Held here because dropdown labels must outlive
+    /// the view.
+    pub identity_labels: Vec<String>,
     pub draft: cosmic_pim_mail::Draft,
     /// The body being typed, as a document rather than a string.
     ///
@@ -347,10 +404,12 @@ pub struct Composer {
 }
 
 impl Composer {
-    fn new(draft: cosmic_pim_mail::Draft, answering: Option<(Folder, u32)>) -> Self {
+    fn new(scope: Scope, draft: cosmic_pim_mail::Draft, answering: Option<(Folder, u32)>) -> Self {
         // Read before the draft is moved into the struct below.
         let show_cc = !draft.cc.is_empty() || !draft.bcc.is_empty();
         Self {
+            identity_labels: identity_labels(&scope.connection),
+            scope,
             to: join(&draft.to),
             cc: join(&draft.cc),
             bcc: join(&draft.bcc),
@@ -548,6 +607,15 @@ fn writing_space(
             Marks::none(),
         )
         .unwrap_or(doc)
+}
+
+/// An account's From choices, as the composer's dropdown shows them.
+fn identity_labels(connection: &Connection) -> Vec<String> {
+    connection
+        .identities
+        .iter()
+        .map(|identity| identity.display().to_owned())
+        .collect()
 }
 
 fn join(mailboxes: &[cosmic_pim_mail::Mailbox]) -> String {
@@ -755,6 +823,10 @@ pub struct UndoEntry {
     /// What the status line says when it is undone.
     pub description: String,
     pub reverse: Reverse,
+    /// The account it was done in, which is the one it is undone in. An
+    /// entry made from a window of its own can belong to an account the
+    /// sidebar has since left.
+    pub connection: Connection,
 }
 
 /// How an entry is taken back.
@@ -778,7 +850,11 @@ pub enum Reverse {
     ///
     /// The other reverse with a deadline: once the message goes, the honest
     /// answer is that it went.
-    CancelSend { id: String },
+    CancelSend {
+        id: String,
+        /// The account's folders, for the composer the undo reopens.
+        folders: Vec<Folder>,
+    },
 }
 
 /// How much history is kept.
@@ -1070,10 +1146,12 @@ pub enum Message {
     SendLater,
     /// A send-later moment was chosen.
     SendLaterPicked(SnoozePreset),
-    /// A send was queued: `(queue id, when it goes, grace or scheduled)`.
-    SendScheduled(Box<Result<(String, i64, bool), String>>),
-    /// An undone send came back — or turned out to be gone.
-    SendCancelled(Box<Result<Option<cosmic_pim_mail::Draft>, String>>),
+    /// A send was queued.
+    SendScheduled(Box<Result<Scheduled, String>>),
+    /// An undone send came back — or turned out to be gone. Carries the
+    /// account it was queued in, which is the one a reopened composer
+    /// belongs to.
+    SendCancelled(Box<(Scope, Result<Option<cosmic_pim_mail::Draft>, String>)>),
     SendDelayChanged(String),
     /// The wake pass finished: how many snoozed messages returned.
     SnoozeWoken(Box<Result<usize, String>>),
@@ -1098,7 +1176,7 @@ pub enum Message {
     /// to do, which is the ordinary case.
     DraftsSwept(Box<Result<Option<cosmic_pim_mail::draft_sync::SweepReport>, String>>),
     /// A message in the Drafts folder came back as something editable.
-    ServerDraftOpened(Box<Result<(String, cosmic_pim_mail::Draft), String>>),
+    ServerDraftOpened(Box<(Scope, Result<(String, cosmic_pim_mail::Draft), String>)>),
     ComposeSend,
     ComposeSent(Box<crate::mail::Sent>),
 
@@ -1683,7 +1761,7 @@ impl cosmic::Application for AppModel {
         let right = crate::ui::reader::Reader {
             opened: self.opened.as_ref(),
             error: self.reader_error.as_deref(),
-            can_send: self.can_send(),
+            can_send: Self::can_send(self.connection.as_ref()),
             expanded_quotes: &self.expanded_quotes,
             detachable: true,
         }
@@ -1733,13 +1811,13 @@ impl cosmic::Application for AppModel {
         let content: Element<'_, Message> = match detached {
             Detached::Compose(composer) => crate::ui::composer::view(
                 composer,
-                &self.identity_labels,
-                self.identity_index(composer),
+                &composer.identity_labels,
+                Self::identity_index(composer),
             ),
             Detached::Read(reading) => crate::ui::reader::Reader {
                 opened: Some(&reading.opened),
                 error: None,
-                can_send: self.can_send(),
+                can_send: Self::can_send(Some(&reading.scope.connection)),
                 expanded_quotes: &reading.expanded_quotes,
                 // Already in a window of its own; the button would open a
                 // window onto the window the user is looking at.
@@ -1863,7 +1941,6 @@ impl AppModel {
             conversation_labels: Vec::new(),
             known_labels: Vec::new(),
             label_rows: Vec::new(),
-            identity_labels: Vec::new(),
             rules: Vec::new(),
             rule_form: RuleForm::default(),
             rule_move_labels: Vec::new(),
@@ -2003,6 +2080,10 @@ impl AppModel {
                         if !report.folders.is_empty() {
                             let open = self.current_folder().map(|folder| folder.wire_name.clone());
                             self.folders = report.folders;
+                            if let Some(connection) = self.connection.clone() {
+                                let folders = self.folders.clone();
+                                self.refresh_scopes(&connection, Some(&folders));
+                            }
                             self.selected_folder = open
                                 .and_then(|wire| {
                                     self.folders
@@ -2122,18 +2203,12 @@ impl AppModel {
             }
 
             Message::OpenInCalendar => {
-                let Some(invitation) = self
-                    .target()
-                    .and_then(|target| target.opened)
-                    .and_then(|opened| opened.invitation.clone())
-                else {
-                    return Task::none();
-                };
-                let Some(account_id) = self
-                    .connection
-                    .as_ref()
-                    .map(|connection| connection.account_id.clone())
-                else {
+                // The account the invitation arrived in, which is the one a
+                // reply has to go out from — not whichever is selected now.
+                let Some((invitation, account_id)) = self.target().and_then(|target| {
+                    let invitation = target.opened?.invitation.clone()?;
+                    Some((invitation, target.connection.account_id.clone()))
+                }) else {
                     return Task::none();
                 };
                 let Some(conn) = self.dbus.clone() else {
@@ -2450,17 +2525,11 @@ impl AppModel {
                 None => cosmic_pim_mail::Draft::new(from),
             }),
 
-            Message::ComposeFromSelected(index) => {
-                if let Some(from) = self
-                    .connection
-                    .as_ref()
-                    .and_then(|c| c.identities.get(index))
-                    .cloned()
-                {
-                    return self.with_composer(|c| c.draft.from = from);
+            Message::ComposeFromSelected(index) => self.with_composer(|c| {
+                if let Some(from) = c.scope.connection.identities.get(index).cloned() {
+                    c.draft.from = from;
                 }
-                Task::none()
-            }
+            }),
             Message::OpenAccounts => self.act(Action::Accounts),
             Message::ComposeShowCc => self.with_composer(|c| c.show_cc = true),
             Message::ComposeToChanged(text) => self.with_composer(|c| c.to = text),
@@ -2810,12 +2879,10 @@ impl AppModel {
                 Task::none()
             }
             Message::ExportMessage => {
-                let connection = self.connection.clone();
-                let (Some(connection), Some((folder, uid))) = (
-                    connection,
-                    self.target()
-                        .map(|target| (target.folder.clone(), target.uid)),
-                ) else {
+                let Some((connection, folder, uid)) = self
+                    .target()
+                    .map(|target| (target.connection.clone(), target.folder.clone(), target.uid))
+                else {
                     return Task::none();
                 };
                 cosmic::task::future(async move {
@@ -2843,12 +2910,10 @@ impl AppModel {
                 Task::none()
             }
             Message::PgpKeyImport(index) => {
-                let connection = self.connection.clone();
-                let (Some(connection), Some((folder, uid))) = (
-                    connection,
-                    self.target()
-                        .map(|target| (target.folder.clone(), target.uid)),
-                ) else {
+                let Some((connection, folder, uid)) = self
+                    .target()
+                    .map(|target| (target.connection.clone(), target.folder.clone(), target.uid))
+                else {
                     return Task::none();
                 };
                 cosmic::task::future(async move {
@@ -2949,10 +3014,11 @@ impl AppModel {
                 Task::none()
             }
 
-            Message::ServerDraftOpened(result) => {
-                match *result {
+            Message::ServerDraftOpened(opened) => {
+                let (scope, result) = *opened;
+                match result {
                     Ok((id, draft)) => {
-                        let mut composer = Composer::new(draft, None);
+                        let mut composer = Composer::new(scope, draft, None);
                         // Carried, so a save here replaces the server copy
                         // rather than leaving a second one beside it.
                         composer.draft_id = Some(id);
@@ -3141,7 +3207,12 @@ impl AppModel {
                 self.schedule_send_at(preset.until_ms(), false)
             }
             Message::SendScheduled(result) => match *result {
-                Ok((id, not_before_ms, grace)) => {
+                Ok(Scheduled {
+                    scope,
+                    id,
+                    not_before_ms,
+                    grace,
+                }) => {
                     // Queued and durable, so the window has nothing left to
                     // hold — the same rule an immediate send follows.
                     let closed = self.discard_composer();
@@ -3158,7 +3229,11 @@ impl AppModel {
                     });
                     self.undo_stack.push(UndoEntry {
                         description: fl!("undo-send-desc"),
-                        reverse: Reverse::CancelSend { id },
+                        reverse: Reverse::CancelSend {
+                            id,
+                            folders: scope.folders,
+                        },
+                        connection: scope.connection,
                     });
                     if self.undo_stack.len() > UNDO_DEPTH {
                         self.undo_stack.remove(0);
@@ -3190,13 +3265,14 @@ impl AppModel {
                     Task::none()
                 }
             },
-            Message::SendCancelled(result) => {
-                match *result {
+            Message::SendCancelled(cancelled) => {
+                let (scope, result) = *cancelled;
+                match result {
                     Ok(Some(draft)) => {
                         // The words the user wrote, back where they can be
                         // edited — the entire point of the grace.
                         self.say(fl!("send-taken-back"));
-                        return self.open_composer(Composer::new(draft, None));
+                        return self.open_composer(Composer::new(scope, draft, None));
                     }
                     Ok(None) => self.say(fl!("send-already-gone")),
                     Err(why) => self.say(why),
@@ -3333,11 +3409,7 @@ impl AppModel {
         };
         match Connection::for_account(&store, &account) {
             Ok(Some(connection)) => {
-                self.identity_labels = connection
-                    .identities
-                    .iter()
-                    .map(|identity| identity.display().to_owned())
-                    .collect();
+                self.refresh_scopes(&connection, None);
                 self.connection = Some(connection);
             }
             Ok(None) => self.say(fl!("no-mail-account")),
@@ -3420,13 +3492,16 @@ impl AppModel {
         // means resuming it — in the composer, not the reader. This is also
         // how a draft written on another device becomes editable here.
         if folder.special_use == Some(SpecialUse::Drafts) {
+            let Some(scope) = self.main_scope() else {
+                return Task::none();
+            };
             return cosmic::task::future(async move {
                 let result = tokio::task::spawn_blocking(move || {
                     mail::edit_server_draft(&connection, &folder, uid)
                 })
                 .await
                 .unwrap_or_else(|why| Err(why.to_string()));
-                Message::ServerDraftOpened(Box::new(result))
+                Message::ServerDraftOpened(Box::new((scope, result)))
             });
         }
         cosmic::task::future(async move {
@@ -3442,10 +3517,19 @@ impl AppModel {
     /// Cheap to call optimistically: with nothing dirty and no tombstones the
     /// worker returns without opening a connection.
     fn sweep_drafts_now(&self) -> Task<Message> {
-        let Some(connection) = self.connection.clone() else {
-            return Task::none();
-        };
-        let folders = self.folders.clone();
+        match self.main_scope() {
+            Some(scope) => Self::sweep_drafts_of(scope),
+            None => Task::none(),
+        }
+    }
+
+    /// [`Self::sweep_drafts_now`] for any account — a composer's, whichever
+    /// account the sidebar shows.
+    fn sweep_drafts_of(scope: Scope) -> Task<Message> {
+        let Scope {
+            connection,
+            folders,
+        } = scope;
         cosmic::task::future(async move {
             let result =
                 tokio::task::spawn_blocking(move || mail::sweep_drafts(&connection, &folders))
@@ -3486,14 +3570,10 @@ impl AppModel {
 
     /// Applies a flag change to the message the action was about.
     fn set_flags(&mut self, edit: impl Fn(Flags) -> Flags + Send + 'static) -> Task<Message> {
-        let connection = self.connection.clone();
-        let Some((folder, uid)) = self
+        let Some((connection, folder, uid)) = self
             .target()
-            .map(|target| (target.folder.clone(), target.uid))
+            .map(|target| (target.connection.clone(), target.folder.clone(), target.uid))
         else {
-            return Task::none();
-        };
-        let Some(connection) = connection else {
             return Task::none();
         };
 
@@ -3511,6 +3591,7 @@ impl AppModel {
                     (!previous.is_empty()).then_some(UndoEntry {
                         description,
                         reverse: Reverse::Flags { folder, previous },
+                        connection,
                     })
                 })
             })
@@ -3526,7 +3607,13 @@ impl AppModel {
     /// "archive" means the exchange is finished with, and leaving four of its
     /// six messages in the inbox is not what anybody meant.
     fn move_selected(&mut self, role: SpecialUse) -> Task<Message> {
-        let Some(destination) = mail::special(&self.folders, role).cloned() else {
+        // The message's own account's Archive or Trash: a reader window
+        // outlives the sidebar's account, and the selected account's folder
+        // of that name is a folder of somebody else's mailbox.
+        let Some(target) = self.target() else {
+            return Task::none();
+        };
+        let Some(destination) = mail::special(target.folders, role).cloned() else {
             self.say(fl!("no-archive-folder"));
             return Task::none();
         };
@@ -3556,6 +3643,7 @@ impl AppModel {
                     (!messages.is_empty()).then_some(UndoEntry {
                         description,
                         reverse: Reverse::Unmove { folder, messages },
+                        connection,
                     })
                 })
             })
@@ -3587,14 +3675,13 @@ impl AppModel {
 
     /// Moves the selected conversation to `destination`, with undo.
     fn move_conversation_to(&mut self, destination: Folder) -> Task<Message> {
-        let connection = self.connection.clone();
-        let Some((folder, uids)) = self
-            .target()
-            .map(|target| (target.folder.clone(), target.uids.to_vec()))
-        else {
-            return Task::none();
-        };
-        let Some(connection) = connection else {
+        let Some((connection, folder, uids)) = self.target().map(|target| {
+            (
+                target.connection.clone(),
+                target.folder.clone(),
+                target.uids.to_vec(),
+            )
+        }) else {
             return Task::none();
         };
         if destination.wire_name == folder.wire_name {
@@ -3619,6 +3706,7 @@ impl AppModel {
                     (!messages.is_empty()).then_some(UndoEntry {
                         description,
                         reverse: Reverse::Unmove { folder, messages },
+                        connection,
                     })
                 })
             })
@@ -3662,27 +3750,65 @@ impl AppModel {
         }
     }
 
+    /// The selected account, as a window opened from the main one inherits it.
+    fn main_scope(&self) -> Option<Scope> {
+        Some(Scope {
+            connection: self.connection.clone()?,
+            folders: self.folders.clone(),
+        })
+    }
+
+    /// The account the message being dispatched acts through: the window's
+    /// own when it came from one, the selected account's otherwise.
+    fn acting_scope(&self) -> Option<Scope> {
+        match self.routed.and_then(|id| self.windows.get(&id)) {
+            Some(detached) => Some(detached.scope().clone()),
+            None => self.main_scope(),
+        }
+    }
+
+    /// Brings every window of `connection`'s account up to date with it.
+    ///
+    /// The connection is rebuilt when the account is edited — a new password,
+    /// a new server — and a window still holding the old one would send
+    /// through a server the user has just moved away from. `folders` is the
+    /// account's newly synced folder list, when there is one.
+    fn refresh_scopes(&mut self, connection: &Connection, folders: Option<&[Folder]>) {
+        for detached in self.windows.values_mut() {
+            let scope = detached.scope_mut();
+            if scope.connection.account_id != connection.account_id {
+                continue;
+            }
+            scope.connection = connection.clone();
+            if let Some(folders) = folders {
+                scope.folders = folders.to_vec();
+            }
+            if let Detached::Compose(composer) = detached {
+                composer.identity_labels = identity_labels(connection);
+            }
+        }
+    }
+
     /// Is there an address to send from?
     ///
     /// The reply buttons are drawn either way, greyed rather than hidden: a
     /// missing button reads as a missing feature.
-    fn can_send(&self) -> bool {
-        self.connection
-            .as_ref()
-            .is_some_and(|connection| connection.submission.is_some())
+    fn can_send(connection: Option<&Connection>) -> bool {
+        connection.is_some_and(|connection| connection.submission.is_some())
     }
 
-    /// Which of the account's identities a composer is writing as, as an index
-    /// into the dropdown's labels.
-    fn identity_index(&self, composer: &Composer) -> usize {
-        self.connection
-            .as_ref()
-            .and_then(|connection| {
-                connection.identities.iter().position(|identity| {
-                    identity
-                        .address
-                        .eq_ignore_ascii_case(&composer.draft.from.address)
-                })
+    /// Which of its account's identities a composer is writing as, as an
+    /// index into the dropdown's labels.
+    fn identity_index(composer: &Composer) -> usize {
+        composer
+            .scope
+            .connection
+            .identities
+            .iter()
+            .position(|identity| {
+                identity
+                    .address
+                    .eq_ignore_ascii_case(&composer.draft.from.address)
             })
             .unwrap_or(0)
     }
@@ -3716,6 +3842,8 @@ impl AppModel {
             && let Some(Detached::Read(reading)) = self.windows.get(&id)
         {
             return Some(Target {
+                connection: &reading.scope.connection,
+                folders: &reading.scope.folders,
                 folder: &reading.folder,
                 uids: &reading.uids,
                 uid: reading.opened.uid,
@@ -3724,6 +3852,8 @@ impl AppModel {
         }
         let conversation = self.conversations.get(self.selected_conversation?)?;
         Some(Target {
+            connection: self.connection.as_ref()?,
+            folders: &self.folders,
             folder: self.current_folder()?,
             uids: &conversation.uids,
             uid: conversation.newest_uid()?,
@@ -3879,6 +4009,9 @@ impl AppModel {
         let Some(uids) = self.conversations.get(index).map(|c| c.uids.clone()) else {
             return Task::none();
         };
+        let Some(scope) = self.main_scope() else {
+            return Task::none();
+        };
         let Some(opened) = self.opened.take() else {
             return Task::none();
         };
@@ -3886,6 +4019,7 @@ impl AppModel {
         let title = read_title(&opened.message.subject);
         self.open_window(
             Detached::Read(Box::new(Reading {
+                scope,
                 folder,
                 uids,
                 opened,
@@ -3913,9 +4047,6 @@ impl AppModel {
     /// Synchronous, like the single-composer path it replaces: a `Task`
     /// returned at exit races the exit and loses.
     fn save_open_drafts(&mut self) {
-        let Some(connection) = self.connection.clone() else {
-            return;
-        };
         for detached in self.windows.values_mut() {
             let Detached::Compose(composer) = detached else {
                 continue;
@@ -3933,8 +4064,10 @@ impl AppModel {
             // files for one half-written message, and the mirror would then
             // put both on the server. Writing the id back makes the second
             // pass a replacement, which is what `Drafts::save` is built for.
+            //
+            // Each into its own account's drafts, whichever is selected.
             match mail::save_draft(
-                &connection,
+                &composer.scope.connection,
                 composer.draft_id.as_deref(),
                 &composer.resolved(),
             ) {
@@ -3946,19 +4079,19 @@ impl AppModel {
 
     /// Opens a composer on a `mailto:` link, in a window of its own.
     fn open_mailto(&mut self, url: &str) -> Task<Message> {
-        let Some(identity) = self
-            .connection
-            .as_ref()
-            .and_then(|c| c.submission.as_ref())
-            .map(|s| s.identity.clone())
-        else {
+        // From the window that followed the link — an unsubscribe in a
+        // detached message goes from that message's account.
+        let Some((scope, identity)) = self.acting_scope().and_then(|scope| {
+            let identity = scope.connection.submission.as_ref()?.identity.clone();
+            Some((scope, identity))
+        }) else {
             self.say(fl!("no-from-address"));
             self.context_page = ContextPage::Accounts;
             self.core.window.show_context = true;
             return Task::none();
         };
         if let Some(draft) = crate::mailto::prefill(url, identity) {
-            return self.open_composer(Composer::new(draft, None));
+            return self.open_composer(Composer::new(scope, draft, None));
         }
         Task::none()
     }
@@ -3969,12 +4102,12 @@ impl AppModel {
         match_recipient: bool,
         build: impl FnOnce(Option<&Opened>, cosmic_pim_mail::Mailbox) -> cosmic_pim_mail::Draft,
     ) -> Task<Message> {
-        let Some(mut identity) = self
-            .connection
-            .as_ref()
-            .and_then(|c| c.submission.as_ref())
-            .map(|s| s.identity.clone())
-        else {
+        // The account of the window that asked: a reply from a detached
+        // message is written from the account that message is in.
+        let Some((scope, mut identity)) = self.acting_scope().and_then(|scope| {
+            let identity = scope.connection.submission.as_ref()?.identity.clone();
+            Some((scope, identity))
+        }) else {
             // Not a silent no-op: without a From address there is nothing to
             // send as, and the user needs to be told where to fix it.
             self.say(fl!("no-from-address"));
@@ -3993,7 +4126,7 @@ impl AppModel {
         // answering mail sent to an alias from the primary address outs the
         // alias. A fresh compose stays on the primary, whatever is open.
         if match_recipient
-            && let (Some(connection), Some(opened)) = (self.connection.as_ref(), opened)
+            && let Some(opened) = opened
             && let Some(matched) =
                 opened
                     .message
@@ -4001,7 +4134,8 @@ impl AppModel {
                     .iter()
                     .chain(&opened.message.cc)
                     .find_map(|recipient| {
-                        connection
+                        scope
+                            .connection
                             .identities
                             .iter()
                             .find(|m| m.address.eq_ignore_ascii_case(&recipient.address))
@@ -4017,7 +4151,7 @@ impl AppModel {
             .and_then(|target| Some((target.folder.clone(), target.opened?.uid)));
 
         let draft = build(opened, identity);
-        self.open_composer(Composer::new(draft, answering))
+        self.open_composer(Composer::new(scope, draft, answering))
     }
 
     /// Keeps what the current window's composer was holding, unless told not
@@ -4031,12 +4165,12 @@ impl AppModel {
     /// the composer's own buttons and by a window closing under it, and only
     /// one of those has a window left to close afterwards.
     fn save_composer(&mut self, keep: bool) -> Task<Message> {
-        let Some(connection) = self.connection.clone() else {
-            return Task::none();
-        };
         let Some(composer) = self.composer() else {
             return Task::none();
         };
+        // Its own account's drafts, not the selected account's.
+        let scope = composer.scope.clone();
+        let connection = scope.connection.clone();
         let draft_id = composer.draft_id.clone();
         let resolved = composer.is_worth_saving().then(|| composer.resolved());
 
@@ -4048,14 +4182,14 @@ impl AppModel {
             }
             // The discard left a tombstone if the draft was mirrored; the
             // sweep retires the server copy now rather than at the next poll.
-            return Task::batch([self.reload_drafts(), self.sweep_drafts_now()]);
+            return Task::batch([self.reload_drafts(), Self::sweep_drafts_of(scope)]);
         }
 
         let Some(resolved) = resolved else {
             return Task::none();
         };
         match mail::save_draft(&connection, draft_id.as_deref(), &resolved) {
-            Ok(_) => Task::batch([self.reload_drafts(), self.sweep_drafts_now()]),
+            Ok(_) => Task::batch([self.reload_drafts(), Self::sweep_drafts_of(scope)]),
             Err(why) => {
                 // The window is going, so this cannot be shown beside the text
                 // it lost. Saying so in a toast is the least bad thing
@@ -4137,12 +4271,10 @@ impl AppModel {
 
     /// Saves one attachment of the open message.
     fn save_attachment(&mut self, index: usize) -> Task<Message> {
-        let connection = self.connection.clone();
-        let (Some(connection), Some((folder, uid))) = (
-            connection,
-            self.target()
-                .map(|target| (target.folder.clone(), target.uid)),
-        ) else {
+        let Some((connection, folder, uid)) = self
+            .target()
+            .map(|target| (target.connection.clone(), target.folder.clone(), target.uid))
+        else {
             return Task::none();
         };
         cosmic::task::future(async move {
@@ -4260,6 +4392,7 @@ impl AppModel {
                     (!previous.is_empty()).then_some(UndoEntry {
                         description,
                         reverse: Reverse::Flags { folder, previous },
+                        connection,
                     })
                 })
             })
@@ -4906,20 +5039,22 @@ impl AppModel {
             self.say(fl!("nothing-to-undo"));
             return Task::none();
         };
-        let Some(connection) = self.connection.clone() else {
-            return Task::none();
-        };
+        let connection = entry.connection.clone();
         let description = entry.description.clone();
 
         // Taking a send back ends in a composer, not a status line, so it
         // reports through its own message.
-        if let Reverse::CancelSend { id } = entry.reverse {
+        if let Reverse::CancelSend { id, folders } = entry.reverse {
             return cosmic::task::future(async move {
+                let scope = Scope {
+                    connection: connection.clone(),
+                    folders,
+                };
                 let result =
                     tokio::task::spawn_blocking(move || mail::cancel_send(&connection, &id))
                         .await
                         .unwrap_or_else(|why| Err(why.to_string()));
-                Message::SendCancelled(Box::new(result))
+                Message::SendCancelled(Box::new((scope, result)))
             });
         }
 
@@ -5167,7 +5302,10 @@ impl AppModel {
         };
         match mail::load_draft(&connection, id) {
             Ok(Some(draft)) => {
-                let mut composer = Composer::new(draft, None);
+                let Some(scope) = self.main_scope() else {
+                    return Task::none();
+                };
+                let mut composer = Composer::new(scope, draft, None);
                 // Carried, so re-saving replaces this draft rather than
                 // leaving the old one beside a new one.
                 composer.draft_id = Some(id.to_owned());
@@ -5191,15 +5329,14 @@ impl AppModel {
         // Everything the model owns is read before the composer is borrowed:
         // the composer lives in a window now, so holding it means holding the
         // window map, which means holding the model.
-        let Some(connection) = self.connection.clone() else {
-            return Task::none();
-        };
         let grace = self.config.send_delay();
-        let folders = self.folders.clone();
 
         let Some(composer) = self.composer_mut() else {
             return Task::none();
         };
+        // Through its own account's server, filed in its own account's Sent.
+        let connection = composer.scope.connection.clone();
+        let folders = composer.scope.folders.clone();
         if composer.sending {
             return Task::none();
         }
@@ -5238,8 +5375,7 @@ impl AppModel {
 
     /// Queues the composer's message to go at `not_before_ms`.
     fn schedule_send_at(&mut self, not_before_ms: i64, grace: bool) -> Task<Message> {
-        let connection = self.connection.clone();
-        let (Some(composer), Some(connection)) = (self.composer_mut(), connection) else {
+        let Some(composer) = self.composer_mut() else {
             return Task::none();
         };
         let draft = composer.outgoing();
@@ -5251,11 +5387,22 @@ impl AppModel {
         composer.sending = true;
         composer.error = None;
         let draft_id = composer.draft_id.clone();
+        let scope = composer.scope.clone();
 
         cosmic::task::future(async move {
             let result = tokio::task::spawn_blocking(move || {
-                mail::schedule_send(&connection, draft_id.as_deref(), &draft, not_before_ms)
-                    .map(|id| (id, not_before_ms, grace))
+                mail::schedule_send(
+                    &scope.connection,
+                    draft_id.as_deref(),
+                    &draft,
+                    not_before_ms,
+                )
+                .map(|id| Scheduled {
+                    scope,
+                    id,
+                    not_before_ms,
+                    grace,
+                })
             })
             .await
             .unwrap_or_else(|why| Err(why.to_string()));
@@ -5268,6 +5415,7 @@ impl AppModel {
             return Task::none();
         };
         composer.sending = false;
+        let scope = composer.scope.clone();
         match sent {
             mail::Sent::Ok { filed } => {
                 // The window goes only on success. A failed send that took the
@@ -5280,8 +5428,9 @@ impl AppModel {
                 } else {
                     fl!("sent-not-filed")
                 });
-                // The sweep retires the sent draft's server mirror.
-                return Task::batch([closed, self.reload_drafts(), self.sweep_drafts_now()]);
+                // The sweep retires the sent draft's server mirror, in the
+                // account it was sent from.
+                return Task::batch([closed, self.reload_drafts(), Self::sweep_drafts_of(scope)]);
             }
             mail::Sent::Queued => {
                 // Gone from the screen, because the message is no longer the
@@ -5607,6 +5756,7 @@ fn unescape_local_name(local: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     /// A model with nothing read from disk: no accounts, so no connection,
     /// so every worker task is skipped and only the state machine runs.
@@ -5679,6 +5829,306 @@ mod tests {
             model.pending_toasts.len(),
             1,
             "the bounce was not announced"
+        );
+    }
+
+    /// Runs a task to completion and returns what it said back to the app.
+    ///
+    /// The workers are real: the blocking closures run against the maildir
+    /// they were given. Window and clipboard requests have no runtime to
+    /// answer them here and are dropped, which ends the tasks waiting on them.
+    fn run(task: Task<Message>) -> Vec<Message> {
+        use cosmic::iced::futures::StreamExt;
+        use cosmic::iced::runtime::Action as Runtime;
+        let Some(stream) = cosmic::iced::runtime::task::into_stream(task) else {
+            return Vec::new();
+        };
+        tokio::runtime::Runtime::new().expect("a runtime").block_on(
+            stream
+                .filter_map(|action| async move {
+                    match action {
+                        Runtime::Output(cosmic::Action::App(message)) => Some(message),
+                        _ => None,
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    /// An account's connection, over a maildir root with no server behind it.
+    fn connection_of(account_id: &str, root: &Path) -> Connection {
+        use cosmic_pim_mail::imap::{Endpoint, Security};
+        let address = format!("me@{account_id}.example");
+        let mut account = Account::new(account_id, "https://dav.example/", address.as_str());
+        account.mail = Some(MailEndpoint::tls("unused.invalid"));
+        let me = cosmic_pim_mail::Mailbox {
+            name: Some(format!("Me at {account_id}")),
+            address: address.clone(),
+        };
+        Connection {
+            account,
+            account_id: account_id.into(),
+            endpoint: Endpoint {
+                host: "unused.invalid".into(),
+                port: 993,
+                security: Security::Tls,
+                username: address.clone(),
+            },
+            submission: Some(mail::Submission {
+                endpoint: cosmic_pim_mail::smtp::SmtpEndpoint {
+                    host: "unused.invalid".into(),
+                    port: 465,
+                    security: Security::Tls,
+                    username: address,
+                },
+                identity: me.clone(),
+            }),
+            identities: vec![me],
+            credentials: cosmic_pim_mail::sasl::Credentials::Password(String::new()),
+            root: root.to_path_buf(),
+            index_path: root.join(format!("{account_id}.sqlite")),
+        }
+    }
+
+    fn archive() -> Folder {
+        let mut archive = folder("Archive");
+        archive.special_use = Some(SpecialUse::Archive);
+        archive
+    }
+
+    fn scope_of(account_id: &str, root: &Path) -> Scope {
+        Scope {
+            connection: connection_of(account_id, root),
+            folders: vec![folder("INBOX"), archive()],
+        }
+    }
+
+    /// Delivers one message from Ada into an account's INBOX, as uid 1.
+    fn deliver(connection: &Connection, subject: &str) {
+        use cosmic_pim_mail::store::MailStore as _;
+        let raw = format!(
+            "Message-ID: <{subject}@x>\r\nFrom: Ada <ada@example.com>\r\n\
+             To: {}\r\nSubject: {subject}\r\n\
+             Date: Mon, 3 Feb 2025 09:00:00 +0000\r\n\r\nHello.\r\n",
+            connection.identities[0].address
+        );
+        let mut store = cosmic_pim_mail::maildir::MaildirStore::open(inbox_path(connection))
+            .expect("open the maildir");
+        store
+            .upsert(&cosmic_pim_mail::store::RemoteMessage {
+                uid: 1,
+                flags: Flags::default(),
+                raw: raw.into_bytes(),
+                internal_date_ms: 60_000,
+            })
+            .expect("deliver");
+    }
+
+    fn inbox_path(connection: &Connection) -> std::path::PathBuf {
+        cosmic_pim_mail::maildir::mailbox_path(
+            &connection.root,
+            &connection.account_id,
+            &folder("INBOX"),
+        )
+    }
+
+    fn in_inbox(connection: &Connection) -> bool {
+        use cosmic_pim_mail::store::MailStore as _;
+        cosmic_pim_mail::maildir::MaildirStore::open(inbox_path(connection))
+            .expect("open")
+            .raw(1)
+            .expect("read")
+            .is_some()
+    }
+
+    /// A model showing account `a`'s inbox with its one message open, and
+    /// account `b` beside it in the same root.
+    fn two_accounts(root: &Path) -> AppModel {
+        let a = connection_of("a", root);
+        deliver(&a, "for-a");
+        deliver(&connection_of("b", root), "for-b");
+
+        let mut model = model();
+        model.selected_account = Some("a".into());
+        model.folders = vec![folder("INBOX"), archive()];
+        model.selected_folder = Some(0);
+        model.conversations = mail::conversations(&a, &folder("INBOX"))
+            .expect("the inbox")
+            .0;
+        model.selected_conversation = Some(0);
+        model.opened = Some(mail::open(&a, &folder("INBOX"), 1).expect("open"));
+        model.connection = Some(a);
+        model
+    }
+
+    /// What `AccountSelected` does to the model, without the account store
+    /// and keyring it reads the new connection from.
+    fn switch_to_b(model: &mut AppModel, root: &Path) {
+        model.selected_account = Some("b".into());
+        model.undo_stack.clear();
+        model.clear_mailbox_state();
+        model.connection = Some(connection_of("b", root));
+        model.folders = vec![folder("INBOX"), archive()];
+    }
+
+    fn only_window(model: &AppModel) -> window::Id {
+        assert_eq!(model.windows.len(), 1, "expected exactly one window");
+        *model.windows.keys().next().expect("a window")
+    }
+
+    #[test]
+    fn a_detached_message_is_filed_in_its_own_account_after_the_sidebar_moves_on() {
+        // A window of its own is the point of the type: the list moves on.
+        // Archive pressed there after switching accounts used to act through
+        // the selected account — moving whichever of *its* messages shared
+        // the UID, and queueing that move for its server.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let mut model = two_accounts(root);
+        let _ = model.detach_opened();
+        let id = only_window(&model);
+
+        switch_to_b(&mut model, root);
+        let said = run(model.dispatch(Message::InWindow(id, Box::new(Message::Archive))));
+
+        assert!(
+            !in_inbox(&connection_of("a", root)),
+            "a's message was not archived"
+        );
+        assert!(
+            in_inbox(&connection_of("b", root)),
+            "the other account's message with the same UID was archived"
+        );
+
+        // And the undo puts it back where it came from, in its own account.
+        for message in said {
+            let _ = model.dispatch(message);
+        }
+        let _ = run(model.undo());
+        assert!(
+            in_inbox(&connection_of("a", root)),
+            "the undo did not return a's message"
+        );
+    }
+
+    #[test]
+    fn a_detached_message_is_flagged_in_its_own_account_after_the_sidebar_moves_on() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let mut model = two_accounts(root);
+        let _ = model.detach_opened();
+        let id = only_window(&model);
+
+        switch_to_b(&mut model, root);
+        let _ = run(model.dispatch(Message::InWindow(id, Box::new(Message::ToggleFlagged))));
+
+        let flagged = |account: &str| {
+            mail::open(&connection_of(account, root), &folder("INBOX"), 1)
+                .expect("open")
+                .flags
+                .flagged
+        };
+        assert!(flagged("a"), "a's message was not flagged");
+        assert!(
+            !flagged("b"),
+            "the other account's message was flagged instead"
+        );
+    }
+
+    #[test]
+    fn a_reply_written_before_switching_accounts_goes_out_from_its_own_account() {
+        // Replying, then looking at another account while writing, is
+        // ordinary. The reply used to be queued in whichever account was
+        // selected when Send was pressed — out over that account's server,
+        // with the first account's address on its From line.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let mut model = two_accounts(root);
+        let _ = model.dispatch(Message::Reply { all: false });
+        let id = only_window(&model);
+
+        switch_to_b(&mut model, root);
+        // The default grace delay, so the send is a scheduled one.
+        let said = run(model.dispatch(Message::InWindow(id, Box::new(Message::ComposeSend))));
+
+        let a = connection_of("a", root);
+        let queued = mail::list_outbox(&a).expect("a's outbox");
+        assert_eq!(
+            queued.len(),
+            1,
+            "the reply is not in its own account's outbox"
+        );
+        assert_eq!(queued[0].draft.from.address, "me@a.example");
+        assert!(
+            mail::list_outbox(&connection_of("b", root))
+                .expect("b's outbox")
+                .is_empty(),
+            "the reply was queued in the account the sidebar moved to"
+        );
+
+        // Taken back with undo, it reopens in its own account, still a reply.
+        for message in said {
+            let _ = model.dispatch(Message::InWindow(id, Box::new(message)));
+        }
+        for message in run(model.undo()) {
+            let _ = model.dispatch(message);
+        }
+        let reopened = model
+            .windows
+            .values()
+            .find_map(|detached| match detached {
+                Detached::Compose(composer) => Some(composer),
+                Detached::Read(_) => None,
+            })
+            .expect("the undo reopened the composer");
+        assert_eq!(reopened.scope.connection.account_id, "a");
+        assert!(mail::list_outbox(&a).expect("a's outbox").is_empty());
+    }
+
+    #[test]
+    fn a_draft_closed_after_switching_accounts_is_kept_in_its_own_account() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let mut model = two_accounts(root);
+        let _ = model.dispatch(Message::Reply { all: false });
+        let id = only_window(&model);
+
+        switch_to_b(&mut model, root);
+        let _ = run(model.dispatch(Message::InWindow(id, Box::new(Message::ComposeCancel))));
+
+        assert_eq!(
+            mail::list_drafts(&connection_of("a", root))
+                .expect("a's drafts")
+                .len(),
+            1,
+            "the draft is not in its own account"
+        );
+        assert!(
+            mail::list_drafts(&connection_of("b", root))
+                .expect("b's drafts")
+                .is_empty(),
+            "the draft was saved into the account the sidebar moved to"
+        );
+    }
+
+    #[test]
+    fn a_composer_offers_its_own_accounts_identities() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let mut model = two_accounts(root);
+        let _ = model.dispatch(Message::Compose);
+        let id = only_window(&model);
+
+        switch_to_b(&mut model, root);
+
+        let Some(Detached::Compose(composer)) = model.windows.get(&id) else {
+            panic!("the composer window is gone");
+        };
+        assert_eq!(composer.identity_labels.len(), 1);
+        assert_eq!(
+            composer.identity_labels[0], "Me at a",
+            "the From choices are another account's: {:?}",
+            composer.identity_labels
         );
     }
 
@@ -5898,7 +6348,11 @@ mod tests {
             name: Some("Me".into()),
             address: "me@example.com".into(),
         };
-        let mut composer = Composer::new(cosmic_pim_mail::Draft::new(me), None);
+        let mut composer = Composer::new(
+            scope_of("a", Path::new("/nonexistent")),
+            cosmic_pim_mail::Draft::new(me),
+            None,
+        );
         assert_eq!(composer.problem(), Some("this draft has no recipients"));
 
         composer.to = "not-an-address".into();
@@ -5923,7 +6377,11 @@ mod tests {
         )
         .expect("parse");
 
-        let composer = Composer::new(cosmic_pim_mail::Draft::reply(&original, me, false), None);
+        let composer = Composer::new(
+            scope_of("a", Path::new("/nonexistent")),
+            cosmic_pim_mail::Draft::reply(&original, me, false),
+            None,
+        );
         assert_eq!(composer.to, "Ada <ada@example.com>");
         assert_eq!(composer.draft.subject, "Re: Plan");
         // The field text is what gets sent, not the draft's original list.
@@ -5939,7 +6397,7 @@ mod tests {
         let mut draft = cosmic_pim_mail::Draft::new(me);
         draft.body = body.to_owned();
         draft.to = parse_addresses("ada@example.com");
-        let mut composer = Composer::new(draft, None);
+        let mut composer = Composer::new(scope_of("a", Path::new("/nonexistent")), draft, None);
         composer.to = "ada@example.com".into();
         composer
     }

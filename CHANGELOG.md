@@ -37,6 +37,11 @@ All notable changes to this project are documented here. The format follows
   that folder.
 - A bounce noticed after a sync is announced as a notification, like every
   other message. It was written only to the Accounts page's status line.
+- A reply, a draft or a message open in a window of its own stays with the
+  account it was opened from. After switching accounts in the sidebar, Send,
+  Save draft, Archive, Delete and the flags in such a window acted through the
+  newly selected account: a reply went out over that account's server, and
+  Archive filed whichever of its messages happened to share the number.
 
 ## [1.1.0] - 2026-09-22
 
