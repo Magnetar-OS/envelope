@@ -911,6 +911,16 @@ pub enum FolderDialog {
         index: usize,
         name: String,
     },
+    /// Discarding a message waiting in the outbox — the only copy of it.
+    DiscardQueued {
+        id: String,
+        name: String,
+    },
+    /// Deleting a draft, here and in the server's Drafts folder.
+    DeleteDraft {
+        id: String,
+        name: String,
+    },
     /// The move picker: its query, and which row is highlighted.
     Move {
         query: String,
@@ -1113,7 +1123,10 @@ pub enum Message {
     UnifiedOpened(usize),
     OutboxLoaded(Vec<cosmic_pim_mail::outbox::Queued>),
     QueuedRetried(String),
+    /// Ask before discarding a queued message: it is the only copy.
     QueuedDiscarded(String),
+    /// Take a queued message back into a composer.
+    QueuedEdited(String),
     SearchChanged(String),
     SearchFinished(Vec<cosmic_pim_mail::Hit>),
     SearchCleared,
@@ -1772,7 +1785,7 @@ impl cosmic::Application for AppModel {
         } else if self.is_searching() {
             crate::ui::list::results(&self.results, &self.folders, self.searching, SEARCH_LIMIT)
         } else if self.showing_outbox {
-            crate::ui::list::outbox(&self.outbox)
+            crate::ui::list::outbox(&self.outbox, chrono::Utc::now().timestamp_millis())
         } else if self.showing_drafts {
             crate::ui::list::drafts(&self.drafts)
         } else {
@@ -2742,17 +2755,39 @@ impl AppModel {
                 {
                     self.say(why);
                 }
-                // Due now, so the next check takes it rather than waiting out a
-                // backoff the user has just overridden.
-                Task::batch([self.reload_outbox(), self.sync_now()])
+                // Due now, and sent now rather than waiting out a backoff the
+                // user has just overridden — or a sync already running, which
+                // drained before this was due.
+                Task::batch([self.reload_outbox(), Self::drain_due_now()])
             }
             Message::QueuedDiscarded(id) => {
-                if let Some(connection) = self.connection.as_ref()
-                    && let Err(why) = mail::discard_queued(connection, &id)
-                {
-                    self.say(why);
-                }
-                self.reload_outbox()
+                let Some(name) = self
+                    .outbox
+                    .iter()
+                    .find(|queued| queued.id == id)
+                    .map(cosmic_pim_mail::outbox::Queued::describe)
+                else {
+                    return Task::none();
+                };
+                self.update(Message::FolderDialogOpened(FolderDialog::DiscardQueued {
+                    id,
+                    name,
+                }))
+            }
+            Message::QueuedEdited(id) => {
+                // The same take-back an undo does: the message leaves the
+                // queue unless it already went, and comes back to a composer.
+                let Some(scope) = self.main_scope() else {
+                    return Task::none();
+                };
+                cosmic::task::future(async move {
+                    let connection = scope.connection.clone();
+                    let result =
+                        tokio::task::spawn_blocking(move || mail::cancel_send(&connection, &id))
+                            .await
+                            .unwrap_or_else(|why| Err(why.to_string()));
+                    Message::SendCancelled(Box::new((scope, result)))
+                })
             }
             Message::WatchEnded {
                 generation,
@@ -3435,12 +3470,24 @@ impl AppModel {
 
             Message::DraftOpened(id) => self.open_draft(&id),
             Message::DraftDeleted(id) => {
-                if let Some(connection) = self.connection.as_ref()
-                    && let Err(why) = mail::delete_draft(connection, &id)
-                {
-                    self.say(why);
-                }
-                Task::batch([self.reload_drafts(), self.sweep_drafts_now()])
+                let Some(name) = self
+                    .drafts
+                    .iter()
+                    .find(|draft| draft.id == id)
+                    .map(|draft| {
+                        if draft.subject.trim().is_empty() {
+                            fl!("draft-no-subject")
+                        } else {
+                            draft.subject.clone()
+                        }
+                    })
+                else {
+                    return Task::none();
+                };
+                self.update(Message::FolderDialogOpened(FolderDialog::DeleteDraft {
+                    id,
+                    name,
+                }))
             }
             Message::ComposeSend => self.send_draft(),
             Message::ComposeSent(sent) => self.composer_finished(*sent),
@@ -4020,6 +4067,16 @@ impl AppModel {
                 fl!("delete-rule-warning"),
                 fl!("delete"),
             )),
+            FolderDialog::DiscardQueued { name, .. } => Some(crate::ui::folders::confirm_dialog(
+                fl!("discard-queued-title", name = name.clone()),
+                fl!("discard-queued-warning"),
+                fl!("discard"),
+            )),
+            FolderDialog::DeleteDraft { name, .. } => Some(crate::ui::folders::confirm_dialog(
+                fl!("delete-draft-title", name = name.clone()),
+                fl!("delete-draft-warning"),
+                fl!("delete"),
+            )),
             FolderDialog::Snooze => Some(crate::ui::folders::snooze_dialog()),
             FolderDialog::Label { query, selected } => Some(
                 crate::ui::folders::LabelPicker {
@@ -4531,6 +4588,44 @@ impl AppModel {
             .collect();
     }
 
+    /// The folder dialogs that act on this device only, confirmed.
+    fn confirm_local_dialog(&mut self, dialog: &FolderDialog) -> Option<Task<Message>> {
+        match dialog {
+            FolderDialog::RemoveAccount { id, .. } => {
+                let id = id.clone();
+                Some(self.remove_account(&id))
+            }
+            FolderDialog::DeleteRule { index, .. } => {
+                let index = *index;
+                if index < self.rules.len() {
+                    self.rules.remove(index);
+                    self.save_rules_now();
+                }
+                Some(Task::none())
+            }
+            // Local: the outbox is a directory on this device.
+            FolderDialog::DiscardQueued { id, .. } => {
+                if let Some(connection) = self.connection.as_ref()
+                    && let Err(why) = mail::discard_queued(connection, id)
+                {
+                    self.say(why);
+                }
+                Some(self.reload_outbox())
+            }
+            FolderDialog::DeleteDraft { id, .. } => {
+                if let Some(connection) = self.connection.as_ref()
+                    && let Err(why) = mail::delete_draft(connection, id)
+                {
+                    self.say(why);
+                }
+                // The delete left a tombstone if the draft was mirrored; the
+                // sweep retires the server copy now.
+                Some(Task::batch([self.reload_drafts(), self.sweep_drafts_now()]))
+            }
+            _ => None,
+        }
+    }
+
     /// Runs whichever folder dialog is open, on the worker.
     fn confirm_folder_dialog(&mut self) -> Task<Message> {
         let Some(dialog) = self.folder_dialog.take() else {
@@ -4545,23 +4640,11 @@ impl AppModel {
         };
         self.move_rows.clear();
 
-        // Handled before the connection guard below: neither of these touches
-        // a server, and an account with no working mail endpoint is exactly
-        // the one a user is most likely to be removing.
-        match &dialog {
-            FolderDialog::RemoveAccount { id, .. } => {
-                let id = id.clone();
-                return self.remove_account(&id);
-            }
-            FolderDialog::DeleteRule { index, .. } => {
-                let index = *index;
-                if index < self.rules.len() {
-                    self.rules.remove(index);
-                    self.save_rules_now();
-                }
-                return Task::none();
-            }
-            _ => {}
+        // Before the connection guard below: none of these touches a server,
+        // and an account with no working mail endpoint is exactly the one a
+        // user is most likely to be removing.
+        if let Some(done) = self.confirm_local_dialog(&dialog) {
+            return done;
         }
 
         let Some(connection) = self.connection.clone() else {
@@ -4614,9 +4697,12 @@ impl AppModel {
                 })
             }
             FolderDialog::Snooze | FolderDialog::SendLater => Task::none(),
-            // Both returned above, before the connection guard — neither needs
-            // a server.
-            FolderDialog::RemoveAccount { .. } | FolderDialog::DeleteRule { .. } => Task::none(),
+            // Returned above, before the connection guard — none needs a
+            // server.
+            FolderDialog::RemoveAccount { .. }
+            | FolderDialog::DeleteRule { .. }
+            | FolderDialog::DiscardQueued { .. }
+            | FolderDialog::DeleteDraft { .. } => Task::none(),
             FolderDialog::Label { query, selected } => {
                 // Enter toggles the highlighted row; with no row and a typed
                 // name, it creates the label and applies it.
@@ -6276,6 +6362,74 @@ mod tests {
         let id = mail::schedule_send(&a, None, &draft, i64::MAX / 2, None).expect("schedule");
         model.outbox = mail::list_outbox(&a).expect("outbox");
         (model, id)
+    }
+
+    #[test]
+    fn discarding_a_queued_message_asks_first() {
+        // The queued message is the only copy of what was written, and the
+        // trash icon on its row deleted it on one click.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut model, id) = one_queued(dir.path());
+        let a = model.connection.clone().expect("a");
+
+        let _ = model.dispatch(Message::QueuedDiscarded(id.clone()));
+        assert!(
+            matches!(
+                model.folder_dialog,
+                Some(FolderDialog::DiscardQueued { .. })
+            ),
+            "no confirmation was asked for"
+        );
+        assert_eq!(
+            mail::list_outbox(&a).expect("outbox").len(),
+            1,
+            "discarded unasked"
+        );
+
+        let _ = run(model.dispatch(Message::FolderDialogConfirmed));
+        assert!(mail::list_outbox(&a).expect("outbox").is_empty());
+    }
+
+    #[test]
+    fn a_queued_message_can_be_taken_back_into_a_composer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut model, id) = one_queued(dir.path());
+        let a = model.connection.clone().expect("a");
+
+        for message in run(model.dispatch(Message::QueuedEdited(id))) {
+            let _ = model.dispatch(message);
+        }
+
+        assert!(mail::list_outbox(&a).expect("outbox").is_empty());
+        let Some(Detached::Compose(composer)) = model.windows.values().next() else {
+            panic!("no composer opened");
+        };
+        assert_eq!(composer.draft.subject, "Later");
+    }
+
+    #[test]
+    fn deleting_a_draft_asks_first() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut model = two_accounts(dir.path());
+        let a = model.connection.clone().expect("a");
+        let mut draft = cosmic_pim_mail::Draft::new(a.identities[0].clone());
+        draft.subject = "Half written".into();
+        let id = mail::save_draft(&a, None, &draft).expect("save");
+        model.drafts = mail::list_drafts(&a).expect("drafts");
+
+        let _ = model.dispatch(Message::DraftDeleted(id));
+        assert!(
+            matches!(model.folder_dialog, Some(FolderDialog::DeleteDraft { .. })),
+            "no confirmation was asked for"
+        );
+        assert_eq!(
+            mail::list_drafts(&a).expect("drafts").len(),
+            1,
+            "deleted unasked"
+        );
+
+        let _ = model.dispatch(Message::FolderDialogConfirmed);
+        assert!(mail::list_drafts(&a).expect("drafts").is_empty());
     }
 
     #[test]

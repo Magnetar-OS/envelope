@@ -55,6 +55,10 @@ All notable changes to this project are documented here. The format follows
 - A stored password can be changed on the account's server page. The only
   remedy used to be removing the account and adding it again, which lost its
   rules, queued sends, snoozes and drafts.
+- Discarding a queued message asks first, and a queued message can be taken
+  back into a composer with Edit. Rows waiting for Send later say when they
+  go.
+- Deleting a draft asks first.
 - Removing an account says how many of its queued messages will then never be
   sent.
 - Opening a server draft whose local copy cannot be read says so, instead of
