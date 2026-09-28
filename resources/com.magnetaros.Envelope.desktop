@@ -10,10 +10,21 @@ Type=Application
 StartupNotify=true
 StartupWMClass=com.magnetaros.Envelope
 # Registers Envelope as the handler for mailto: links, which is what makes
-# Circle's "send a message" and Slate's attendee addresses land here.
-MimeType=x-scheme-handler/mailto;message/rfc822;
+# Circle's "send a message" and Slate's attendee addresses land here. Only the
+# scheme: a launch reads mailto: URLs and nothing else, so claiming
+# message/rfc822 as well would open a window that ignores the file.
+MimeType=x-scheme-handler/mailto;
 Keywords=mail;email;message;inbox;imap;
-DBusActivatable=true
+# Deliberately NOT DBusActivatable, even though the app is single-instance.
+#
+# libcosmic's run_single_instance serves its bus name as
+# org.freedesktop.DbusActivation, not the org.freedesktop.Application the
+# freedesktop spec requires, and nothing installs a dbus-1 service file for
+# the name. A launcher that honours the key (GIO, and so a browser handing a
+# mailto: link through it) calls an interface nobody exports and the click
+# does nothing. The Exec lines reach the same place: a second `envelope`
+# hands its argument to the running instance over libcosmic's interface and
+# exits.
 Actions=compose;
 
 [Desktop Action compose]

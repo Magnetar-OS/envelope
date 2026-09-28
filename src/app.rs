@@ -1528,11 +1528,11 @@ impl cosmic::Application for AppModel {
     /// A `mailto:` link, or a desktop-entry action, arriving at an instance
     /// that is already running.
     ///
-    /// Without this the desktop file lies: it declares `DBusActivatable=true`
-    /// and a `compose` action, and libcosmic's single-instance support hands
-    /// the second launch over here rather than starting a second process. A
-    /// `mailto:` clicked while Envelope is open would otherwise do nothing at
-    /// all — the new process exits, and the running one is never told.
+    /// The desktop entry's `Exec` lines start a second `envelope`, and
+    /// libcosmic's single-instance support hands that launch over here rather
+    /// than starting a second process. A `mailto:` clicked while Envelope is
+    /// open would otherwise do nothing at all — the new process exits, and
+    /// the running one is never told.
     fn dbus_activation(
         &mut self,
         message: cosmic::dbus_activation::Message,

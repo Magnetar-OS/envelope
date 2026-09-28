@@ -55,8 +55,8 @@ pub fn run() -> cosmic::iced::Result {
     // `run_single_instance`, not `run`. A mail client registered as the
     // desktop's `mailto:` handler is nearly always already running when
     // somebody clicks a link, and this is what hands the link to the instance
-    // that exists rather than opening a second one. It is also what makes the
-    // desktop entry's `DBusActivatable=true` true.
+    // that exists rather than opening a second one — which is why the desktop
+    // entry's `Exec` lines are enough and it declares no `DBusActivatable`.
     cosmic::app::run_single_instance::<app::AppModel>(
         settings,
         flags::Flags {

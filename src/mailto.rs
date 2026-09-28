@@ -5,7 +5,7 @@
 //! This is the contract that makes Envelope the desktop's mail client rather
 //! than an application that happens to show mail: Circle's "send a message",
 //! Slate's attendee addresses, and every `mailto:` link in every browser arrive
-//! here. `resources/app.desktop` registers the scheme.
+//! here. `resources/com.magnetaros.Envelope.desktop` registers the scheme.
 //!
 //! Deliberately permissive about what it accepts and strict about what it does
 //! with it — see [`prefill`].

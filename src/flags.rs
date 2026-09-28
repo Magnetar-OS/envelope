@@ -11,8 +11,7 @@
 //! libcosmic's [`run_single_instance`] hands the second launch's flags to the
 //! first over D-Bus and exits, rather than opening a second window — but only
 //! if the flags implement [`CosmicFlags`]. Without that, `cosmic::app::run`
-//! starts a whole second Envelope, and the desktop file's
-//! `DBusActivatable=true` is a claim the application does not honour.
+//! starts a whole second Envelope for every click on a link.
 //!
 //! So a launch argument is a [`Launch`], it serialises to a string the D-Bus
 //! `ActivateAction` call carries, and the running instance parses it back in
@@ -136,6 +135,42 @@ mod tests {
             Launch::from_args(vec!["/usr/bin/compose".to_string()]),
             None
         );
+    }
+
+    /// The installed desktop entry, whose claims the tests below hold to what
+    /// a launch can actually do.
+    const DESKTOP_ENTRY: &str = include_str!("../resources/com.magnetaros.Envelope.desktop");
+
+    #[test]
+    fn the_desktop_entry_does_not_claim_dbus_activation() {
+        // libcosmic serves `org.freedesktop.DbusActivation`, not the
+        // `org.freedesktop.Application` the spec names, and nothing installs
+        // a dbus-1 service file. A launcher that believes the key — GIO, and
+        // so every browser handing off a mailto: link through it — calls an
+        // interface nobody exports, and the click does nothing at all.
+        assert!(
+            !DESKTOP_ENTRY
+                .lines()
+                .any(|line| line.trim() == "DBusActivatable=true"),
+            "the entry promises D-Bus activation the app cannot answer"
+        );
+    }
+
+    #[test]
+    fn every_mime_type_the_desktop_entry_claims_is_one_a_launch_can_open() {
+        let claimed = DESKTOP_ENTRY
+            .lines()
+            .find_map(|line| line.strip_prefix("MimeType="))
+            .expect("the entry registers the mailto: scheme");
+        for mime in claimed.split(';').filter(|mime| !mime.is_empty()) {
+            // `from_args` reads `mailto:` URLs and nothing else, so a file
+            // handed over as `%u` — an .eml from a file manager — opens a
+            // window that ignores it.
+            assert_eq!(
+                mime, "x-scheme-handler/mailto",
+                "{mime} is claimed but no launch path opens it"
+            );
+        }
     }
 
     #[test]
