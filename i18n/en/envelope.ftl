@@ -119,7 +119,6 @@ results-capped = Showing the first { $count }. Narrow the search to see fewer.
 search-hint = Searches senders, subjects, and message bodies, best match first.
 hit-folder-gone = That message's folder is no longer on the server.
 in-folder = in { $folder }
-save = Save
 saving = Saving…
 attach = Attach
 remove = Remove
@@ -325,7 +324,6 @@ undo-labelled = Labelled { $label }
 undo-unlabelled = Removed { $label }
 
 # Confirmations for the things that cannot be taken back
-remove = Remove
 remove-account-title = Remove { $name }?
 remove-account-warning = The account and its stored password are removed from this device. Mail already downloaded stays on disk, and nothing is deleted on the server.
 delete-rule-title = Delete { $name }?

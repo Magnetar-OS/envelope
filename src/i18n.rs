@@ -48,3 +48,23 @@ macro_rules! fl {
         i18n_embed_fl::fl!($crate::i18n::LANGUAGE_LOADER, $message_id, $($args), *)
     }};
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn every_message_is_defined_once() {
+        // Fluent reports a second definition of an id as an error and keeps
+        // one of the two; which one wins is not something the text should
+        // depend on.
+        let ftl = include_str!("../i18n/en/envelope.ftl");
+        let mut seen = std::collections::HashSet::new();
+        for line in ftl.lines() {
+            let Some((id, _)) = line.split_once(" = ") else {
+                continue;
+            };
+            if id.starts_with(|c: char| c.is_ascii_lowercase()) && !id.contains(' ') {
+                assert!(seen.insert(id), "{id} is defined twice");
+            }
+        }
+    }
+}
