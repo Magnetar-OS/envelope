@@ -50,6 +50,8 @@ All notable changes to this project are documented here. The format follows
   reopens it as the reply it was.
 - Two draft saves close together no longer leave a duplicate copy in the
   server's Drafts folder.
+- A reply to an invitation, sent from the calendar, goes out straight away
+  instead of at the next check.
 
 ## [1.1.0] - 2026-09-22
 

@@ -90,7 +90,22 @@ impl Scheduling {
         let outcome =
             tokio::task::spawn_blocking(move || queue_reply(&ics, &account_id, &to)).await;
         match outcome {
-            Ok(Ok(())) => true,
+            Ok(Ok(connection)) => {
+                // Queued is the promise; sending starts now rather than at
+                // the next poll, and whichever account the window shows.
+                // Not awaited: the caller asked for the queueing, and the
+                // outbox owns what happens from here.
+                tokio::task::spawn_blocking(move || {
+                    let drained = crate::mail::drain_due(
+                        std::slice::from_ref(&connection),
+                        chrono::Utc::now().timestamp_millis(),
+                    );
+                    for (account, why) in drained.failures {
+                        tracing::warn!(account, why, "a scheduling reply waits in the outbox");
+                    }
+                });
+                true
+            }
             Ok(Err(why)) => {
                 tracing::warn!(why, "a scheduling reply could not be queued");
                 false
@@ -103,11 +118,12 @@ impl Scheduling {
     }
 }
 
-/// Builds the reply message and drops it in the account's outbox.
+/// Builds the reply message and drops it in the account's outbox, returning
+/// the account's connection for the drain that follows.
 ///
 /// Blocking — disk and credentials — which is why the interface method wraps
 /// it in `spawn_blocking`.
-fn queue_reply(ics: &str, account_id: &str, to: &str) -> Result<(), String> {
+fn queue_reply(ics: &str, account_id: &str, to: &str) -> Result<crate::mail::Connection, String> {
     let connection = crate::mail::all_connections()
         .into_iter()
         .find(|connection| connection.account_id == account_id)
@@ -142,7 +158,8 @@ fn queue_reply(ics: &str, account_id: &str, to: &str) -> Result<(), String> {
     let id = crate::mail::fresh_id(&connection)?;
     crate::mail::outbox(&connection)?
         .submit(&id, &draft, chrono::Utc::now().timestamp_millis())
-        .map_err(|why| why.to_string())
+        .map_err(|why| why.to_string())?;
+    Ok(connection)
 }
 
 /// The value of a top-level iCalendar property, by its `NAME:` prefix.
