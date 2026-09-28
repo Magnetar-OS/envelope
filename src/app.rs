@@ -275,6 +275,10 @@ pub struct Scope {
     pub folders: Vec<Folder>,
 }
 
+/// A server draft opened for editing, in the account it was opened from:
+/// its local id and the draft, or why it could not be.
+pub type ServerDraft = (Scope, Result<(String, cosmic_pim_mail::Draft), String>);
+
 /// A message put in the outbox by the grace delay or Send later.
 #[derive(Clone, Debug)]
 pub struct Scheduled {
@@ -1002,7 +1006,7 @@ pub enum Message {
     Delete,
     /// A local mutation finished; reload the folder either way, and remember
     /// how to take it back if it said how.
-    Mutated(Result<Option<UndoEntry>, String>),
+    Mutated(Box<Result<Option<UndoEntry>, String>>),
     /// An undo finished.
     Undone(Result<String, String>),
 
@@ -1180,7 +1184,7 @@ pub enum Message {
     /// to do, which is the ordinary case.
     DraftsSwept(Box<Result<Option<cosmic_pim_mail::draft_sync::SweepReport>, String>>),
     /// A message in the Drafts folder came back as something editable.
-    ServerDraftOpened(Box<(Scope, Result<(String, cosmic_pim_mail::Draft), String>)>),
+    ServerDraftOpened(Box<ServerDraft>),
     ComposeSend,
     ComposeSent(Box<crate::mail::Sent>),
 
@@ -2060,7 +2064,7 @@ impl AppModel {
                 // Every account's due sends go on every poll, whatever the
                 // sidebar shows: a message queued in one account is not
                 // waiting for the user to look at that account again.
-                let drain = self.drain_due_now();
+                let drain = Self::drain_due_now();
                 if self.syncing || self.connection.is_none() {
                     return drain;
                 }
@@ -2300,7 +2304,7 @@ impl AppModel {
             Message::Delete => self.move_selected(SpecialUse::Trash),
 
             Message::Mutated(result) => {
-                match result {
+                match *result {
                     Ok(Some(entry)) => {
                         self.undo_stack.push(entry);
                         if self.undo_stack.len() > UNDO_DEPTH {
@@ -3298,7 +3302,7 @@ impl AppModel {
                 }
                 self.reload_outbox()
             }
-            Message::DrainDue => self.drain_due_now(),
+            Message::DrainDue => Self::drain_due_now(),
             Message::OutboxesDrained(drained) => {
                 // Failures are logged, not said: an account that is offline
                 // fails on every poll, and its queued message says why in the
@@ -3606,7 +3610,7 @@ impl AppModel {
     ///
     /// Reads only the outboxes when nothing is due, which is the common case
     /// on a poll.
-    fn drain_due_now(&self) -> Task<Message> {
+    fn drain_due_now() -> Task<Message> {
         cosmic::task::future(async move {
             let drained = tokio::task::spawn_blocking(|| {
                 let now = chrono::Utc::now().timestamp_millis();
@@ -3656,7 +3660,7 @@ impl AppModel {
             })
             .await
             .unwrap_or_else(|why| Err(why.to_string()));
-            Message::Mutated(result)
+            Message::Mutated(Box::new(result))
         })
     }
 
@@ -3708,7 +3712,7 @@ impl AppModel {
             })
             .await
             .unwrap_or_else(|why| Err(why.to_string()));
-            Message::Mutated(result)
+            Message::Mutated(Box::new(result))
         })
     }
 
@@ -3771,7 +3775,7 @@ impl AppModel {
             })
             .await
             .unwrap_or_else(|why| Err(why.to_string()));
-            Message::Mutated(result)
+            Message::Mutated(Box::new(result))
         });
         Task::batch([emptied, moved])
     }
@@ -4457,7 +4461,7 @@ impl AppModel {
             })
             .await
             .unwrap_or_else(|why| Err(why.to_string()));
-            Message::Mutated(result)
+            Message::Mutated(Box::new(result))
         })
     }
 

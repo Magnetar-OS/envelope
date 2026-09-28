@@ -582,6 +582,7 @@ pub struct Drained {
 /// that drained the account while this waited leaves nothing to do.
 ///
 /// Blocking, for a worker thread.
+#[must_use]
 pub fn drain_due(connections: &[Connection], now_ms: i64) -> Drained {
     let mut drained = Drained::default();
     for connection in connections {
