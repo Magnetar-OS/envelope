@@ -52,6 +52,9 @@ All notable changes to this project are documented here. The format follows
   server's Drafts folder.
 - A reply to an invitation, sent from the calendar, goes out straight away
   instead of at the next check.
+- A stored password can be changed on the account's server page. The only
+  remedy used to be removing the account and adding it again, which lost its
+  rules, queued sends, snoozes and drafts.
 - Opening a server draft whose local copy cannot be read says so, instead of
   making a second local copy beside it.
 - A filter rule needs an action before it can be added; one without matched

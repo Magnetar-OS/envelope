@@ -37,6 +37,7 @@ port = Port
 encryption = Encryption
 username = Username
 imap-username-hint = Only if it differs from the account's.
+new-password-hint = Leave empty to keep the stored one.
 save = Save
 cancel = Cancel
 sync-now = Sync now

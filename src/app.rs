@@ -681,6 +681,12 @@ pub struct MailForm {
     pub aliases: Vec<cosmic_pim_accounts::Alias>,
     /// The alias being typed, as `Name <address>` or a bare address.
     pub alias_input: String,
+    /// A new password, when the user typed one. Empty keeps the stored one:
+    /// the stored password is never read back into a form.
+    pub password: String,
+    /// Whether the account signs in with a password at all. A browser
+    /// sign-in has none to change; signing in again renews it.
+    pub uses_password: bool,
     /// Which protocol reads this account's mail.
     pub protocol: MailProtocol,
     /// The JMAP session resource. Meaningful only when the protocol is JMAP,
@@ -712,6 +718,8 @@ impl MailForm {
             from_name: mail.map(|m| m.from_name.clone()).unwrap_or_default(),
             aliases: mail.map(|m| m.aliases.clone()).unwrap_or_default(),
             alias_input: String::new(),
+            password: String::new(),
+            uses_password: account.auth == cosmic_pim_accounts::AuthMethod::Password,
             protocol: mail.map(|m| m.protocol).unwrap_or_default(),
             jmap_url: mail
                 .and_then(|m| m.jmap_session_url.clone())
@@ -1017,6 +1025,7 @@ pub enum Message {
     MailFormProtocolChanged(MailProtocol),
     MailFormJmapUrlChanged(String),
     MailFormUsernameChanged(String),
+    MailFormPasswordChanged(String),
     MailFormSmtpHostChanged(String),
     MailFormSmtpPortChanged(String),
     MailFormSmtpTransportChanged(Transport),
@@ -2356,6 +2365,9 @@ impl AppModel {
                 }
                 form.transport = transport;
             }),
+            Message::MailFormPasswordChanged(password) => {
+                self.with_form(|form| form.password = password)
+            }
             Message::MailFormUsernameChanged(username) => {
                 self.with_form(|form| form.username = username)
             }
@@ -5669,40 +5681,6 @@ impl AppModel {
         let Some(form) = self.mail_form.as_ref() else {
             return Task::none();
         };
-        let Ok(port) = form.port.trim().parse::<u16>() else {
-            return self.with_form(|form| form.error = Some(fl!("bad-port")));
-        };
-
-        let Ok(smtp_port) = form.smtp_port.trim().parse::<u16>() else {
-            return self.with_form(|form| form.error = Some(fl!("bad-port")));
-        };
-
-        // Struct-update over the constructor, so a field the substrate grows —
-        // it has already grown five — defaults sensibly here instead of
-        // breaking the build or, worse, being zeroed.
-        // The one "incoming server" pair the form shows maps to whichever
-        // protocol was chosen — a POP3 user typed their POP3 server into it,
-        // and asking them which field family that was would be exposing the
-        // storage schema as UI.
-        let mut endpoint = MailEndpoint {
-            protocol: form.protocol,
-            imap_port: port,
-            imap_transport: form.transport,
-            imap_username: Some(form.username.trim().to_owned()).filter(|u| !u.is_empty()),
-            smtp_host: form.smtp_host.trim().to_owned(),
-            smtp_port,
-            smtp_transport: form.smtp_transport,
-            jmap_session_url: Some(form.jmap_url.trim().to_owned()).filter(|u| !u.is_empty()),
-            from_address: form.from_address.trim().to_owned(),
-            from_name: form.from_name.trim().to_owned(),
-            aliases: form.aliases.clone(),
-            ..MailEndpoint::tls(form.host.trim())
-        };
-        if form.protocol == MailProtocol::Pop3 {
-            endpoint.pop3_host = form.host.trim().to_owned();
-            endpoint.pop3_port = port;
-            endpoint.pop3_transport = form.transport;
-        }
         let account_id = form.account_id.clone();
 
         // Written through the shared store, so Slate and Circle see the same
@@ -5711,8 +5689,8 @@ impl AppModel {
             Ok(store) => store,
             Err(why) => return self.with_form(|form| form.error = Some(why.to_string())),
         };
-        if let Err(why) = store.set_mail_endpoint(&account_id, Some(endpoint)) {
-            return self.with_form(|form| form.error = Some(why.to_string()));
+        if let Err(why) = store_form(&mut store, form) {
+            return self.with_form(|form| form.error = Some(why));
         }
 
         self.mail_form = None;
@@ -5722,6 +5700,59 @@ impl AppModel {
         self.rebuild_connection();
         self.load_cached_folders()
     }
+}
+
+/// Writes the account form into `store`: the servers, and the password when
+/// a new one was typed.
+///
+/// The password is the one credential an account's owner has to be able to
+/// change. Without this the only remedy for a changed password was removing
+/// the account and adding it again — a new account id, and with it the rules,
+/// the queued sends, the snoozes and the drafts of the old one orphaned.
+fn store_form(store: &mut AccountStore, form: &MailForm) -> Result<(), String> {
+    let Ok(port) = form.port.trim().parse::<u16>() else {
+        return Err(fl!("bad-port"));
+    };
+
+    let Ok(smtp_port) = form.smtp_port.trim().parse::<u16>() else {
+        return Err(fl!("bad-port"));
+    };
+
+    // Struct-update over the constructor, so a field the substrate grows —
+    // it has already grown five — defaults sensibly here instead of
+    // breaking the build or, worse, being zeroed.
+    // The one "incoming server" pair the form shows maps to whichever
+    // protocol was chosen — a POP3 user typed their POP3 server into it,
+    // and asking them which field family that was would be exposing the
+    // storage schema as UI.
+    let mut endpoint = MailEndpoint {
+        protocol: form.protocol,
+        imap_port: port,
+        imap_transport: form.transport,
+        imap_username: Some(form.username.trim().to_owned()).filter(|u| !u.is_empty()),
+        smtp_host: form.smtp_host.trim().to_owned(),
+        smtp_port,
+        smtp_transport: form.smtp_transport,
+        jmap_session_url: Some(form.jmap_url.trim().to_owned()).filter(|u| !u.is_empty()),
+        from_address: form.from_address.trim().to_owned(),
+        from_name: form.from_name.trim().to_owned(),
+        aliases: form.aliases.clone(),
+        ..MailEndpoint::tls(form.host.trim())
+    };
+    if form.protocol == MailProtocol::Pop3 {
+        endpoint.pop3_host = form.host.trim().to_owned();
+        endpoint.pop3_port = port;
+        endpoint.pop3_transport = form.transport;
+    }
+    store
+        .set_mail_endpoint(&form.account_id, Some(endpoint))
+        .map_err(|why| why.to_string())?;
+    if form.uses_password && !form.password.is_empty() {
+        store
+            .set_password(&form.account_id, &form.password)
+            .map_err(|why| why.to_string())?;
+    }
+    Ok(())
 }
 
 /// Where `j` or `k` moves the selection, or `None` when it does not move.
@@ -6226,6 +6257,43 @@ mod tests {
         model.rule_form.mark_read = true;
         let _ = model.dispatch(Message::RuleFormSubmitted);
         assert_eq!(model.rules.len(), 1);
+    }
+
+    /// An account store in `dir`, whose secrets never reach the keyring.
+    fn private_store(dir: &Path) -> AccountStore {
+        let secrets = cosmic_pim_accounts::SecretStore::open_envelope_only("envelope-test", dir);
+        AccountStore::open(&dir.join("accounts.toml"), secrets).expect("the store")
+    }
+
+    #[test]
+    fn a_stored_password_can_be_changed_without_removing_the_account() {
+        // There was no way to change it: the only remedy for a changed
+        // password was removing the account and adding it again, under a new
+        // id, orphaning its rules, queued sends, snoozes and drafts.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut store = private_store(dir.path());
+        let mut account = Account::new("Work", "https://dav.example/", "me@example.com");
+        account.mail = Some(MailEndpoint::tls("imap.example.com"));
+        let id = account.id.clone();
+        store.add(account.clone(), "old").expect("add");
+
+        let mut form = MailForm::new(&account);
+        assert!(form.uses_password);
+        store_form(&mut store, &form).expect("save with the field empty");
+        assert_eq!(
+            store.password(&id).expect("read").as_deref(),
+            Some("old"),
+            "an empty field replaced the stored password"
+        );
+
+        form.password = "new".into();
+        store_form(&mut store, &form).expect("save");
+        assert_eq!(store.password(&id).expect("read").as_deref(), Some("new"));
+        assert_eq!(
+            store.accounts().len(),
+            1,
+            "the account was not edited in place"
+        );
     }
 
     #[test]

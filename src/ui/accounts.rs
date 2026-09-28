@@ -279,6 +279,21 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                         .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
                 ),
         );
+    // Only for an account that has one: a browser sign-in is renewed by
+    // signing in again, not by typing anything here.
+    let section = if form.uses_password {
+        section.add(
+            widget::settings::item::builder(fl!("password"))
+                .description(fl!("new-password-hint"))
+                .flex_control(
+                    widget::secure_input(fl!("password"), &form.password, None, true)
+                        .on_input(Message::MailFormPasswordChanged)
+                        .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
+                ),
+        )
+    } else {
+        section
+    };
 
     let sending = widget::settings::section()
         .title(fl!("sending-section"))
