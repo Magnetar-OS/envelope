@@ -14,6 +14,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A `mailto:` link with a stray `%` in front of an accented letter no longer
+  crashes the app.
 - A `mailto:` link opened from a browser reaches Envelope. The desktop entry
   declared D-Bus activation, which launchers that honour it answer by calling
   an interface Envelope does not export, so the click did nothing. It also

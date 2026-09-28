@@ -79,19 +79,22 @@ fn decode(text: &str) -> String {
     let mut index = 0;
     while index < bytes.len() {
         match bytes[index] {
-            b'%' if index + 2 < bytes.len() => {
-                match u8::from_str_radix(&text[index + 1..index + 3], 16) {
-                    Ok(byte) => {
-                        out.push(byte);
-                        index += 3;
-                    }
+            // Two hex digits, read as bytes. Not a slice of the text: the link
+            // is from whatever page was clicked, and a `%` in front of a
+            // multi-byte character would put the cut inside it.
+            b'%' => {
+                if let (Some(high), Some(low)) = (
+                    hex_digit(bytes.get(index + 1)),
+                    hex_digit(bytes.get(index + 2)),
+                ) {
+                    out.push((high << 4) | low);
+                    index += 3;
+                } else {
                     // A stray `%` is far more likely to be a literal than a
                     // truncated escape; dropping it would silently mangle a
                     // subject line.
-                    Err(_) => {
-                        out.push(b'%');
-                        index += 1;
-                    }
+                    out.push(b'%');
+                    index += 1;
                 }
             }
             b'+' => {
@@ -105,6 +108,14 @@ fn decode(text: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// One hex digit's value. Digits only — `from_str_radix` would also take a
+/// leading sign.
+fn hex_digit(byte: Option<&u8>) -> Option<u8> {
+    char::from(*byte?)
+        .to_digit(16)
+        .and_then(|digit| u8::try_from(digit).ok())
 }
 
 #[cfg(test)]
@@ -202,6 +213,26 @@ mod tests {
         assert_eq!(draft.subject, "100% or nothing");
         let draft = prefill("mailto:a@example.com?subject=50%", me()).expect("a mailto");
         assert_eq!(draft.subject, "50%");
+    }
+
+    #[test]
+    fn a_stray_percent_before_a_multibyte_character_is_kept_rather_than_crashing() {
+        // The link comes from whatever page was clicked. A `%` whose next two
+        // bytes split a character must read as the literal it is — slicing
+        // the text there would panic the running mail client.
+        let draft =
+            prefill("mailto:a@example.com?subject=%a\u{e9}t\u{e9}", me()).expect("a mailto");
+        assert_eq!(draft.subject, "%a\u{e9}t\u{e9}");
+        let draft = prefill("mailto:a@example.com?subject=%\u{e9}", me()).expect("a mailto");
+        assert_eq!(draft.subject, "%\u{e9}");
+    }
+
+    #[test]
+    fn an_escape_is_two_hex_digits_and_nothing_else() {
+        // A sign is not a digit: `%+1` is a stray percent, then the `+` that
+        // means a space, then a one — not a control character.
+        let draft = prefill("mailto:a@example.com?subject=%+1", me()).expect("a mailto");
+        assert_eq!(draft.subject, "% 1");
     }
 
     #[test]
