@@ -406,16 +406,7 @@ pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
         reconcile: cycle.is_multiple_of(RECONCILE_EVERY),
         since_ms: None,
     };
-
-    let credentials = fresh_credentials(connection)?;
-    let pass = cosmic_pim_sync::sync_account_mail(
-        &connection.account,
-        &credentials,
-        &connection.root,
-        options,
-        now_ms(),
-    )
-    .map_err(|why| why.to_string())?;
+    let pass = pass(connection, options)?;
 
     let mut report = SyncReport {
         sent: pass.sent,
@@ -457,6 +448,158 @@ pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
     cosmic_pim_mail::folder::sort_for_display(&mut report.folders);
 
     Ok(report)
+}
+
+/// One account's substrate pass, one at a time per account.
+///
+/// One at a time because two passes over one account race twice over: both
+/// drain the outbox, and the outbox does not claim a message before sending
+/// it, so a message due for both goes out twice; and both rewrite the same
+/// mailbox sidecars. The foreground sync of the selected account and the
+/// background drain of every account ([`drain_due`]) meet here.
+fn pass(
+    connection: &Connection,
+    options: SyncOptions,
+) -> Result<cosmic_pim_sync::MailReport, String> {
+    let lock = account_lock(&connection.account_id);
+    let _held = hold(&lock);
+    pass_held(connection, options)
+}
+
+/// [`pass`], for a caller already holding the account's lock.
+fn pass_held(
+    connection: &Connection,
+    options: SyncOptions,
+) -> Result<cosmic_pim_sync::MailReport, String> {
+    let credentials = fresh_credentials(connection)?;
+    cosmic_pim_sync::sync_account_mail(
+        &connection.account,
+        &credentials,
+        &connection.root,
+        options,
+        now_ms(),
+    )
+    .map_err(|why| why.to_string())
+}
+
+/// Takes an account's lock. A poisoned lock only means another pass
+/// panicked; nothing the lock guards is left half-done by that, so the pass
+/// goes ahead.
+fn hold(lock: &std::sync::Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
+    lock.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The lock that makes an account's passes take turns, across worker threads.
+fn account_lock(account_id: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+    static LOCKS: std::sync::LazyLock<
+        std::sync::Mutex<HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>,
+    > = std::sync::LazyLock::new(Default::default);
+    LOCKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(account_id.to_owned())
+        .or_default()
+        .clone()
+}
+
+/// Whether an account has a queued send due by `now_ms`.
+///
+/// Disk only, so it is cheap enough to ask of every account on every poll.
+#[must_use]
+pub fn has_due_sends(connection: &Connection, now_ms: i64) -> bool {
+    list_outbox(connection).is_ok_and(|queued| any_due(&queued, now_ms))
+}
+
+fn any_due(queued: &[Queued], now_ms: i64) -> bool {
+    queued
+        .iter()
+        .any(|queued| queued.is_live() && queued.next_attempt_ms <= now_ms)
+}
+
+/// Every account with a send due by `now_ms`, ready to drain.
+///
+/// The outboxes are read first and credentials only for the accounts that
+/// have something due, so the poll that calls this does not read every
+/// account's secret every few minutes to find that nothing is waiting. An
+/// account whose credentials cannot be read is skipped with a log line —
+/// its messages stay queued, and its own sync says why.
+pub fn due_connections(now_ms: i64) -> Result<Vec<Connection>, String> {
+    let accounts = AccountStore::open_default().map_err(|why| why.to_string())?;
+    let root = maildir::default_root();
+    Ok(accounts
+        .accounts()
+        .iter()
+        .filter(|account| account.mail.is_some())
+        .filter(|account| {
+            Outbox::open(root.join(&account.id))
+                .and_then(|outbox| outbox.list())
+                .is_ok_and(|queued| any_due(&queued, now_ms))
+        })
+        .filter_map(
+            |account| match Connection::for_account(&accounts, account) {
+                Ok(connection) => connection,
+                Err(why) => {
+                    tracing::warn!(
+                        account = account.display_name,
+                        why,
+                        "a queued send waits: the account's credentials could not be read"
+                    );
+                    None
+                }
+            },
+        )
+        .collect())
+}
+
+/// What draining every account's outbox came to.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Drained {
+    /// Messages that left.
+    pub sent: usize,
+    /// Sends the outboxes have given up on. These need a person.
+    pub given_up: usize,
+    /// Accounts whose pass failed, by name, with the reason.
+    pub failures: Vec<(String, String)>,
+}
+
+/// Sends what is due in every account's outbox, not only the selected one's.
+///
+/// A message queued for the undo grace, for Send later, or by the calendar's
+/// reply to an invitation belongs to an account, and it has to go when it is
+/// due whichever account the window happens to be showing. The substrate
+/// drains an outbox only inside an account's sync pass, so an account with
+/// something due gets a pass here; one with nothing due is not touched.
+///
+/// The due check is repeated under the account's lock: a foreground sync
+/// that drained the account while this waited leaves nothing to do.
+///
+/// Blocking, for a worker thread.
+pub fn drain_due(connections: &[Connection], now_ms: i64) -> Drained {
+    let mut drained = Drained::default();
+    for connection in connections {
+        if !has_due_sends(connection, now_ms) {
+            continue;
+        }
+        let options = SyncOptions {
+            reconcile: false,
+            since_ms: None,
+        };
+        let lock = account_lock(&connection.account_id);
+        let _held = hold(&lock);
+        let outcome = has_due_sends(connection, now_ms).then(|| pass_held(connection, options));
+        match outcome {
+            Some(Ok(report)) => {
+                drained.sent += report.sent;
+                drained.given_up += report.given_up;
+            }
+            Some(Err(why)) => drained
+                .failures
+                .push((connection.account.display_name.clone(), why)),
+            None => {}
+        }
+    }
+    drained
 }
 
 /// Works out an account's servers from its address.

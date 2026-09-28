@@ -1152,6 +1152,10 @@ pub enum Message {
     /// account it was queued in, which is the one a reopened composer
     /// belongs to.
     SendCancelled(Box<(Scope, Result<Option<cosmic_pim_mail::Draft>, String>)>),
+    /// Send what is due in every account's outbox.
+    DrainDue,
+    /// Every account's due sends were attempted.
+    OutboxesDrained(Box<mail::Drained>),
     SendDelayChanged(String),
     /// The wake pass finished: how many snoozed messages returned.
     SnoozeWoken(Box<Result<usize, String>>),
@@ -2052,10 +2056,15 @@ impl AppModel {
                 // never clears a status line the user is in the middle of
                 // reading, which is what makes an automatic check different
                 // from the button.
+                //
+                // Every account's due sends go on every poll, whatever the
+                // sidebar shows: a message queued in one account is not
+                // waiting for the user to look at that account again.
+                let drain = self.drain_due_now();
                 if self.syncing || self.connection.is_none() {
-                    return Task::none();
+                    return drain;
                 }
-                self.sync_now()
+                Task::batch([self.sync_now(), drain])
             }
 
             Message::SyncFinished(result) => {
@@ -3240,7 +3249,11 @@ impl AppModel {
                     }
                     // A timer for sends going soon; anything further out is
                     // the poll's job, and an in-process timer for tomorrow
-                    // would not survive the app closing tonight anyway.
+                    // would not survive the app closing tonight anyway. It
+                    // drains every account rather than syncing the selected
+                    // one: the sidebar may be on another account by then, and
+                    // a sync already running when it fires would have drained
+                    // before the message was due.
                     let wait_ms = not_before_ms - chrono::Utc::now().timestamp_millis();
                     let timer = if (0..5 * 60_000).contains(&wait_ms) {
                         cosmic::task::future(async move {
@@ -3248,7 +3261,7 @@ impl AppModel {
                                 u64::try_from(wait_ms).unwrap_or(0) + 1_000,
                             ))
                             .await;
-                            Message::SyncNow
+                            Message::DrainDue
                         })
                     } else {
                         Task::none()
@@ -3278,6 +3291,21 @@ impl AppModel {
                     Err(why) => self.say(why),
                 }
                 self.reload_outbox()
+            }
+            Message::DrainDue => self.drain_due_now(),
+            Message::OutboxesDrained(drained) => {
+                // Failures are logged, not said: an account that is offline
+                // fails on every poll, and its queued message says why in the
+                // outbox list. A send given up on needs the user.
+                for (account, why) in &drained.failures {
+                    tracing::warn!(account, why, "could not send what was due");
+                }
+                if drained.given_up > 0 {
+                    self.say(fl!("outbox-given-up", count = drained.given_up));
+                } else if drained.sent > 0 {
+                    self.say(fl!("sync-sent", count = drained.sent));
+                }
+                Task::batch([self.reload_outbox(), self.reload_conversations()])
             }
             Message::SendDelayChanged(text) => {
                 if let Ok(seconds) = text.trim().parse::<u32>() {
@@ -3565,6 +3593,31 @@ impl AppModel {
                 .await
                 .unwrap_or_else(|why| Err(why.to_string()));
             Message::SyncFinished(Box::new(result))
+        })
+    }
+
+    /// Sends what is due in every account's outbox, on the worker.
+    ///
+    /// Reads only the outboxes when nothing is due, which is the common case
+    /// on a poll.
+    fn drain_due_now(&self) -> Task<Message> {
+        cosmic::task::future(async move {
+            let drained = tokio::task::spawn_blocking(|| {
+                let now = chrono::Utc::now().timestamp_millis();
+                match mail::due_connections(now) {
+                    Ok(connections) => mail::drain_due(&connections, now),
+                    Err(why) => mail::Drained {
+                        failures: vec![(String::new(), why)],
+                        ..mail::Drained::default()
+                    },
+                }
+            })
+            .await
+            .unwrap_or_else(|why| mail::Drained {
+                failures: vec![(String::new(), why.to_string())],
+                ..mail::Drained::default()
+            });
+            Message::OutboxesDrained(Box::new(drained))
         })
     }
 

@@ -1522,3 +1522,47 @@ fn snoozing_is_refused_where_nothing_could_wake_the_mail() {
     );
     assert!(store.pending().is_empty(), "a move was queued anyway");
 }
+
+#[test]
+fn every_account_with_a_due_send_is_driven_and_no_other() {
+    // Sends used to leave only in the selected account's sync, so a message
+    // queued in any other account waited until the user looked at it again.
+    // No server answers here: the pass is attempted and fails to connect,
+    // which is the evidence it was attempted at all.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    let mut idle = connection(root);
+    idle.account_id = "account-idle".into();
+    idle.account.display_name = "Idle".into();
+    let mut later = connection(root);
+    later.account_id = "account-later".into();
+    later.account.display_name = "Later".into();
+    let mut due = connection(root);
+    due.account_id = "account-due".into();
+    due.account.display_name = "Due".into();
+
+    let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "me@example.com".into(),
+    });
+    draft.to.push(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "ada@example.com".into(),
+    });
+    let now = 1_000_000;
+    mail::schedule_send(&later, None, &draft, now + 60_000).expect("schedule later");
+    mail::schedule_send(&due, None, &draft, now - 1).expect("schedule due");
+
+    assert!(!mail::has_due_sends(&idle, now));
+    assert!(!mail::has_due_sends(&later, now));
+    assert!(mail::has_due_sends(&due, now));
+
+    let drained = mail::drain_due(&[idle, later, due], now);
+    let attempted: Vec<&str> = drained
+        .failures
+        .iter()
+        .map(|(account, _)| account.as_str())
+        .collect();
+    assert_eq!(attempted, ["Due"], "the wrong accounts were driven");
+}

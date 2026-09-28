@@ -144,6 +144,10 @@ sync-sent = { $count ->
         [one] One sent.
        *[other] { $count } sent.
     }
+outbox-given-up = { $count ->
+        [one] One queued message has stopped trying. The Outbox says why.
+       *[other] { $count } queued messages have stopped trying. The Outbox says why.
+    }
 
 # Actions and shortcuts
 next-message = Next

@@ -42,6 +42,9 @@ All notable changes to this project are documented here. The format follows
   Save draft, Archive, Delete and the flags in such a window acted through the
   newly selected account: a reply went out over that account's server, and
   Archive filed whichever of its messages happened to share the number.
+- Queued messages go out when they are due in every account, not only in the
+  one on screen. A send waiting out the undo delay, a Send later, or a reply to
+  an invitation stayed queued until its account was selected again.
 
 ## [1.1.0] - 2026-09-22
 
