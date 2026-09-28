@@ -2,13 +2,15 @@
 
 //! The composer.
 //!
-//! One body, sent as `text/plain`. See `cosmic_pim_mail::compose` for why that
-//! is a decision rather than a stage: the reader shows text, so an HTML
-//! composer would be writing in a format this application cannot display.
+//! One body, sent as `text/plain`. An HTML body is a gap, not a refusal: the
+//! reader shows an HTML message's structure now, so a composer emitting
+//! structure would no longer be writing in a format this application cannot
+//! display. What is missing is the second body on the `Draft` (see
+//! PARITY.md and ROADMAP.md).
 //!
 //! The editor underneath is Nib, and it holds a document rather than a string.
-//! That is not a step towards an HTML composer — it is what makes the plain
-//! text correct. A quote the caret can be *inside* continues itself on Enter,
+//! That is what makes the plain text correct, before it is anything else. A
+//! quote the caret can be *inside* continues itself on Enter,
 //! and `nib_text` writes the `>` markers and the wrap column from the
 //! structure on the way out, rather than a pass over a finished string trying
 //! to work out which lines were quoted.
