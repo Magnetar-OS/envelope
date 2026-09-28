@@ -1195,117 +1195,36 @@ impl cosmic::Application for AppModel {
     }
 
     fn init(core: Core, flags: Self::Flags) -> (Self, Task<Self::Message>) {
-        let about = About::default()
-            .name(fl!("app-title"))
-            .icon(widget::icon::from_svg_bytes(APP_ICON))
-            .version(env!("CARGO_PKG_VERSION"))
-            .license(env!("CARGO_PKG_LICENSE"))
-            .links([(fl!("repository"), REPOSITORY)]);
-
-        let accounts = load_accounts();
-
-        let mut model = Self {
-            core,
-            about,
-            context_page: ContextPage::default(),
-            // The map libcosmic reads to draw an accelerator beside a menu
-            // entry. Built from the registry rather than written out, so the
-            // menu shows the shortcut the keyboard handler actually matches.
-            key_binds: actions::combinations()
-                .into_iter()
-                .map(|(bind, action)| (bind, MenuAction(action)))
-                .collect(),
-            accounts,
-            // Filled in below, once the saved settings are loaded.
-            selected_account: None,
-            connection: None,
-            folders: Vec::new(),
-            selected_folder: None,
-            unread: HashMap::new(),
-            conversations: Vec::new(),
-            selected_conversation: None,
-            opened: None,
-            loading_conversations: false,
-            syncing: false,
-            cycle: 0,
-            // A crash last session is said once, here, rather than never: the
-            // process is usually started by a desktop entry, so the panic
-            // message on stderr went nowhere anyone will look.
-            status: crate::crash::take_unreported()
-                .last()
-                .map(|report| fl!("crashed-last-time", path = report.display().to_string())),
-            toasts: widget::Toasts::new(Message::ToastClosed),
-            pending_toasts: Vec::new(),
-            list_error: None,
-            reader_error: None,
-            mail_form: None,
-            windows: HashMap::new(),
-            routed: None,
-            maximized: std::collections::HashSet::new(),
-            sign_in_providers: mail::sign_in_providers(),
-            add_form: None,
-            signing_in: false,
-            palette: None,
-            folder_dialog: None,
-            folder_dialog_window: None,
-            move_rows: Vec::new(),
-            dragging: None,
-            sidebar_width: crate::config::DEFAULT_SIDEBAR_WIDTH as f32,
-            list_width: crate::config::DEFAULT_LIST_WIDTH as f32,
-            conversation_labels: Vec::new(),
-            known_labels: Vec::new(),
-            label_rows: Vec::new(),
-            identity_labels: Vec::new(),
-            rules: Vec::new(),
-            rule_form: RuleForm::default(),
-            rule_move_labels: Vec::new(),
-            rule_move_wires: Vec::new(),
-            palette_rows: Vec::new(),
-            undo_stack: Vec::new(),
-            drafts: Vec::new(),
-            showing_drafts: false,
-            outbox: Vec::new(),
-            showing_outbox: false,
-            unified: Vec::new(),
-            showing_unified: false,
-            search_focused: false,
-            pending_chord: None,
-            poll_seconds: String::new(),
-            send_delay: String::new(),
-            watch_generation: 0,
-            watching: false,
-            dbus: None,
-            config: cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
-                .map(|context| match Config::get_entry(&context) {
-                    Ok(config) => config,
-                    Err((why, config)) => {
-                        // Reported, not swallowed: a configuration that failed
-                        // to load looks exactly like one that was never saved,
-                        // and the user would put the setting back and watch it
-                        // vanish again.
-                        for why in why {
-                            tracing::warn!(%why, "could not read the saved settings");
-                        }
-                        config
+        let config = cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
+            .map(|context| match Config::get_entry(&context) {
+                Ok(config) => config,
+                Err((why, config)) => {
+                    // Reported, not swallowed: a configuration that failed
+                    // to load looks exactly like one that was never saved,
+                    // and the user would put the setting back and watch it
+                    // vanish again.
+                    for why in why {
+                        tracing::warn!(%why, "could not read the saved settings");
                     }
-                })
-                .unwrap_or_default(),
-            search: String::new(),
-            expanded_quotes: std::collections::HashSet::new(),
-            results: Vec::new(),
-            searching: false,
-        };
+                    config
+                }
+            })
+            .unwrap_or_default();
+
+        let mut model = Self::with_config(core, config);
+        model.accounts = load_accounts();
+        model.sign_in_providers = mail::sign_in_providers();
+        // A crash last session is said once, here, rather than never: the
+        // process is usually started by a desktop entry, so the panic message
+        // on stderr went nowhere anyone will look.
+        model.status = crate::crash::take_unreported()
+            .last()
+            .map(|report| fl!("crashed-last-time", path = report.display().to_string()));
         // The crash notice is a toast as well as a status line: the drawer
         // is closed on launch, and a notice nobody can see is not a notice.
         if let Some(text) = model.status.clone() {
             model.pending_toasts.push(text);
         }
-        model.sidebar_width = model.config.sidebar_width();
-        model.list_width = model.config.list_width();
-        // The settings fields show the loaded values from the first frame,
-        // not from the first config-change event.
-        model.poll_seconds = model.config.poll_seconds.to_string();
-        model.send_delay = model.config.send_delay_seconds.to_string();
         // The account that was open last, if it is still there. Falling back to
         // the first rather than to none: an application that opens on nothing
         // when its remembered account was removed is one the user has to
@@ -1885,6 +1804,95 @@ impl cosmic::Application for AppModel {
 }
 
 impl AppModel {
+    /// The model before anything is read from disk or the bus: no accounts,
+    /// no connection, nothing selected, and `config` as the only input.
+    ///
+    /// `init` fills in the rest. Kept apart so the state machine can be
+    /// driven in tests without touching the user's accounts, keyring or
+    /// crash reports.
+    fn with_config(core: Core, config: Config) -> Self {
+        let about = About::default()
+            .name(fl!("app-title"))
+            .icon(widget::icon::from_svg_bytes(APP_ICON))
+            .version(env!("CARGO_PKG_VERSION"))
+            .license(env!("CARGO_PKG_LICENSE"))
+            .links([(fl!("repository"), REPOSITORY)]);
+
+        Self {
+            core,
+            about,
+            context_page: ContextPage::default(),
+            // The map libcosmic reads to draw an accelerator beside a menu
+            // entry. Built from the registry rather than written out, so the
+            // menu shows the shortcut the keyboard handler actually matches.
+            key_binds: actions::combinations()
+                .into_iter()
+                .map(|(bind, action)| (bind, MenuAction(action)))
+                .collect(),
+            accounts: Vec::new(),
+            selected_account: None,
+            connection: None,
+            folders: Vec::new(),
+            selected_folder: None,
+            unread: HashMap::new(),
+            conversations: Vec::new(),
+            selected_conversation: None,
+            opened: None,
+            loading_conversations: false,
+            syncing: false,
+            cycle: 0,
+            status: None,
+            toasts: widget::Toasts::new(Message::ToastClosed),
+            pending_toasts: Vec::new(),
+            list_error: None,
+            reader_error: None,
+            mail_form: None,
+            windows: HashMap::new(),
+            routed: None,
+            maximized: std::collections::HashSet::new(),
+            sign_in_providers: Vec::new(),
+            add_form: None,
+            signing_in: false,
+            palette: None,
+            folder_dialog: None,
+            folder_dialog_window: None,
+            move_rows: Vec::new(),
+            dragging: None,
+            sidebar_width: config.sidebar_width(),
+            list_width: config.list_width(),
+            conversation_labels: Vec::new(),
+            known_labels: Vec::new(),
+            label_rows: Vec::new(),
+            identity_labels: Vec::new(),
+            rules: Vec::new(),
+            rule_form: RuleForm::default(),
+            rule_move_labels: Vec::new(),
+            rule_move_wires: Vec::new(),
+            palette_rows: Vec::new(),
+            undo_stack: Vec::new(),
+            drafts: Vec::new(),
+            showing_drafts: false,
+            outbox: Vec::new(),
+            showing_outbox: false,
+            unified: Vec::new(),
+            showing_unified: false,
+            search_focused: false,
+            pending_chord: None,
+            // The settings fields show the loaded values from the first
+            // frame, not from the first config-change event.
+            poll_seconds: config.poll_seconds.to_string(),
+            send_delay: config.send_delay_seconds.to_string(),
+            watch_generation: 0,
+            watching: false,
+            dbus: None,
+            config,
+            search: String::new(),
+            expanded_quotes: std::collections::HashSet::new(),
+            results: Vec::new(),
+            searching: false,
+        }
+    }
+
     /// Says something transient to the user, wherever they are looking.
     ///
     /// Also mirrors into the status line, which the Accounts drawer still
