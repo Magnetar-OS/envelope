@@ -21,6 +21,8 @@ All notable changes to this project are documented here. The format follows
   ignore.
 - A `mailto:` link with a stray `%` in front of an accented letter no longer
   crashes the app, and `Mailto:` in any capitalisation opens a composer.
+- Quitting with several new, unsaved messages open keeps all of them as
+  drafts. Drafts saved within the same millisecond used to replace each other.
 - The open folder stays open when a sync brings a longer folder list. The
   selection used to move to whichever folder took its place in the list —
   typically on the first sync after launch — and Rename and Delete acted on

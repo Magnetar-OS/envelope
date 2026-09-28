@@ -139,9 +139,9 @@ fn queue_reply(ics: &str, account_id: &str, to: &str) -> Result<(), String> {
         bytes: ics.as_bytes().to_vec(),
     });
 
-    let now_ms = chrono::Utc::now().timestamp_millis();
+    let id = crate::mail::fresh_id(&connection)?;
     crate::mail::outbox(&connection)?
-        .submit(&cosmic_pim_mail::drafts::new_id(now_ms), &draft, now_ms)
+        .submit(&id, &draft, chrono::Utc::now().timestamp_millis())
         .map_err(|why| why.to_string())
 }
 

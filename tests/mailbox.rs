@@ -1294,3 +1294,30 @@ Content-Type: application/octet-stream\r\n\
     let opened = mail::open(&connection(root), &inbox(), 1).expect("open");
     assert!(opened.pgp.encrypted, "the sealed message read as plain");
 }
+
+#[test]
+fn drafts_saved_in_the_same_instant_are_still_separate_drafts() {
+    // Quitting with several unsaved composers open saves them in one loop,
+    // well inside a millisecond of each other. A fresh id is the clock, so
+    // each save after the first landed on the id before it and replaced
+    // that draft — half-written messages lost on the way out.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let connection = connection(dir.path());
+
+    let mut ids = std::collections::HashSet::new();
+    for n in 0..20 {
+        let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
+            name: None,
+            address: "me@example.com".into(),
+        });
+        draft.subject = format!("Draft {n}");
+        ids.insert(mail::save_draft(&connection, None, &draft).expect("save"));
+    }
+
+    assert_eq!(ids.len(), 20, "two new drafts were given the same id");
+    assert_eq!(
+        mail::list_drafts(&connection).expect("list").len(),
+        20,
+        "a new draft replaced another one"
+    );
+}
