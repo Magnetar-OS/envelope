@@ -12,6 +12,13 @@ All notable changes to this project are documented here. The format follows
   under Office next to Slate and Circle. It was under Network, which COSMIC's
   app library has no folder for.
 
+### Fixed
+
+- The open folder stays open when a sync brings a longer folder list. The
+  selection used to move to whichever folder took its place in the list —
+  typically on the first sync after launch — and Rename and Delete acted on
+  that folder.
+
 ## [1.1.0] - 2026-09-22
 
 ### Changed

@@ -1993,11 +1993,23 @@ impl AppModel {
                         }
                         // Folders come from the server, so this is also how a
                         // newly created mailbox appears.
+                        //
+                        // The selection is a position in the list being
+                        // replaced, so it is carried across by wire name: a
+                        // folder the new list gains ahead of it — the first
+                        // sync's list over the cached one, a folder created
+                        // elsewhere — would otherwise hand the selection, and
+                        // with it Rename and Delete, to a different folder.
                         if !report.folders.is_empty() {
+                            let open = self.current_folder().map(|folder| folder.wire_name.clone());
                             self.folders = report.folders;
-                            if self.selected_folder.is_none() {
-                                self.selected_folder = self.restore_folder();
-                            }
+                            self.selected_folder = open
+                                .and_then(|wire| {
+                                    self.folders
+                                        .iter()
+                                        .position(|folder| folder.wire_name == wire)
+                                })
+                                .or_else(|| self.restore_folder());
                         }
                         Task::batch([
                             self.reload_conversations(),
@@ -5596,6 +5608,61 @@ fn unescape_local_name(local: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A model with nothing read from disk: no accounts, so no connection,
+    /// so every worker task is skipped and only the state machine runs.
+    fn model() -> AppModel {
+        AppModel::with_config(Core::default(), Config::default())
+    }
+
+    fn folder(name: &str) -> Folder {
+        cosmic_pim_mail::folder::from_list_entry(name, Some('/'), &[])
+    }
+
+    fn synced(model: &mut AppModel, mut folders: Vec<Folder>) {
+        cosmic_pim_mail::folder::sort_for_display(&mut folders);
+        let _ = model.dispatch(Message::SyncFinished(Box::new(Ok(SyncReport {
+            folders,
+            ..SyncReport::default()
+        }))));
+    }
+
+    #[test]
+    fn a_sync_that_reorders_the_folders_keeps_the_one_that_was_open() {
+        // Before the first sync the sidebar is the folders with a maildir on
+        // disk; the server's list also has the ones never synced from. The
+        // selection is a position, and kept as one it moved to whichever
+        // folder took that place — and Rename and Delete act on it.
+        let mut model = model();
+        model.folders = vec![folder("INBOX"), folder("Projects")];
+        model.selected_folder = Some(1);
+
+        synced(
+            &mut model,
+            vec![folder("INBOX"), folder("Accounts"), folder("Projects")],
+        );
+
+        assert_eq!(
+            model.current_folder().map(|f| f.wire_name.as_str()),
+            Some("Projects"),
+            "the sync switched the open folder"
+        );
+    }
+
+    #[test]
+    fn a_folder_that_left_the_server_is_not_replaced_by_its_neighbour() {
+        let mut model = model();
+        model.folders = vec![folder("INBOX"), folder("Old")];
+        model.selected_folder = Some(1);
+
+        synced(&mut model, vec![folder("INBOX"), folder("Zeta")]);
+
+        assert_eq!(
+            model.current_folder().map(|f| f.wire_name.as_str()),
+            Some("INBOX"),
+            "a vanished folder's place went to an unrelated one"
+        );
+    }
 
     #[test]
     fn a_modifier_stops_a_letter_from_firing_its_bare_shortcut() {
