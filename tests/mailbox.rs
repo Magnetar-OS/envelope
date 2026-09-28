@@ -1487,3 +1487,38 @@ fn drafts_saved_in_the_same_instant_are_still_separate_drafts() {
         "a new draft replaced another one"
     );
 }
+
+#[test]
+fn snoozing_is_refused_where_nothing_could_wake_the_mail() {
+    // Waking is an IMAP session: it finds the message in the Snoozed folder
+    // and moves it back. On a POP3 account there is no Snoozed folder and no
+    // way to move anything, so the "snoozed" message simply left the inbox —
+    // and POP3 never downloads a message twice, so it never came back.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let later = message(
+        "later@x",
+        "",
+        "Later",
+        "Ada <ada@example.com>",
+        "Mon, 3 Feb 2025 09:00:00 +0000",
+        "Deal with this.",
+    );
+    deliver(root, &[(1, &later, Flags::default())]);
+
+    let mut connection = connection(root);
+    if let Some(endpoint) = connection.account.mail.as_mut() {
+        endpoint.protocol = cosmic_pim_accounts::MailProtocol::Pop3;
+    }
+
+    assert!(
+        mail::snooze(&connection, &inbox(), &[1], i64::MAX / 2).is_err(),
+        "a snooze nothing can wake was accepted"
+    );
+    let store = MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox())).expect("open");
+    assert!(
+        store.raw(1).expect("read").is_some(),
+        "the message left the inbox"
+    );
+    assert!(store.pending().is_empty(), "a move was queued anyway");
+}

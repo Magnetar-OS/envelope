@@ -1558,12 +1558,26 @@ fn snooze_schedule(connection: &Connection) -> Result<snooze::Schedule, String> 
 /// Only messages the schedule can wake are taken. A wake finds its message by
 /// `Message-ID`, so one without any stays where it is: moved to Snoozed it
 /// would have nothing on the schedule to bring it back.
+///
+/// IMAP only, because waking is: [`wake_snoozed`] finds the message in the
+/// Snoozed folder over an IMAP session. Anywhere else the move would go out
+/// and nothing would ever bring the message back — and on POP3, which has no
+/// folders and never downloads a message twice, it would simply vanish.
 pub fn snooze(
     connection: &Connection,
     folder: &Folder,
     uids: &[u32],
     until_ms: i64,
 ) -> Result<Vec<RemoteMessage>, String> {
+    let is_imap = connection
+        .account
+        .mail
+        .as_ref()
+        .is_none_or(|mail| mail.protocol == MailProtocol::Imap);
+    if !is_imap {
+        return Err("snoozing needs an IMAP account — nothing could bring the mail back".into());
+    }
+
     // Identity and subject are read before the move takes the files away.
     // The subject is carried so a pending snooze can be listed as something
     // a person recognises rather than as a `Message-ID`.

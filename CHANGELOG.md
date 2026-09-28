@@ -23,6 +23,9 @@ All notable changes to this project are documented here. The format follows
   crashes the app, and `Mailto:` in any capitalisation opens a composer.
 - Snoozing a conversation leaves behind any message that carries no
   `Message-ID`, instead of putting it away where nothing would bring it back.
+- Snoozing is refused on accounts that are not IMAP. Waking needs an IMAP
+  session, so on POP3, JMAP, Gmail and Graph accounts snoozed mail left the
+  inbox and never came back.
 - Filter rules keep running on new mail after the server renumbers the
   inbox, and do not run over the whole inbox when the new numbers happen to
   be higher.
