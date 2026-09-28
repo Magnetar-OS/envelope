@@ -18,6 +18,8 @@ All notable changes to this project are documented here. The format follows
   selection used to move to whichever folder took its place in the list —
   typically on the first sync after launch — and Rename and Delete acted on
   that folder.
+- A bounce noticed after a sync is announced as a notification, like every
+  other message. It was written only to the Accounts page's status line.
 
 ## [1.1.0] - 2026-09-22
 

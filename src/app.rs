@@ -3053,8 +3053,7 @@ impl AppModel {
                         // A delivery failure outranks "rules filed n": one is
                         // news about the user's own words not arriving.
                         if let Some((recipient, _)) = report.bounces.first() {
-                            self.status =
-                                Some(fl!("bounce-arrived", recipient = recipient.clone()));
+                            self.say(fl!("bounce-arrived", recipient = recipient.clone()));
                         } else if let Some((rule, why)) = report.failures.first() {
                             self.say(fl!(
                                 "rule-failed",
@@ -5661,6 +5660,25 @@ mod tests {
             model.current_folder().map(|f| f.wire_name.as_str()),
             Some("INBOX"),
             "a vanished folder's place went to an unrelated one"
+        );
+    }
+
+    #[test]
+    fn a_delivery_failure_found_after_a_sync_is_said_where_the_user_is_looking() {
+        // The status line is drawn only inside the Accounts drawer, so a
+        // bounce written there alone was a bounce nobody saw.
+        let mut model = model();
+        let report = mail::RulesReport {
+            bounces: vec![("ada@example.com".into(), "550 5.1.1".into())],
+            ..mail::RulesReport::default()
+        };
+
+        let _ = model.dispatch(Message::RulesApplied(Box::new(Ok(Some(report)))));
+
+        assert_eq!(
+            model.pending_toasts.len(),
+            1,
+            "the bounce was not announced"
         );
     }
 
