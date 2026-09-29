@@ -387,9 +387,14 @@ pub fn outbox(queued: &[cosmic_pim_mail::outbox::Queued], now_ms: i64) -> Elemen
                 crate::ui::muted(error.clone()).wrapping(cosmic::iced::core::text::Wrapping::Word),
             );
         }
+        // Going out right now: past the point where it can be taken back or
+        // thrown away, so it says so and offers neither.
+        if message.sending {
+            body = body.push(widget::text::caption(fl!("outbox-sending")));
+        }
         // When it goes: a Send later row that did not say so was a row the
         // user could not tell from one stuck in the queue.
-        if !message.given_up && message.next_attempt_ms > now_ms {
+        if !message.given_up && !message.sending && message.next_attempt_ms > now_ms {
             body = body.push(widget::text::caption(fl!(
                 "outbox-due",
                 when = crate::ui::relative_date_ms(message.next_attempt_ms)
@@ -407,21 +412,23 @@ pub fn outbox(queued: &[cosmic_pim_mail::outbox::Queued], now_ms: i64) -> Elemen
                     .on_press(Message::QueuedRetried(message.id.clone())),
             );
         }
-        // Back to a composer, the way undo takes a send back — to change a
-        // word, or the time.
-        row = row.push(crate::ui::icon_button(
-            "document-edit-symbolic",
-            fl!("edit"),
-            Message::QueuedEdited(message.id.clone()),
-        ));
-        // Quiet, like the drafts list: a queue of things the user is waiting
-        // on should not be a column of red. It asks first; see
-        // `FolderDialog::DiscardQueued`.
-        row = row.push(crate::ui::icon_button(
-            "user-trash-symbolic",
-            fl!("discard"),
-            Message::QueuedDiscarded(message.id.clone()),
-        ));
+        if !message.sending {
+            // Back to a composer, the way undo takes a send back — to change
+            // a word, or the time.
+            row = row.push(crate::ui::icon_button(
+                "document-edit-symbolic",
+                fl!("edit"),
+                Message::QueuedEdited(message.id.clone()),
+            ));
+            // Quiet, like the drafts list: a queue of things the user is
+            // waiting on should not be a column of red. It asks first; see
+            // `FolderDialog::DiscardQueued`.
+            row = row.push(crate::ui::icon_button(
+                "user-trash-symbolic",
+                fl!("discard"),
+                Message::QueuedDiscarded(message.id.clone()),
+            ));
+        }
 
         column = column.push(
             widget::container(row)

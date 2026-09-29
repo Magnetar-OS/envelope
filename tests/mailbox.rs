@@ -1602,9 +1602,10 @@ fn a_reply_taken_back_marks_nothing_and_still_knows_what_it_answers() {
     let root = dir.path();
     let (connection, id) = scheduled_reply(root);
 
-    let taken = mail::cancel_send(&connection, &id)
-        .expect("cancel")
-        .expect("it had not gone");
+    let mail::Cancelled::TakenBack(taken) = mail::cancel_send(&connection, &id).expect("cancel")
+    else {
+        panic!("it had not gone");
+    };
     assert_eq!(
         taken.answering.map(|(folder, uid)| (folder.wire_name, uid)),
         Some(("INBOX".to_owned(), 1)),
@@ -1676,6 +1677,41 @@ fn a_reply_that_left_the_queue_without_being_sent_marks_nothing() {
         mail::settle_answered(&connection, &[id]).expect("settle"),
         1
     );
+}
+
+#[test]
+fn a_send_in_flight_is_reported_as_sending_not_as_gone() {
+    // The outbox claims a message before it talks to the server, so an undo
+    // then cannot have it — but it has not gone either, and "it already
+    // went" was the wrong news.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let (connection, id) = scheduled_reply(root);
+
+    let mut during = None;
+    let mut due_during = true;
+    mail::outbox(&connection)
+        .expect("outbox")
+        .drain_with(
+            |_| {
+                during = Some(mail::cancel_send(&connection, &id).expect("cancel"));
+                due_during = mail::has_due_sends(&connection, i64::MAX);
+                Outcome::Sent(b"sent".to_vec())
+            },
+            i64::MAX,
+        )
+        .expect("drain");
+    // Nor is it due for another pass while one is sending it.
+    assert!(!due_during, "a send in flight counted as waiting");
+
+    assert!(
+        matches!(during, Some(mail::Cancelled::Sending)),
+        "an undo during the send was told {during:?}"
+    );
+    assert!(matches!(
+        mail::cancel_send(&connection, &id).expect("cancel"),
+        mail::Cancelled::Gone
+    ));
 }
 
 #[test]

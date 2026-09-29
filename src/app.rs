@@ -1179,7 +1179,7 @@ pub enum Message {
     /// An undone send came back — or turned out to be gone. Carries the
     /// account it was queued in, which is the one a reopened composer
     /// belongs to.
-    SendCancelled(Box<(Scope, Result<Option<mail::TakenBack>, String>)>),
+    SendCancelled(Box<(Scope, Result<mail::Cancelled, String>)>),
     /// Send what is due in every account's outbox.
     DrainDue,
     /// Every account's due sends were attempted.
@@ -3356,7 +3356,7 @@ impl AppModel {
             Message::SendCancelled(cancelled) => {
                 let (scope, result) = *cancelled;
                 match result {
-                    Ok(Some(taken)) => {
+                    Ok(mail::Cancelled::TakenBack(taken)) => {
                         // The words the user wrote, back where they can be
                         // edited — the entire point of the grace. Still a
                         // reply if it was one, so sending it again marks
@@ -3368,7 +3368,8 @@ impl AppModel {
                             taken.answering,
                         ));
                     }
-                    Ok(None) => self.say(fl!("send-already-gone")),
+                    Ok(mail::Cancelled::Sending) => self.say(fl!("send-being-sent")),
+                    Ok(mail::Cancelled::Gone) => self.say(fl!("send-already-gone")),
                     Err(why) => self.say(why),
                 }
                 self.reload_outbox()

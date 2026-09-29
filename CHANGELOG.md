@@ -74,6 +74,9 @@ All notable changes to this project are documented here. The format follows
 - A message the server refuses for good — a recipient it will not take,
   credentials it rejects — stays in the composer with the server's reason,
   and is not queued to be refused again on every retry.
+- An outbox row being sent right now says so and offers no Edit or Discard,
+  and undo at that moment says the message is being sent rather than that it
+  already went.
 
 ## [1.1.0] - 2026-09-22
 

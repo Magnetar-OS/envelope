@@ -519,9 +519,10 @@ pub fn has_due_sends(connection: &Connection, now_ms: i64) -> bool {
 }
 
 fn any_due(queued: &[Queued], now_ms: i64) -> bool {
+    // One a drain is sending right now is not waiting for another pass.
     queued
         .iter()
-        .any(|queued| queued.is_live() && queued.next_attempt_ms <= now_ms)
+        .any(|queued| queued.is_live() && !queued.sending && queued.next_attempt_ms <= now_ms)
 }
 
 /// Every account with a send due by `now_ms`, ready to drain.
@@ -1072,20 +1073,42 @@ pub struct TakenBack {
     pub answering: Option<(Folder, u32)>,
 }
 
-/// Takes a scheduled send back, returning the draft to edit. `None` means it
-/// already went — and the caller must say so, not reopen a composer for a
-/// message the recipients already have.
-pub fn cancel_send(connection: &Connection, id: &str) -> Result<Option<TakenBack>, String> {
-    let Some(draft) = outbox(connection)?
-        .cancel(id)
-        .map_err(|why| why.to_string())?
-    else {
-        return Ok(None);
+/// What asking for a queued send back came to.
+#[derive(Debug, Clone)]
+pub enum Cancelled {
+    /// Out of the queue, to edit.
+    TakenBack(Box<TakenBack>),
+    /// A drain has it and is talking to the server right now. Not gone yet,
+    /// but past the point where it can be stopped — which is not the same
+    /// news as "it already went".
+    Sending,
+    /// It already went, or was never there.
+    Gone,
+}
+
+/// Takes a scheduled send back, returning the draft to edit — or why not.
+/// The caller must not reopen a composer for a message the recipients have,
+/// or are about to have.
+pub fn cancel_send(connection: &Connection, id: &str) -> Result<Cancelled, String> {
+    let outbox = outbox(connection)?;
+    let Some(draft) = outbox.cancel(id).map_err(|why| why.to_string())? else {
+        // The claim a drain makes before sending is what refused the take;
+        // the listing shows it as sending until the answer comes back.
+        let sending = outbox
+            .list()
+            .map_err(|why| why.to_string())?
+            .iter()
+            .any(|queued| queued.id == id && queued.sending);
+        return Ok(if sending {
+            Cancelled::Sending
+        } else {
+            Cancelled::Gone
+        });
     };
-    Ok(Some(TakenBack {
+    Ok(Cancelled::TakenBack(Box::new(TakenBack {
         draft,
         answering: take_answering(connection, id)?,
-    }))
+    })))
 }
 
 /// Searches the account, applying the flag filters the index cannot.
