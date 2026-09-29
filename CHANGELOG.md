@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Built against cosmic-ext-nib 1.2.0: links in the reader open on click, only safe link schemes survive from HTML mail, and deeply nested messages can no longer abort the app.
 - The applications menu lists the app as Envelope, not "Mail", and files it
   under Office next to Slate and Circle. It was under Network, which COSMIC's
   app library has no folder for.
