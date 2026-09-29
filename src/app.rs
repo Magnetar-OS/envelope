@@ -5646,6 +5646,11 @@ impl AppModel {
                 // client must not be the thing that sends it twice.
                 composer.error = Some(fl!("send-uncertain", reason = why));
             }
+            mail::Sent::Rejected(why) => {
+                // Not "try again": the server answered, and the same message
+                // gets the same answer. The composer stays so it can change.
+                composer.error = Some(fl!("send-rejected", reason = why));
+            }
         }
         Task::none()
     }
@@ -6303,6 +6308,44 @@ mod tests {
             "the reopened reply forgot what it answers"
         );
         assert!(mail::list_outbox(&a).expect("a's outbox").is_empty());
+    }
+
+    #[test]
+    fn a_message_the_server_refuses_stays_in_the_composer_and_is_not_queued() {
+        // A permanent refusal — bad credentials, a recipient the server will
+        // not take — is not a network blip: queued, it would be refused again
+        // on every retry while the composer that could fix it was gone.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let mut model = two_accounts(root);
+        let _ = model.dispatch(Message::Reply { all: false });
+        let id = only_window(&model);
+
+        let _ = model.dispatch(Message::InWindow(
+            id,
+            Box::new(Message::ComposeSent(Box::new(mail::Sent::Rejected(
+                "550 5.1.1 no such user".into(),
+            )))),
+        ));
+
+        let Some(Detached::Compose(composer)) = model.windows.get(&id) else {
+            panic!("the composer closed on a refusal");
+        };
+        assert!(!composer.sending);
+        assert!(
+            composer
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("550 5.1.1")),
+            "the refusal was not shown: {:?}",
+            composer.error
+        );
+        assert!(
+            mail::list_outbox(&connection_of("a", root))
+                .expect("outbox")
+                .is_empty(),
+            "a refused message was queued"
+        );
     }
 
     #[test]

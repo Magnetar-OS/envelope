@@ -9,6 +9,11 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - Built against cosmic-ext-nib 1.2.0: links in the reader open on click, only safe link schemes survive from HTML mail, and deeply nested messages can no longer abort the app.
+- Built against cosmic-pim 2: a flag change or move made while a sync is
+  running is no longer lost, a sent copy from the outbox is filed in the
+  server's own Sent folder, an undo during the send can no longer claim to
+  have taken back a message that goes anyway, and two draft saves close
+  together leave one copy on the server.
 - The applications menu lists the app as Envelope, not "Mail", and files it
   under Office next to Slate and Circle. It was under Network, which COSMIC's
   app library has no folder for.
@@ -66,6 +71,9 @@ All notable changes to this project are documented here. The format follows
   making a second local copy beside it.
 - A filter rule needs an action before it can be added; one without matched
   mail and did nothing.
+- A message the server refuses for good — a recipient it will not take,
+  credentials it rejects — stays in the composer with the server's reason,
+  and is not queued to be refused again on every retry.
 
 ## [1.1.0] - 2026-09-22
 

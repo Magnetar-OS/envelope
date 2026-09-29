@@ -409,7 +409,7 @@ pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
     let pass = pass(connection, options)?;
 
     let mut report = SyncReport {
-        sent: pass.sent,
+        sent: pass.sent.len(),
         // Sends the outbox has given up on need a person, the same as a push
         // the flag queue has given up on.
         stuck: pass.given_up,
@@ -483,7 +483,7 @@ fn pass_held(
     .map_err(|why| why.to_string())?;
     // Whatever the drain sent, the messages those replies answered are marked
     // now — the same as an immediate send does.
-    if let Err(why) = settle_answered(connection) {
+    if let Err(why) = settle_answered(connection, &report.sent) {
         tracing::warn!(%why, "sent replies could not mark what they answered");
     }
     Ok(report)
@@ -598,7 +598,7 @@ pub fn drain_due(connections: &[Connection], now_ms: i64) -> Drained {
         let outcome = has_due_sends(connection, now_ms).then(|| pass_held(connection, options));
         match outcome {
             Some(Ok(report)) => {
-                drained.sent += report.sent;
+                drained.sent += report.sent.len();
                 drained.given_up += report.given_up;
             }
             Some(Err(why)) => drained
@@ -678,8 +678,8 @@ pub fn discard_queued(connection: &Connection, id: &str) -> Result<(), String> {
 /// The outbox holds a message and nothing about where it came from, so the
 /// "mark the original answered" half of a send the grace delay or Send later
 /// put in the queue is kept here, beside the outbox. [`settle_answered`]
-/// applies it once the id has left the queue by being sent; taking the send
-/// back or discarding it drops it instead.
+/// applies it once a drain reports the id sent; taking the send back or
+/// discarding it drops it instead.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct AnsweringState {
     #[serde(default)]
@@ -764,35 +764,21 @@ fn take_answering(connection: &Connection, id: &str) -> Result<Option<(Folder, u
     Ok(Some((folder, answers.uid)))
 }
 
-/// Marks answered every message whose queued reply has gone.
+/// Marks answered every message a reply in `sent` answered.
 ///
-/// A record whose id is still in the outbox is waiting, or has been given up
-/// on and waits for the user — either way nothing went. One whose id has
-/// left was sent: a take-back and a discard remove the record along with
-/// the message. Run after every pass that drains the outbox, whichever
-/// engine's drain sent the message. Returns how many were marked.
-pub fn settle_answered(connection: &Connection) -> Result<usize, String> {
+/// `sent` is the outbox ids a drain reports as gone, which is the only
+/// evidence of a send: a message still listed may be waiting, being sent
+/// right now, or given up on. Run after every pass that drains the outbox,
+/// whichever engine's drain sent the message. Returns how many were marked.
+pub fn settle_answered(connection: &Connection, sent: &[String]) -> Result<usize, String> {
     let mut state = read_answering(connection)?;
-    if state.replies.is_empty() {
-        return Ok(0);
-    }
-    let waiting: std::collections::HashSet<String> = list_outbox(connection)?
-        .into_iter()
-        .map(|queued| queued.id)
-        .collect();
-    let gone: Vec<String> = state
-        .replies
-        .keys()
-        .filter(|id| !waiting.contains(*id))
-        .cloned()
-        .collect();
-    if gone.is_empty() {
+    if state.replies.is_empty() || sent.is_empty() {
         return Ok(0);
     }
 
     let mut marked = 0;
-    for id in gone {
-        let Some(answers) = state.replies.remove(&id) else {
+    for id in sent {
+        let Some(answers) = state.replies.remove(id) else {
             continue;
         };
         let folder = cosmic_pim_mail::folder::from_list_entry(
@@ -1062,9 +1048,9 @@ pub fn schedule_send(
     outbox(connection)?
         .schedule(&id, draft, not_before_ms)
         .map_err(|why| why.to_string())?;
-    // After the message is queued, so a record never exists for a queue entry
-    // that does not — which settle_answered would read as sent. Not fatal:
-    // the reply still goes, and saying the send failed would invite a second.
+    // After the message is queued: a record for an entry that never made it
+    // would only sit here. Not fatal: the reply still goes, and saying the
+    // send failed would invite a second.
     if let Some(answering) = answering
         && let Err(why) = remember_answering(connection, &id, answering)
     {
@@ -1850,13 +1836,15 @@ pub fn unmove(
 ) -> Result<(), String> {
     let mut store =
         MaildirStore::open(connection.mailbox_path(folder)).map_err(|why| why.to_string())?;
-    let pending: std::collections::HashSet<u32> =
-        store.pending().iter().map(|entry| entry.op.uid()).collect();
+    let pending = store.pending().map_err(|why| why.to_string())?;
 
     let mut departed = 0usize;
     for message in messages {
-        if pending.contains(&message.uid) {
-            store.resolve(message.uid).map_err(|why| why.to_string())?;
+        // The queued move for this message, and only that entry: the queue
+        // holds one per message, and settling by the operation rather than
+        // the UID cannot take a newer one with it.
+        if let Some(entry) = pending.iter().find(|entry| entry.op.uid() == message.uid) {
+            store.resolve(entry).map_err(|why| why.to_string())?;
             store.upsert(message).map_err(|why| why.to_string())?;
         } else {
             departed += 1;
@@ -2375,6 +2363,11 @@ pub enum Sent {
     /// because the two need different words: one says "try again", the other
     /// says "check before you do".
     Uncertain(String),
+    /// Refused for good: bad credentials, a recipient the server will not
+    /// take, a message too large. Nothing was delivered, and sending the same
+    /// thing again gets the same answer — so it is not queued, and the draft
+    /// stays in the composer for the user to change.
+    Rejected(String),
 }
 
 /// Sends a draft, files the Sent copy, and marks the message it answers.
@@ -2435,6 +2428,7 @@ pub fn send(
             };
         }
         Outcome::Ambiguous(why) => return Sent::Uncertain(why.to_string()),
+        Outcome::Rejected(why) => return Sent::Rejected(why.to_string()),
     };
 
     // Marking the original answered is local and queued, so it works offline

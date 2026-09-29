@@ -255,7 +255,7 @@ fn a_flag_change_is_applied_locally_and_queued_for_the_server() {
         "the change never reached the file"
     );
     assert_eq!(
-        store.pending().len(),
+        store.pending().expect("pending").len(),
         1,
         "the change will never reach the server"
     );
@@ -286,7 +286,10 @@ fn a_flag_change_that_changes_nothing_queues_nothing() {
     .expect("set flags");
 
     let store = MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox())).expect("open");
-    assert!(store.pending().is_empty(), "an unchanged flag was queued");
+    assert!(
+        store.pending().expect("pending").is_empty(),
+        "an unchanged flag was queued"
+    );
 }
 
 #[test]
@@ -323,7 +326,7 @@ fn archiving_a_conversation_takes_all_of_it_and_queues_the_move() {
         "the archived conversation is still in the inbox"
     );
     assert_eq!(
-        store.pending().len(),
+        store.pending().expect("pending").len(),
         2,
         "the move will never reach the server"
     );
@@ -331,7 +334,7 @@ fn archiving_a_conversation_takes_all_of_it_and_queues_the_move() {
     // And it survives a restart, because an archive made on a train has to.
     let reopened =
         MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox())).expect("reopen");
-    assert_eq!(reopened.pending().len(), 2);
+    assert_eq!(reopened.pending().expect("pending").len(), 2);
 }
 
 #[test]
@@ -962,7 +965,7 @@ fn a_flag_change_reports_what_it_replaced_and_restore_puts_it_back() {
     );
     // Both the change and its reverse went through the queue, so the server
     // ends where the user did.
-    assert!(!store.pending().is_empty());
+    assert!(!store.pending().expect("pending").is_empty());
 }
 
 #[test]
@@ -988,7 +991,7 @@ fn an_unmove_before_the_drain_is_exact() {
         let store =
             MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox())).expect("open");
         assert!(store.state().expect("state").entries.is_empty());
-        assert_eq!(store.pending().len(), 1);
+        assert_eq!(store.pending().expect("pending").len(), 1);
     }
 
     mail::unmove(&connection, &inbox(), &taken).expect("unmove");
@@ -999,7 +1002,7 @@ fn an_unmove_before_the_drain_is_exact() {
         "the message did not come back"
     );
     assert!(
-        store.pending().is_empty(),
+        store.pending().expect("pending").is_empty(),
         "the cancelled move is still queued and will archive it again"
     );
     let bytes = store.raw(1).expect("read").expect("bytes");
@@ -1029,7 +1032,8 @@ fn an_unmove_after_the_drain_says_so_instead_of_pretending() {
     {
         let mut store =
             MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox())).expect("open");
-        store.resolve(1).expect("resolve");
+        let pushed = store.pending().expect("pending").remove(0);
+        store.resolve(&pushed).expect("resolve");
     }
 
     let error = mail::unmove(&connection, &inbox(), &taken).expect_err("must refuse");
@@ -1201,7 +1205,7 @@ fn a_label_becomes_a_chip_a_queued_write_and_a_search_filter() {
     // The write is queued for the server, carrying the keyword bit.
     let store =
         MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox())).expect("maildir");
-    let pending = store.pending();
+    let pending = store.pending().expect("pending");
     assert_eq!(pending.len(), 1, "no write reached the queue");
     assert_eq!(store.keywords(), vec!["Travel"]);
 
@@ -1340,7 +1344,11 @@ fn snoozing_never_takes_a_message_that_nothing_could_bring_back() {
         "a message with no Message-ID was put away where nothing brings it back"
     );
     assert!(
-        store.pending().iter().all(|entry| entry.op.uid() != 2),
+        store
+            .pending()
+            .expect("pending")
+            .iter()
+            .all(|entry| entry.op.uid() != 2),
         "a move was queued for a message the schedule cannot wake"
     );
 }
@@ -1520,7 +1528,10 @@ fn snoozing_is_refused_where_nothing_could_wake_the_mail() {
         store.raw(1).expect("read").is_some(),
         "the message left the inbox"
     );
-    assert!(store.pending().is_empty(), "a move was queued anyway");
+    assert!(
+        store.pending().expect("pending").is_empty(),
+        "a move was queued anyway"
+    );
 }
 
 /// Ada's message, delivered, and a reply to it scheduled in the outbox.
@@ -1556,23 +1567,31 @@ fn a_reply_that_leaves_the_outbox_marks_what_it_answers() {
     let root = dir.path();
     let (connection, _) = scheduled_reply(root);
 
-    mail::settle_answered(&connection).expect("settle while queued");
+    mail::settle_answered(&connection, &[]).expect("settle while queued");
     assert!(!is_answered(root, 1), "marked before the reply went");
 
     let drained = mail::outbox(&connection)
         .expect("outbox")
         .drain_with(|_| Outcome::Sent(b"sent".to_vec()), i64::MAX)
         .expect("drain");
-    assert_eq!(drained.sent.len(), 1);
+    let sent: Vec<String> = drained.sent.into_iter().map(|(id, _)| id).collect();
+    assert_eq!(sent.len(), 1);
 
-    assert_eq!(mail::settle_answered(&connection).expect("settle"), 1);
+    assert_eq!(
+        mail::settle_answered(&connection, &sent).expect("settle"),
+        1
+    );
     assert!(
         is_answered(root, 1),
         "the reply went and its original is unmarked"
     );
     let store = MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox())).expect("open");
     assert!(
-        store.pending().iter().any(|entry| entry.op.uid() == 1),
+        store
+            .pending()
+            .expect("pending")
+            .iter()
+            .any(|entry| entry.op.uid() == 1),
         "the mark is local only; the server never hears of it"
     );
 }
@@ -1592,7 +1611,7 @@ fn a_reply_taken_back_marks_nothing_and_still_knows_what_it_answers() {
         "the reopened reply would no longer mark its original when sent"
     );
 
-    mail::settle_answered(&connection).expect("settle");
+    mail::settle_answered(&connection, &[id]).expect("settle");
     assert!(
         !is_answered(root, 1),
         "a reply that never went marked its original"
@@ -1606,7 +1625,7 @@ fn a_discarded_reply_marks_nothing() {
     let (connection, id) = scheduled_reply(root);
 
     mail::discard_queued(&connection, &id).expect("discard");
-    mail::settle_answered(&connection).expect("settle");
+    mail::settle_answered(&connection, &[id]).expect("settle");
     assert!(
         !is_answered(root, 1),
         "a discarded reply marked its original"
@@ -1621,14 +1640,41 @@ fn a_reply_that_went_after_a_renumbering_marks_no_stranger() {
     let (connection, _) = scheduled_reply(root);
     renumber(root, 99, &[1]);
 
-    mail::outbox(&connection)
+    let drained = mail::outbox(&connection)
         .expect("outbox")
         .drain_with(|_| Outcome::Sent(b"sent".to_vec()), i64::MAX)
         .expect("drain");
-    assert_eq!(mail::settle_answered(&connection).expect("settle"), 0);
+    let sent: Vec<String> = drained.sent.into_iter().map(|(id, _)| id).collect();
+    assert_eq!(
+        mail::settle_answered(&connection, &sent).expect("settle"),
+        0
+    );
     assert!(
         !is_answered(root, 1),
         "a renumbered message was marked answered"
+    );
+}
+
+#[test]
+fn a_reply_that_left_the_queue_without_being_sent_marks_nothing() {
+    // Only the drain's list of sent ids is evidence of a send. The old
+    // bookkeeping read "no longer queued" as "sent", so a queue entry that
+    // vanished any other way marked the original answered anyway.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let (connection, id) = scheduled_reply(root);
+    std::fs::remove_dir_all(root.join(ACCOUNT).join(".outbox")).expect("lose the queue");
+
+    assert_eq!(mail::settle_answered(&connection, &[]).expect("settle"), 0);
+    assert!(
+        !is_answered(root, 1),
+        "a reply nobody sent marked its original"
+    );
+
+    // And the record is still there for the send that does go.
+    assert_eq!(
+        mail::settle_answered(&connection, &[id]).expect("settle"),
+        1
     );
 }
 
