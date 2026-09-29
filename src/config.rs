@@ -131,6 +131,11 @@ impl Config {
     }
 }
 
+#[allow(clippy::cast_precision_loss, reason = "a column width in pixels")]
+fn clamp(value: u32, range: std::ops::RangeInclusive<u32>) -> f32 {
+    value.clamp(*range.start(), *range.end()) as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,9 +177,4 @@ mod tests {
         };
         assert_eq!(config.poll_interval().as_secs(), 900);
     }
-}
-
-#[allow(clippy::cast_precision_loss, reason = "a column width in pixels")]
-fn clamp(value: u32, range: std::ops::RangeInclusive<u32>) -> f32 {
-    value.clamp(*range.start(), *range.end()) as f32
 }
