@@ -453,11 +453,12 @@ pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
 /// One account's substrate pass, one at a time per account, followed by the
 /// bookkeeping every drain of its outbox needs.
 ///
-/// One at a time because two passes over one account race twice over: both
-/// drain the outbox, and the outbox does not claim a message before sending
-/// it, so a message due for both goes out twice; and both rewrite the same
-/// mailbox sidecars. The foreground sync of the selected account and the
-/// background drain of every account ([`drain_due`]) meet here.
+/// One at a time so the foreground sync of the selected account and the
+/// background drain of every account ([`drain_due`]) do not both run a full
+/// pass over one account when one would do: the drain waits, re-checks, and
+/// finds the sync already sent what was due. Not a guard against sending
+/// twice — the outbox claims a message before sending it, and the maildir
+/// sidecars merge under their own lock.
 fn pass(
     connection: &Connection,
     options: SyncOptions,
@@ -866,15 +867,6 @@ pub fn sweep_drafts(
     if !is_imap {
         return Ok(None);
     }
-
-    // One sweep per account at a time, and not during a sync pass. A sweep
-    // fires after every save, discard, send and sync, so two overlap easily;
-    // both saw the same dirty draft, both appended it, and each retired only
-    // the server copies it knew of — leaving the duplicate the mirror exists
-    // to prevent. Taken before the dirty check, so the second sweep sees what
-    // the first one did.
-    let lock = account_lock(&connection.account_id);
-    let _held = hold(&lock);
 
     let store = drafts(connection)?;
     let dirty = store.dirty().map_err(|why| why.to_string())?;
@@ -2644,72 +2636,5 @@ mod tests {
         // A spacer table with no words in it is not worth a document; the
         // reader shows the extracted text instead.
         assert!(body_document(&html_message("<table><tr><td></td></tr></table>")).is_none());
-    }
-
-    /// An account over `root`, with no server behind it.
-    fn offline(root: &std::path::Path) -> Connection {
-        let mut account = Account::new("Test", "https://dav.example/", "me@example.com");
-        account.mail = Some(MailEndpoint::tls("unused.invalid"));
-        let me = Mailbox {
-            name: None,
-            address: "me@example.com".into(),
-        };
-        Connection {
-            account_id: account.id.clone(),
-            account,
-            endpoint: Endpoint {
-                host: "unused.invalid".into(),
-                port: 993,
-                security: Security::Tls,
-                username: "me".into(),
-            },
-            submission: Some(Submission {
-                endpoint: SmtpEndpoint {
-                    host: "unused.invalid".into(),
-                    port: 465,
-                    security: Security::Tls,
-                    username: "me".into(),
-                },
-                identity: me.clone(),
-            }),
-            identities: vec![me],
-            credentials: Credentials::Password(String::new()),
-            root: root.to_path_buf(),
-            index_path: root.join("index.sqlite"),
-        }
-    }
-
-    #[test]
-    fn a_draft_sweep_waits_while_its_account_is_busy() {
-        // Sweeps fire after every save, discard, send and sync, so two often
-        // overlap. Both saw the same dirty draft, both appended it, and each
-        // retired only the copies it knew of: a duplicate on the server, the
-        // one thing the mirror exists to prevent. A sweep now takes the
-        // account's turn, as a sync pass does.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let connection = offline(dir.path());
-        let mut draft = Draft::new(connection.identities[0].clone());
-        draft.subject = "Dirty".into();
-        save_draft(&connection, None, &draft).expect("save");
-
-        let lock = account_lock(&connection.account_id);
-        let busy = hold(&lock);
-        let (done, finished) = std::sync::mpsc::channel();
-        let sweeping = connection.clone();
-        std::thread::spawn(move || {
-            let _ = sweep_drafts(&sweeping, &[]);
-            let _ = done.send(());
-        });
-
-        assert!(
-            finished
-                .recv_timeout(std::time::Duration::from_millis(300))
-                .is_err(),
-            "the sweep ran while another held the account"
-        );
-        drop(busy);
-        finished
-            .recv_timeout(std::time::Duration::from_secs(60))
-            .expect("the sweep went ahead once the account was free");
     }
 }
