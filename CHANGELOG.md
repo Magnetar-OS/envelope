@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Rebuilt against the current COSMIC libraries (libcosmic `03d7dcb`).
 - Built against cosmic-ext-nib 1.2.0: links in the reader open on click, only safe link schemes survive from HTML mail, and deeply nested messages can no longer abort the app.
 - Built against cosmic-pim 2: a flag change or move made while a sync is
   running is no longer lost, a sent copy from the outbox is filed in the
