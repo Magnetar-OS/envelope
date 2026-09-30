@@ -1821,3 +1821,224 @@ fn a_draft_whose_record_cannot_be_read_is_not_adopted_as_a_second_one() {
         .count();
     assert_eq!(count, 1, "the mirror was adopted as a second record");
 }
+
+/// A submission server on this machine that accepts every message it is
+/// given, session after session, for as long as the test runs.
+fn accepting_smtp() -> u16 {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut out = stream.try_clone().expect("clone");
+            let mut reader = BufReader::new(stream);
+            let _ = write!(out, "220 smtp.test ESMTP\r\n");
+            let mut in_data = false;
+            let mut line = String::new();
+            while reader.read_line(&mut line).is_ok_and(|n| n > 0) {
+                let command = line.trim_end().to_ascii_uppercase();
+                line.clear();
+                let reply = if in_data {
+                    if command != "." {
+                        continue;
+                    }
+                    in_data = false;
+                    "250 queued"
+                } else if command.starts_with("EHLO") {
+                    // AUTH PLAIN, so a password can be given without TLS.
+                    "250-smtp.test\r\n250 AUTH PLAIN LOGIN"
+                } else if command.starts_with("AUTH") {
+                    "235 ok"
+                } else if command == "DATA" {
+                    in_data = true;
+                    "354 go ahead"
+                } else if command == "QUIT" {
+                    let _ = write!(out, "221 bye\r\n");
+                    break;
+                } else {
+                    "250 ok"
+                };
+                let _ = write!(out, "{reply}\r\n");
+            }
+        }
+    });
+    port
+}
+
+/// A POP3 server on this machine with an empty mailbox.
+fn empty_pop3() -> u16 {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut out = stream.try_clone().expect("clone");
+            let mut reader = BufReader::new(stream);
+            let _ = write!(out, "+OK pop3.test ready\r\n");
+            let mut line = String::new();
+            while reader.read_line(&mut line).is_ok_and(|n| n > 0) {
+                let command = line.trim_end().to_ascii_uppercase();
+                line.clear();
+                let reply = match command.as_str() {
+                    // No CAPA: the client assumes UIDL, as for an old server.
+                    "CAPA" => "-ERR no",
+                    "UIDL" => "+OK\r\n.",
+                    "QUIT" => {
+                        let _ = write!(out, "+OK bye\r\n");
+                        break;
+                    }
+                    _ => "+OK",
+                };
+                let _ = write!(out, "{reply}\r\n");
+            }
+        }
+    });
+    port
+}
+
+/// A POP3 account submitting to `smtp` and reading from `pop3` on this
+/// machine. Port 1 refuses: the server is down.
+fn pop3_connection(root: &std::path::Path, smtp: u16, pop3: u16) -> Connection {
+    let mut connection = connection(root);
+    connection.account.id = ACCOUNT.into();
+    connection.credentials = cosmic_pim_mail::sasl::Credentials::Password("pw".into());
+    let endpoint = connection.account.mail.as_mut().expect("mail");
+    endpoint.protocol = cosmic_pim_accounts::MailProtocol::Pop3;
+    endpoint.pop3_host = "127.0.0.1".into();
+    endpoint.pop3_port = pop3;
+    endpoint.pop3_transport = cosmic_pim_accounts::Transport::Plaintext;
+    endpoint.smtp_host = "127.0.0.1".into();
+    endpoint.smtp_port = smtp;
+    endpoint.smtp_transport = cosmic_pim_accounts::Transport::Plaintext;
+    let submission = connection.submission.as_mut().expect("submission");
+    submission.endpoint.host = "127.0.0.1".into();
+    submission.endpoint.port = smtp;
+    submission.endpoint.security = Security::Plaintext;
+    connection
+}
+
+fn local_sent() -> Folder {
+    folder::from_list_entry("Sent", Some('/'), &[])
+}
+
+/// What the account's Sent maildir on this machine holds: each message's
+/// flags and bytes.
+fn filed_in_sent(root: &std::path::Path) -> Vec<(Flags, String)> {
+    let store =
+        MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &local_sent())).expect("open Sent");
+    store
+        .state()
+        .expect("state")
+        .entries
+        .into_iter()
+        .map(|(uid, flags)| {
+            let raw = store.raw(uid).expect("read").expect("held");
+            (flags, String::from_utf8(raw).expect("utf-8"))
+        })
+        .collect()
+}
+
+/// A reply to Ada's message 1, with a blind copy, scheduled on `connection`.
+fn scheduled_pop3_reply(root: &std::path::Path, connection: &Connection) -> String {
+    deliver(root, &[(1, &from_ada(1), Flags::default())]);
+    let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "me@example.com".into(),
+    });
+    draft.to.push(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "ada@example.com".into(),
+    });
+    draft.bcc.push(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "archive@example.com".into(),
+    });
+    draft.subject = "Re: Note 1".into();
+    mail::schedule_send(connection, None, &draft, 0, Some(&(inbox(), 1))).expect("schedule")
+}
+
+#[test]
+fn a_pop3_send_from_the_outbox_is_filed_read_in_sent_on_this_machine() {
+    // POP3 has no Sent folder on the server, so a drained send was kept
+    // nowhere at all: gone from the outbox, in no folder.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let connection = pop3_connection(root, accepting_smtp(), 1);
+    let id = scheduled_pop3_reply(root, &connection);
+
+    let drained = mail::drain_due(std::slice::from_ref(&connection), 1_000);
+    assert!(drained.failures.is_empty(), "{:?}", drained.failures);
+    assert_eq!(drained.sent, 1);
+
+    let filed = filed_in_sent(root);
+    assert_eq!(filed.len(), 1, "the sent message was not filed");
+    let (flags, raw) = &filed[0];
+    assert!(flags.seen, "the sender's own copy arrived unread");
+    assert!(
+        raw.contains(&format!("Message-ID: <{id}@example.com>")),
+        "the copy is not the message that went:\n{raw}"
+    );
+    assert!(raw.contains("archive@example.com"), "the copy lost its Bcc");
+    // The drain's report is what marks the original answered, too.
+    assert!(
+        is_answered(root, 1),
+        "the reply went and its original is unmarked"
+    );
+}
+
+#[test]
+fn a_pop3_pass_files_what_it_sent_even_when_the_pop3_server_is_down() {
+    // The pass sends before it reaches POP3; when POP3 then fails, the pass
+    // is an error and its report of what went is lost with it.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let connection = pop3_connection(root, accepting_smtp(), 1);
+    scheduled_pop3_reply(root, &connection);
+
+    assert!(mail::sync(&connection, 1).is_err(), "POP3 is down");
+    assert!(
+        mail::list_outbox(&connection).expect("list").is_empty(),
+        "not sent"
+    );
+    assert_eq!(filed_in_sent(root).len(), 1, "sent, and filed nowhere");
+    assert!(is_answered(root, 1), "sent, and its original is unmarked");
+}
+
+#[test]
+fn a_pop3_account_lists_the_sent_folder_its_mail_is_filed_in() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let connection = pop3_connection(dir.path(), accepting_smtp(), empty_pop3());
+
+    let report = mail::sync(&connection, 1).expect("sync");
+    let sent = report
+        .folders
+        .iter()
+        .find(|folder| folder.wire_name == "Sent")
+        .expect("a POP3 account's Sent folder is not listed");
+    assert_eq!(sent.special_use, Some(folder::SpecialUse::Sent));
+}
+
+#[test]
+fn a_pop3_send_without_the_outbox_is_filed_in_sent_too() {
+    // With the undo grace off a message is sent at once, not queued; its
+    // copy goes to the same place.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let connection = pop3_connection(root, accepting_smtp(), 1);
+    let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "me@example.com".into(),
+    });
+    draft.to.push(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "ada@example.com".into(),
+    });
+    draft.subject = "Now".into();
+
+    let sent = mail::send(&connection, &draft, &[inbox()], None, None);
+    assert!(matches!(sent, mail::Sent::Ok { filed: true }), "{sent:?}");
+    let filed = filed_in_sent(root);
+    assert_eq!(filed.len(), 1);
+    assert!(filed[0].0.seen);
+    assert!(filed[0].1.contains("Subject: Now"));
+}

@@ -18,6 +18,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- What a POP3 account sends is kept: POP3 servers have no Sent folder, so
+  the copy is filed, read, in a Sent folder on this machine, listed with the
+  inbox. A sent message used to be kept nowhere.
 - "Open in calendar" tells Slate who the message was from, so Slate can
   refuse an invitation or a cancellation that was not mailed by the
   meeting's organizer.

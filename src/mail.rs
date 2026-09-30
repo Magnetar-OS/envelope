@@ -31,7 +31,7 @@ use cosmic_pim_mail::push::{PushOp, PushQueue};
 use cosmic_pim_mail::sasl::Credentials;
 use cosmic_pim_mail::smtp::{self, Outcome, SmtpEndpoint};
 use cosmic_pim_mail::snooze;
-use cosmic_pim_mail::store::{MailStore, RemoteMessage};
+use cosmic_pim_mail::store::{Cursor, MailStore, RemoteMessage};
 
 /// How often a cycle does the full-mailbox reconciliation pass.
 ///
@@ -482,6 +482,11 @@ pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
         }
         report.folders.push(folder);
     }
+    // A POP3 server has one mailbox. What the account sends is filed here
+    // instead, and the folder it is filed in is listed like any other.
+    if is_pop3(connection) {
+        report.folders.push(local_sent());
+    }
     cosmic_pim_mail::folder::sort_for_display(&mut report.folders);
 
     Ok(report)
@@ -503,7 +508,19 @@ fn pass(
     let lock = account_lock(&connection.account_id);
     let _held = hold(&lock);
     let credentials = fresh_credentials(connection)?;
-    let report = cosmic_pim_sync::sync_account_mail(
+
+    // A POP3 account's outbox is drained here, before its pass. The pass
+    // sends first too, but when the POP3 server then cannot be reached it
+    // returns an error, and the ids of what it sent go with it: those
+    // messages would be neither filed in Sent nor mark what they answered.
+    let drained = if is_pop3(connection) {
+        Some(drain_held(connection, &credentials, now_ms())?)
+    } else {
+        None
+    };
+
+    let kept = kept_for_sent(connection)?;
+    let mut report = cosmic_pim_sync::sync_account_mail(
         &connection.account,
         &credentials,
         &connection.root,
@@ -511,18 +528,117 @@ fn pass(
         now_ms(),
     )
     .map_err(|why| why.to_string())?;
-    after_sending(connection, &report.sent);
+    after_sending(connection, &report.sent, &kept);
+
+    if let Some(drained) = drained {
+        report.sent.splice(0..0, drained.sent);
+        report.given_up += drained.given_up;
+    }
     Ok(report)
 }
 
 /// What every send the outbox reports needs once it has gone, whichever
-/// drain sent it: `sent` is the outbox ids of a pass's or a drain's report.
-fn after_sending(connection: &Connection, sent: &[String]) {
+/// drain sent it: `sent` is the outbox ids of a pass's or a drain's report,
+/// and `kept` what [`kept_for_sent`] read before that drain.
+fn after_sending(connection: &Connection, sent: &[String], kept: &HashMap<String, Draft>) {
     // The messages those replies answered are marked now — the same as an
     // immediate send does.
     if let Err(why) = settle_answered(connection, sent) {
         tracing::warn!(%why, "sent replies could not mark what they answered");
     }
+    if !is_pop3(connection) {
+        return;
+    }
+    for id in sent {
+        let filed = kept
+            .get(id)
+            .ok_or_else(|| "it was queued after the outbox was read".to_owned())
+            .and_then(|draft| {
+                let bytes = draft
+                    .build(true)
+                    .map_err(|why| why.to_string())?
+                    .formatted();
+                file_in_local_sent(connection, &bytes)
+            });
+        if let Err(why) = filed {
+            tracing::warn!(id, %why, "a message was sent but not filed in Sent");
+        }
+    }
+}
+
+/// Whether the account reads its mail over POP3, whose server has no Sent
+/// folder.
+fn is_pop3(connection: &Connection) -> bool {
+    connection
+        .account
+        .mail
+        .as_ref()
+        .is_some_and(|mail| mail.protocol == MailProtocol::Pop3)
+}
+
+/// The folder a POP3 account's sent mail is filed in, on this machine only.
+fn local_sent() -> Folder {
+    cosmic_pim_mail::folder::from_list_entry("Sent", Some('/'), &[])
+}
+
+/// The queued messages a drain may send, by id, kept for filing their Sent
+/// copy where no server files one: a POP3 account's. Empty for every other
+/// protocol, whose drain files the copy itself.
+///
+/// Read before the drain because the drain reports only the ids of what went
+/// and removes each message from the queue as it goes.
+fn kept_for_sent(connection: &Connection) -> Result<HashMap<String, Draft>, String> {
+    if !is_pop3(connection) {
+        return Ok(HashMap::new());
+    }
+    Ok(list_outbox(connection)?
+        .into_iter()
+        .filter(Queued::is_live)
+        .map(|queued| (queued.id, queued.draft))
+        .collect())
+}
+
+/// Files a sent message, read, in the account's Sent maildir on this machine.
+///
+/// For POP3, which has no Sent folder on the server: without this, what a
+/// POP3 account sends is kept nowhere. The copy is rebuilt from the queued
+/// draft, so it carries the Message-ID that went (the queue fixes it) and
+/// keeps its Bcc, like every Sent copy; its Date is when it was rebuilt,
+/// within the same drain. No sync touches this folder, so the UID is this
+/// store's own next one, taken under a lock of its own.
+fn file_in_local_sent(connection: &Connection, raw: &[u8]) -> Result<(), String> {
+    static FILING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _held = hold(&FILING);
+    let mut store = MaildirStore::open(connection.mailbox_path(&local_sent()))
+        .map_err(|why| why.to_string())?;
+    let state = store.state().map_err(|why| why.to_string())?;
+    let uid = state
+        .entries
+        .keys()
+        .next_back()
+        .copied()
+        .unwrap_or(0)
+        .max(state.cursor.last_uid)
+        .checked_add(1)
+        .ok_or_else(|| "the local Sent folder has run out of message numbers".to_owned())?;
+    store
+        .upsert(&RemoteMessage {
+            uid,
+            flags: Flags {
+                seen: true,
+                ..Flags::default()
+            },
+            raw: raw.to_vec(),
+            internal_date_ms: now_ms(),
+        })
+        .map_err(|why| why.to_string())?;
+    store
+        .commit_cursor(Cursor {
+            uid_validity: cosmic_pim_mail::pop3::POP3_UID_VALIDITY,
+            last_uid: uid,
+            ..Cursor::default()
+        })
+        .map_err(|why| why.to_string())
 }
 
 /// Takes an account's lock. A poisoned lock only means another pass
@@ -636,7 +752,9 @@ pub fn drain_due(connections: &[Connection], now_ms: i64) -> Drained {
         if !has_due_sends(connection, now_ms) {
             continue;
         }
-        match drain_held(connection, now_ms) {
+        match fresh_credentials(connection)
+            .and_then(|credentials| drain_held(connection, &credentials, now_ms))
+        {
             Ok(report) => {
                 drained.sent += report.sent.len();
                 drained.given_up += report.given_up;
@@ -652,13 +770,14 @@ pub fn drain_due(connections: &[Connection], now_ms: i64) -> Drained {
 /// One account's outbox drain, for a caller holding the account's lock.
 fn drain_held(
     connection: &Connection,
+    credentials: &Credentials,
     now_ms: i64,
 ) -> Result<cosmic_pim_sync::DrainReport, String> {
-    let credentials = fresh_credentials(connection)?;
+    let kept = kept_for_sent(connection)?;
     let report =
-        cosmic_pim_sync::drain_outbox(&connection.account, &credentials, &connection.root, now_ms)
+        cosmic_pim_sync::drain_outbox(&connection.account, credentials, &connection.root, now_ms)
             .map_err(|why| why.to_string())?;
-    after_sending(connection, &report.sent);
+    after_sending(connection, &report.sent, &kept);
     Ok(report)
 }
 
@@ -2495,8 +2614,18 @@ pub fn send(
 ///
 /// Returns whether it landed. Most servers do not file SMTP-submitted mail
 /// themselves, so without this a sent message simply never appears anywhere the
-/// user can see it.
+/// user can see it. A POP3 account's server has no Sent folder, so its copy is
+/// filed in the one on this machine.
 fn file_to_sent(connection: &Connection, folders: &[Folder], raw: &[u8]) -> bool {
+    if is_pop3(connection) {
+        return match file_in_local_sent(connection, raw) {
+            Ok(()) => true,
+            Err(why) => {
+                tracing::warn!(%why, "the message was sent but the Sent copy was not filed");
+                false
+            }
+        };
+    }
     let Some(sent) = special(folders, SpecialUse::Sent) else {
         tracing::info!("the server has no Sent folder; the copy was not filed");
         return false;
