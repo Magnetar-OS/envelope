@@ -1691,21 +1691,16 @@ impl cosmic::Application for AppModel {
     ///
     /// Two uses, both the iMIP hand-off: outgoing calls to Slate ride it, and
     /// the mailer side of the contract — `SendSchedulingReply`, the method
-    /// Slate calls to queue a reply — is exported here, on the name the
-    /// connection already owns. An export that fails leaves Envelope a mailer
-    /// without the hand-off, which is the degraded mode the contract already
-    /// allows for; it is logged, not fatal.
+    /// Slate calls to queue a reply, on `Scheduling2` and `Scheduling1` —
+    /// is exported here, on the name the connection already owns. An export
+    /// that fails leaves Envelope a mailer without the hand-off, which is
+    /// the degraded mode the contract already allows for; it is logged, not
+    /// fatal.
     fn dbus_connection(&mut self, conn: zbus::Connection) -> Task<Self::Message> {
         self.dbus = Some(conn.clone());
         cosmic::iced::Task::future(async move {
-            if let Err(why) = conn
-                .object_server()
-                .at(
-                    crate::scheduling::ENVELOPE_PATH,
-                    crate::scheduling::Scheduling,
-                )
-                .await
-            {
+            let mailer = crate::scheduling::Mailer::live();
+            if let Err(why) = crate::scheduling::serve(&conn, mailer).await {
                 tracing::warn!(%why, "the scheduling interface could not be exported");
             }
         })
@@ -2254,9 +2249,13 @@ impl AppModel {
             Message::OpenInCalendar => {
                 // The account the invitation arrived in, which is the one a
                 // reply has to go out from — not whichever is selected now.
-                let Some((invitation, account_id)) = self.target().and_then(|target| {
-                    let invitation = target.opened?.invitation.clone()?;
-                    Some((invitation, target.connection.account_id.clone()))
+                let Some((invitation, account_id, sender)) = self.target().and_then(|target| {
+                    let opened = target.opened?;
+                    Some((
+                        opened.invitation.clone()?,
+                        target.connection.account_id.clone(),
+                        crate::scheduling::sender_of(&opened.message),
+                    ))
                 }) else {
                     return Task::none();
                 };
@@ -2266,8 +2265,13 @@ impl AppModel {
                 };
                 cosmic::task::future(async move {
                     Message::InvitationDelivered(
-                        crate::scheduling::deliver_invitation(&conn, invitation.ics, account_id)
-                            .await,
+                        crate::scheduling::deliver_invitation(
+                            &conn,
+                            invitation.ics,
+                            account_id,
+                            sender,
+                        )
+                        .await,
                     )
                 })
             }
@@ -6077,41 +6081,6 @@ mod tests {
         )
     }
 
-    /// An account's connection, over a maildir root with no server behind it.
-    fn connection_of(account_id: &str, root: &Path) -> Connection {
-        use cosmic_pim_mail::imap::{Endpoint, Security};
-        let address = format!("me@{account_id}.example");
-        let mut account = Account::new(account_id, "https://dav.example/", address.as_str());
-        account.mail = Some(MailEndpoint::tls("unused.invalid"));
-        let me = cosmic_pim_mail::Mailbox {
-            name: Some(format!("Me at {account_id}")),
-            address: address.clone(),
-        };
-        Connection {
-            account,
-            account_id: account_id.into(),
-            endpoint: Endpoint {
-                host: "unused.invalid".into(),
-                port: 993,
-                security: Security::Tls,
-                username: address.clone(),
-            },
-            submission: Some(mail::Submission {
-                endpoint: cosmic_pim_mail::smtp::SmtpEndpoint {
-                    host: "unused.invalid".into(),
-                    port: 465,
-                    security: Security::Tls,
-                    username: address,
-                },
-                identity: me.clone(),
-            }),
-            identities: vec![me],
-            credentials: cosmic_pim_mail::sasl::Credentials::Password(String::new()),
-            root: root.to_path_buf(),
-            index_path: root.join(format!("{account_id}.sqlite")),
-        }
-    }
-
     fn archive() -> Folder {
         let mut archive = folder("Archive");
         archive.special_use = Some(SpecialUse::Archive);
@@ -6120,7 +6089,7 @@ mod tests {
 
     fn scope_of(account_id: &str, root: &Path) -> Scope {
         Scope {
-            connection: connection_of(account_id, root),
+            connection: mail::offline_connection(account_id, root),
             folders: vec![folder("INBOX"), archive()],
         }
     }
@@ -6166,9 +6135,9 @@ mod tests {
     /// A model showing account `a`'s inbox with its one message open, and
     /// account `b` beside it in the same root.
     fn two_accounts(root: &Path) -> AppModel {
-        let a = connection_of("a", root);
+        let a = mail::offline_connection("a", root);
         deliver(&a, "for-a");
-        deliver(&connection_of("b", root), "for-b");
+        deliver(&mail::offline_connection("b", root), "for-b");
 
         let mut model = model();
         model.selected_account = Some("a".into());
@@ -6189,7 +6158,7 @@ mod tests {
         model.selected_account = Some("b".into());
         model.undo_stack.clear();
         model.clear_mailbox_state();
-        model.connection = Some(connection_of("b", root));
+        model.connection = Some(mail::offline_connection("b", root));
         model.folders = vec![folder("INBOX"), archive()];
     }
 
@@ -6214,11 +6183,11 @@ mod tests {
         let said = run(model.dispatch(Message::InWindow(id, Box::new(Message::Archive))));
 
         assert!(
-            !in_inbox(&connection_of("a", root)),
+            !in_inbox(&mail::offline_connection("a", root)),
             "a's message was not archived"
         );
         assert!(
-            in_inbox(&connection_of("b", root)),
+            in_inbox(&mail::offline_connection("b", root)),
             "the other account's message with the same UID was archived"
         );
 
@@ -6228,7 +6197,7 @@ mod tests {
         }
         let _ = run(model.undo());
         assert!(
-            in_inbox(&connection_of("a", root)),
+            in_inbox(&mail::offline_connection("a", root)),
             "the undo did not return a's message"
         );
     }
@@ -6245,10 +6214,14 @@ mod tests {
         let _ = run(model.dispatch(Message::InWindow(id, Box::new(Message::ToggleFlagged))));
 
         let flagged = |account: &str| {
-            mail::open(&connection_of(account, root), &folder("INBOX"), 1)
-                .expect("open")
-                .flags
-                .flagged
+            mail::open(
+                &mail::offline_connection(account, root),
+                &folder("INBOX"),
+                1,
+            )
+            .expect("open")
+            .flags
+            .flagged
         };
         assert!(flagged("a"), "a's message was not flagged");
         assert!(
@@ -6273,7 +6246,7 @@ mod tests {
         // The default grace delay, so the send is a scheduled one.
         let said = run(model.dispatch(Message::InWindow(id, Box::new(Message::ComposeSend))));
 
-        let a = connection_of("a", root);
+        let a = mail::offline_connection("a", root);
         let queued = mail::list_outbox(&a).expect("a's outbox");
         assert_eq!(
             queued.len(),
@@ -6282,7 +6255,7 @@ mod tests {
         );
         assert_eq!(queued[0].draft.from.address, "me@a.example");
         assert!(
-            mail::list_outbox(&connection_of("b", root))
+            mail::list_outbox(&mail::offline_connection("b", root))
                 .expect("b's outbox")
                 .is_empty(),
             "the reply was queued in the account the sidebar moved to"
@@ -6342,7 +6315,7 @@ mod tests {
             composer.error
         );
         assert!(
-            mail::list_outbox(&connection_of("a", root))
+            mail::list_outbox(&mail::offline_connection("a", root))
                 .expect("outbox")
                 .is_empty(),
             "a refused message was queued"
@@ -6361,14 +6334,14 @@ mod tests {
         let _ = run(model.dispatch(Message::InWindow(id, Box::new(Message::ComposeCancel))));
 
         assert_eq!(
-            mail::list_drafts(&connection_of("a", root))
+            mail::list_drafts(&mail::offline_connection("a", root))
                 .expect("a's drafts")
                 .len(),
             1,
             "the draft is not in its own account"
         );
         assert!(
-            mail::list_drafts(&connection_of("b", root))
+            mail::list_drafts(&mail::offline_connection("b", root))
                 .expect("b's drafts")
                 .is_empty(),
             "the draft was saved into the account the sidebar moved to"

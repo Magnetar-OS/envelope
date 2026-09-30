@@ -226,6 +226,43 @@ impl Connection {
     }
 }
 
+/// An account's connection, over a maildir root with no server behind it:
+/// `me@<account_id>.example`, for tests that queue, file and read real mail
+/// on disk.
+#[cfg(test)]
+pub(crate) fn offline_connection(account_id: &str, root: &std::path::Path) -> Connection {
+    let address = format!("me@{account_id}.example");
+    let mut account = Account::new(account_id, "https://dav.example/", address.as_str());
+    account.mail = Some(MailEndpoint::tls("unused.invalid"));
+    let me = Mailbox {
+        name: Some(format!("Me at {account_id}")),
+        address: address.clone(),
+    };
+    Connection {
+        account,
+        account_id: account_id.into(),
+        endpoint: Endpoint {
+            host: "unused.invalid".into(),
+            port: 993,
+            security: Security::Tls,
+            username: address.clone(),
+        },
+        submission: Some(Submission {
+            endpoint: SmtpEndpoint {
+                host: "unused.invalid".into(),
+                port: 465,
+                security: Security::Tls,
+                username: address,
+            },
+            identity: me.clone(),
+        }),
+        identities: vec![me],
+        credentials: Credentials::Password(String::new()),
+        root: root.to_path_buf(),
+        index_path: root.join(format!("{account_id}.sqlite")),
+    }
+}
+
 /// A provider somebody can sign in to with a browser.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignInProvider {

@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- "Open in calendar" tells Slate who the message was from, so Slate can
+  refuse an invitation or a cancellation that was not mailed by the
+  meeting's organizer.
+- The reply to an invitation goes out from the address the invitation was
+  sent to — an alias, when it reached one — instead of always from the
+  account's primary address.
+
 ## [1.2.0] - 2026-09-29
 
 ### Changed

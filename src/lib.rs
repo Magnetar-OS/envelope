@@ -32,6 +32,8 @@ pub mod i18n;
 pub mod mail;
 pub mod mailto;
 pub mod scheduling;
+#[cfg(test)]
+mod testbus;
 pub mod ui;
 
 /// Runs the application.
