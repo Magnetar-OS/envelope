@@ -5534,7 +5534,6 @@ impl AppModel {
         };
         // Through its own account's server, filed in its own account's Sent.
         let connection = composer.scope.connection.clone();
-        let folders = composer.scope.folders.clone();
         if composer.sending {
             return Task::none();
         }
@@ -5557,13 +5556,7 @@ impl AppModel {
 
         cosmic::task::future(async move {
             let sent = tokio::task::spawn_blocking(move || {
-                mail::send(
-                    &connection,
-                    &draft,
-                    &folders,
-                    answering,
-                    draft_id.as_deref(),
-                )
+                mail::send(&connection, &draft, answering, draft_id.as_deref())
             })
             .await
             .unwrap_or_else(|why| mail::Sent::Uncertain(why.to_string()));
@@ -5619,17 +5612,13 @@ impl AppModel {
         composer.sending = false;
         let scope = composer.scope.clone();
         match sent {
-            mail::Sent::Ok { filed } => {
+            mail::Sent::Ok => {
                 // The window goes only on success. A failed send that took the
                 // window and what the user wrote with it would be
                 // unforgivable, and is the whole reason the composer stays
                 // open below.
                 let closed = self.discard_composer();
-                self.say(if filed {
-                    fl!("sent")
-                } else {
-                    fl!("sent-not-filed")
-                });
+                self.say(fl!("sent"));
                 // The sweep retires the sent draft's server mirror, in the
                 // account it was sent from.
                 return Task::batch([closed, self.reload_drafts(), Self::sweep_drafts_of(scope)]);
@@ -5648,13 +5637,10 @@ impl AppModel {
             mail::Sent::Uncertain(why) => {
                 // Deliberately different words. "Try again" would be wrong
                 // advice here: the message may already have arrived, and the
-                // client must not be the thing that sends it twice.
+                // client must not be the thing that sends it twice. A refusal
+                // lands here too; its reason says so, and the composer stays
+                // so the message can change.
                 composer.error = Some(fl!("send-uncertain", reason = why));
-            }
-            mail::Sent::Rejected(why) => {
-                // Not "try again": the server answered, and the same message
-                // gets the same answer. The composer stays so it can change.
-                composer.error = Some(fl!("send-rejected", reason = why));
             }
         }
         Task::none()
@@ -6297,7 +6283,7 @@ mod tests {
 
         let _ = model.dispatch(Message::InWindow(
             id,
-            Box::new(Message::ComposeSent(Box::new(mail::Sent::Rejected(
+            Box::new(Message::ComposeSent(Box::new(mail::Sent::Uncertain(
                 "550 5.1.1 no such user".into(),
             )))),
         ));

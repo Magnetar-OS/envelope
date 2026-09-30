@@ -63,8 +63,10 @@ Envelope reads, threads, syncs, and sends. What works:
   writes made while offline.
 - **A reader** that shows what a human would actually see, and says what the
   message tried to do.
-- **Sending** — plain-text compose, reply, reply-all, and forward, over SMTP,
-  with the sent copy filed to Sent and the message it answers marked. A POP3
+- **Sending** — plain-text compose, reply, reply-all, and forward, through
+  the outbox whether or not an undo delay is set: over SMTP, or through the
+  Gmail and Microsoft Graph APIs for those accounts, with the sent copy filed
+  to Sent and the message it answers marked. A POP3
   server has no Sent folder, so a POP3 account's copy is filed in a Sent
   folder on this machine.
 - **`mailto:` links**, so Circle's "send a message" and Slate's attendee

@@ -29,7 +29,6 @@ use cosmic_pim_mail::model::{Flags, Mailbox, Message};
 use cosmic_pim_mail::outbox::{Outbox, Queued};
 use cosmic_pim_mail::push::{PushOp, PushQueue};
 use cosmic_pim_mail::sasl::Credentials;
-use cosmic_pim_mail::smtp::{self, Outcome, SmtpEndpoint};
 use cosmic_pim_mail::snooze;
 use cosmic_pim_mail::store::{Cursor, MailStore, RemoteMessage};
 
@@ -108,7 +107,7 @@ pub struct Connection {
     pub account: Account,
     pub account_id: String,
     pub endpoint: Endpoint,
-    /// Where to submit outgoing mail. `None` when the account has no usable
+    /// Who outgoing mail is from. `None` when the account has no usable
     /// From identity — a composer that cannot say who a message is from is a
     /// composer that cannot send, and offering one anyway wastes what the user
     /// typed.
@@ -129,10 +128,11 @@ pub struct Connection {
     pub index_path: PathBuf,
 }
 
-/// Everything needed to send, as opposed to read.
+/// Everything needed to send, as opposed to read. Where a message is
+/// submitted is the account's protocol's business: the outbox drain reads it
+/// from the account.
 #[derive(Debug, Clone)]
 pub struct Submission {
-    pub endpoint: SmtpEndpoint,
     /// Who mail is from. One credential serves both directions — SMTP AUTH uses
     /// the account's, whatever address is on the From line.
     pub identity: Mailbox,
@@ -183,12 +183,6 @@ impl Connection {
         };
 
         let submission = account.from_identity().map(|(name, address)| Submission {
-            endpoint: SmtpEndpoint {
-                host: mail.submission_host().to_owned(),
-                port: mail.smtp_port,
-                security: transport(mail.smtp_transport),
-                username: account.mail_username().to_owned(),
-            },
             identity: Mailbox {
                 name: Some(name).filter(|n| !n.trim().is_empty()),
                 address,
@@ -245,15 +239,9 @@ pub(crate) fn offline_connection(account_id: &str, root: &std::path::Path) -> Co
             host: "unused.invalid".into(),
             port: 993,
             security: Security::Tls,
-            username: address.clone(),
+            username: address,
         },
         submission: Some(Submission {
-            endpoint: SmtpEndpoint {
-                host: "unused.invalid".into(),
-                port: 465,
-                security: Security::Tls,
-                username: address,
-            },
             identity: me.clone(),
         }),
         identities: vec![me],
@@ -509,18 +497,11 @@ fn pass(
     let _held = hold(&lock);
     let credentials = fresh_credentials(connection)?;
 
-    // A POP3 account's outbox is drained here, before its pass. The pass
-    // sends first too, but when the POP3 server then cannot be reached it
-    // returns an error, and the ids of what it sent go with it: those
-    // messages would be neither filed in Sent nor mark what they answered.
-    let drained = if is_pop3(connection) {
-        Some(drain_held(connection, &credentials, now_ms())?)
-    } else {
-        None
-    };
-
+    // An error from the pass means it sent nothing. Once its drain has run,
+    // a later failure — a POP3 server that cannot be reached included — is
+    // that mailbox's outcome, and `sent` still holds what went.
     let kept = kept_for_sent(connection)?;
-    let mut report = cosmic_pim_sync::sync_account_mail(
+    let report = cosmic_pim_sync::sync_account_mail(
         &connection.account,
         &credentials,
         &connection.root,
@@ -529,11 +510,6 @@ fn pass(
     )
     .map_err(|why| why.to_string())?;
     after_sending(connection, &report.sent, &kept);
-
-    if let Some(drained) = drained {
-        report.sent.splice(0..0, drained.sent);
-        report.given_up += drained.given_up;
-    }
     Ok(report)
 }
 
@@ -541,8 +517,7 @@ fn pass(
 /// drain sent it: `sent` is the outbox ids of a pass's or a drain's report,
 /// and `kept` what [`kept_for_sent`] read before that drain.
 fn after_sending(connection: &Connection, sent: &[String], kept: &HashMap<String, Draft>) {
-    // The messages those replies answered are marked now — the same as an
-    // immediate send does.
+    // The messages those replies answered are marked now.
     if let Err(why) = settle_answered(connection, sent) {
         tracing::warn!(%why, "sent replies could not mark what they answered");
     }
@@ -1181,6 +1156,25 @@ pub fn schedule_send(
     not_before_ms: i64,
     answering: Option<&(Folder, u32)>,
 ) -> Result<String, String> {
+    let id = enqueue(connection, draft_id, draft, not_before_ms, answering)?;
+    if let Some(previous) = draft_id
+        && let Err(why) = delete_draft(connection, previous)
+    {
+        tracing::warn!(%why, "a scheduled message left its draft behind");
+    }
+    Ok(id)
+}
+
+/// Puts a message in the outbox, due at `not_before_ms`, remembering what it
+/// answers, and returns its queue id: the draft's own id when it has one.
+/// The draft record is the caller's to retire.
+fn enqueue(
+    connection: &Connection,
+    draft_id: Option<&str>,
+    draft: &Draft,
+    not_before_ms: i64,
+    answering: Option<&(Folder, u32)>,
+) -> Result<String, String> {
     let id = match draft_id.filter(|id| drafts::is_valid_id(id)) {
         Some(id) => id.to_owned(),
         None => drafts::new_id(now_ms()),
@@ -1194,12 +1188,7 @@ pub fn schedule_send(
     if let Some(answering) = answering
         && let Err(why) = remember_answering(connection, &id, answering)
     {
-        tracing::warn!(%why, "a scheduled reply will not mark the message it answers");
-    }
-    if let Some(previous) = draft_id
-        && let Err(why) = delete_draft(connection, previous)
-    {
-        tracing::warn!(%why, "a scheduled message left its draft behind");
+        tracing::warn!(%why, "a queued reply will not mark the message it answers");
     }
     Ok(id)
 }
@@ -2550,154 +2539,128 @@ fn transport(transport: Transport) -> Security {
 /// What happened to a send, as the composer needs to hear it.
 #[derive(Debug, Clone)]
 pub enum Sent {
-    /// Delivered, and filed to Sent if there was somewhere to file it.
-    Ok { filed: bool },
+    /// Delivered. The Sent copy went where the account's drain files it; a
+    /// copy that could not be filed is logged, as for every queued send.
+    Ok,
     /// Not delivered, but definitely not delivered — so it is in the outbox and
     /// will go out on its own.
     Queued,
     /// Definitely not delivered. The draft is intact and may be sent again.
     Failed(String),
-    /// It may or may not have been delivered.
+    /// Not delivered for certain: the server refused it, or the send broke off
+    /// where it may already have arrived. The outbox stops both the same way
+    /// and records only the reason, so the composer says the careful thing.
     ///
     /// Carried separately from [`Self::Failed`] all the way to the user,
     /// because the two need different words: one says "try again", the other
     /// says "check before you do".
     Uncertain(String),
-    /// Refused for good: bad credentials, a recipient the server will not
-    /// take, a message too large. Nothing was delivered, and sending the same
-    /// thing again gets the same answer — so it is not queued, and the draft
-    /// stays in the composer for the user to change.
-    Rejected(String),
 }
 
-/// Sends a draft, files the Sent copy, and marks the message it answers.
+/// Sends a draft now, with the undo grace off.
 ///
-/// Blocking, for a worker thread. Everything after the send itself is
-/// best-effort: a message that reached its recipients has succeeded, and
-/// reporting failure because the Sent copy could not be filed would be telling
-/// the user something untrue about the part they care about.
+/// The message goes through the outbox, due at once, and the account's drain
+/// sends it under the account's lock: the path every queued send takes. So
+/// each protocol submits and files its Sent copy its own way — SMTP and an
+/// IMAP APPEND for IMAP, SMTP and a JMAP upload for JMAP, SMTP and the Sent
+/// folder on this machine for POP3, the provider's own send (which files the
+/// copy itself) for Gmail and Graph — and the message it answers is marked
+/// once it goes, the same as for a queued reply.
+///
+/// What the drain left in the outbox says how it went. A send that failed
+/// for a reason that will pass stays queued. One the outbox stopped — refused,
+/// or perhaps delivered — or one the drain never reached is taken back out,
+/// so the composer that still holds it is its only copy, as before it was
+/// sent; its draft record is kept too.
+///
+/// Blocking, for a worker thread.
 pub fn send(
     connection: &Connection,
     draft: &Draft,
-    folders: &[Folder],
     answering: Option<(Folder, u32)>,
     draft_id: Option<&str>,
 ) -> Sent {
-    let Some(submission) = connection.submission.as_ref() else {
-        return Sent::Failed("this account has no From address".into());
-    };
-
+    let lock = account_lock(&connection.account_id);
+    let _held = hold(&lock);
     let credentials = match fresh_credentials(connection) {
         Ok(credentials) => credentials,
         Err(why) => return Sent::Failed(why),
     };
-    let filed_bytes = match smtp::send(&submission.endpoint, &credentials, draft) {
-        Outcome::Sent(bytes) => bytes,
-        // Definitely not delivered, so it can wait for the network rather than
-        // for the user. An ambiguous failure is not queued — it may already
-        // have arrived, and the queue would send it twice.
-        outcome @ Outcome::NotSent(_) => {
-            let id = match draft_id.filter(|id| drafts::is_valid_id(id)) {
-                Some(id) => id.to_owned(),
-                None => drafts::new_id(now_ms()),
-            };
-            return match outbox(connection).and_then(|outbox| {
-                outbox
-                    .queue(&id, draft, &outcome, now_ms())
-                    .map_err(|why| why.to_string())
-            }) {
-                // The draft becomes the queued message; leaving both would show
-                // it twice and send it once.
-                Ok(()) => {
-                    // The retry is a send like any other, and marks what it
-                    // answers when it goes.
-                    if let Some(answering) = answering.as_ref()
-                        && let Err(why) = remember_answering(connection, &id, answering)
-                    {
-                        tracing::warn!(%why, "a queued reply will not mark the message it answers");
-                    }
-                    if let Some(previous) = draft_id
-                        && let Err(why) = delete_draft(connection, previous)
-                    {
-                        tracing::warn!(%why, "a queued message left its draft behind");
-                    }
-                    Sent::Queued
-                }
-                Err(why) => Sent::Failed(why),
-            };
-        }
-        Outcome::Ambiguous(why) => return Sent::Uncertain(why.to_string()),
-        Outcome::Rejected(why) => return Sent::Rejected(why.to_string()),
+    let now = now_ms();
+    let id = match enqueue(connection, draft_id, draft, now, answering.as_ref()) {
+        Ok(id) => id,
+        Err(why) => return Sent::Failed(why),
     };
+    let sent = settle_send(connection, &id, drain_held(connection, &credentials, now));
 
-    // Marking the original answered is local and queued, so it works offline
-    // and survives a restart — the same path every other flag change takes.
-    if let Some((folder, uid)) = answering
-        && let Err(why) = set_flags(connection, &folder, &[uid], |flags| Flags {
-            answered: true,
-            ..flags
-        })
+    // Once the message is the outbox's or the recipients': leaving the draft
+    // as well would show it twice and send it once.
+    if matches!(sent, Sent::Ok | Sent::Queued)
+        && let Some(previous) = draft_id
+        && let Err(why) = delete_draft(connection, previous)
     {
-        tracing::warn!(%why, "the message was sent but not marked as answered");
+        tracing::warn!(%why, "the message left its draft behind");
     }
-
-    // Only once it is away. A draft deleted before the send would be lost by
-    // a failure, which is the one thing the draft was there to prevent.
-    if let Some(id) = draft_id
-        && let Err(why) = delete_draft(connection, id)
-    {
-        tracing::warn!(%why, "the message was sent but its draft was left behind");
-    }
-
-    let filed = file_to_sent(connection, folders, &filed_bytes);
-    Sent::Ok { filed }
+    sent
 }
 
-/// Puts the sent copy in the Sent folder, on the server and on disk.
-///
-/// Returns whether it landed. Most servers do not file SMTP-submitted mail
-/// themselves, so without this a sent message simply never appears anywhere the
-/// user can see it. A POP3 account's server has no Sent folder, so its copy is
-/// filed in the one on this machine.
-fn file_to_sent(connection: &Connection, folders: &[Folder], raw: &[u8]) -> bool {
-    if is_pop3(connection) {
-        return match file_in_local_sent(connection, raw) {
-            Ok(()) => true,
-            Err(why) => {
-                tracing::warn!(%why, "the message was sent but the Sent copy was not filed");
-                false
-            }
-        };
-    }
-    let Some(sent) = special(folders, SpecialUse::Sent) else {
-        tracing::info!("the server has no Sent folder; the copy was not filed");
-        return false;
+/// What the drain did with the immediate send queued as `id`.
+fn settle_send(
+    connection: &Connection,
+    id: &str,
+    drained: Result<cosmic_pim_sync::DrainReport, String>,
+) -> Sent {
+    let drained = match drained {
+        Ok(report) if report.sent.iter().any(|sent| sent == id) => return Sent::Ok,
+        Ok(_) => Ok(()),
+        Err(why) => Err(why),
     };
-
-    let Ok(credentials) = fresh_credentials(connection) else {
-        tracing::warn!("the message was sent but the Sent copy could not authenticate");
-        return false;
+    let queued = match list_outbox(connection) {
+        Ok(queued) => queued.into_iter().find(|queued| queued.id == id),
+        Err(why) => return Sent::Uncertain(why),
     };
-    match Session::connect(&connection.endpoint, &credentials).and_then(|mut session| {
-        let result = session.append(
-            &sent.wire_name,
-            raw,
-            Flags {
-                seen: true,
-                ..Flags::default()
-            },
+    let Some(queued) = queued else {
+        return Sent::Uncertain("it left the outbox without being reported sent".into());
+    };
+    if queued.sending {
+        // Claimed by a drain that has not settled it, so it may be arriving.
+        return Sent::Uncertain(
+            drained
+                .err()
+                .unwrap_or_else(|| "it is being sent right now".into()),
         );
-        let _ = session.logout();
-        result
-    }) {
-        Ok(()) => true,
+    }
+    if queued.given_up {
+        take_back(connection, id);
+        return Sent::Uncertain(queued.last_error.unwrap_or_default());
+    }
+    match drained {
+        // Failed for a reason that passes, and rescheduled.
+        Ok(()) => Sent::Queued,
+        // The drain stopped before it reached the message.
         Err(why) => {
-            // Not fatal: the message was delivered, which is the part that
-            // cannot be undone. The next sync of Sent will not find it, and
-            // that is a visible gap rather than a silent one.
-            tracing::warn!(%why, "the message was sent but the Sent copy was not filed");
-            false
+            take_back(connection, id);
+            Sent::Failed(why)
         }
+    }
+}
+
+/// Takes an immediate send that did not go back out of the outbox, with the
+/// record of what it answers: the composer still holds both.
+fn take_back(connection: &Connection, id: &str) {
+    let taken = outbox(connection).and_then(|outbox| {
+        outbox
+            .cancel(id)
+            .map_err(|why| why.to_string())?
+            .ok_or_else(|| "a drain has it".to_owned())
+    });
+    match taken {
+        Ok(_) => {
+            if let Err(why) = take_answering(connection, id) {
+                tracing::warn!(%why, "a send taken back kept its answering record");
+            }
+        }
+        Err(why) => tracing::warn!(id, %why, "a stopped send stays in the outbox"),
     }
 }
 

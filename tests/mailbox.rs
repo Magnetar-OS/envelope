@@ -15,7 +15,7 @@ use cosmic_pim_mail::imap::{Endpoint, Security};
 use cosmic_pim_mail::maildir::{self, MaildirStore};
 use cosmic_pim_mail::model::Flags;
 use cosmic_pim_mail::push::PushQueue;
-use cosmic_pim_mail::smtp::{Outcome, SmtpEndpoint};
+use cosmic_pim_mail::smtp::Outcome;
 use cosmic_pim_mail::store::{MailStore, RemoteMessage};
 use envelope::mail::{self, Connection};
 
@@ -32,6 +32,7 @@ fn archive() -> Folder {
 fn connection(root: &std::path::Path) -> Connection {
     let mut account =
         cosmic_pim_accounts::Account::new("Test", "https://dav.example/", "me@example.com");
+    account.id = ACCOUNT.into();
     account.mail = Some(cosmic_pim_accounts::MailEndpoint::tls("unused.invalid"));
     Connection {
         account,
@@ -43,12 +44,6 @@ fn connection(root: &std::path::Path) -> Connection {
             username: "me".into(),
         },
         submission: Some(envelope::mail::Submission {
-            endpoint: SmtpEndpoint {
-                host: "unused.invalid".into(),
-                port: 465,
-                security: Security::Tls,
-                username: "me".into(),
-            },
             identity: cosmic_pim_mail::Mailbox {
                 name: Some("Me".into()),
                 address: "me@example.com".into(),
@@ -799,12 +794,7 @@ fn a_send_that_never_reached_the_server_lands_in_the_outbox() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let mut connection = connection(root);
-    // Port 1 refuses instantly, which is a definite non-acceptance.
-    if let Some(submission) = connection.submission.as_mut() {
-        submission.endpoint.host = "127.0.0.1".into();
-        submission.endpoint.port = 1;
-        submission.endpoint.security = Security::Plaintext;
-    }
+    submitting_to(&mut connection, 1);
 
     let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
         name: None,
@@ -817,7 +807,7 @@ fn a_send_that_never_reached_the_server_lands_in_the_outbox() {
     draft.subject = "On a train".into();
     draft.body = "Written offline.".into();
 
-    let sent = mail::send(&connection, &draft, &[], None, None);
+    let sent = mail::send(&connection, &draft, None, None);
     assert!(
         matches!(sent, mail::Sent::Queued),
         "an offline send was not queued: {sent:?}"
@@ -835,11 +825,7 @@ fn queueing_a_send_takes_its_draft_with_it() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let mut connection = connection(root);
-    if let Some(submission) = connection.submission.as_mut() {
-        submission.endpoint.host = "127.0.0.1".into();
-        submission.endpoint.port = 1;
-        submission.endpoint.security = Security::Plaintext;
-    }
+    submitting_to(&mut connection, 1);
 
     let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
         name: None,
@@ -854,7 +840,7 @@ fn queueing_a_send_takes_its_draft_with_it() {
     let id = mail::save_draft(&connection, None, &draft).expect("save");
     assert_eq!(mail::list_drafts(&connection).expect("list").len(), 1);
 
-    let sent = mail::send(&connection, &draft, &[], None, Some(&id));
+    let sent = mail::send(&connection, &draft, None, Some(&id));
     assert!(matches!(sent, mail::Sent::Queued), "{sent:?}");
 
     assert!(
@@ -869,11 +855,7 @@ fn a_queued_message_can_be_retried_or_discarded() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let mut connection = connection(root);
-    if let Some(submission) = connection.submission.as_mut() {
-        submission.endpoint.host = "127.0.0.1".into();
-        submission.endpoint.port = 1;
-        submission.endpoint.security = Security::Plaintext;
-    }
+    submitting_to(&mut connection, 1);
 
     let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
         name: None,
@@ -884,7 +866,7 @@ fn a_queued_message_can_be_retried_or_discarded() {
         address: "ada@example.com".into(),
     });
     draft.subject = "Waiting".into();
-    mail::send(&connection, &draft, &[], None, None);
+    mail::send(&connection, &draft, None, None);
 
     let id = mail::list_outbox(&connection).expect("list")[0].id.clone();
     mail::retry_queued(&connection, &id).expect("retry");
@@ -1825,6 +1807,12 @@ fn a_draft_whose_record_cannot_be_read_is_not_adopted_as_a_second_one() {
 /// A submission server on this machine that accepts every message it is
 /// given, session after session, for as long as the test runs.
 fn accepting_smtp() -> u16 {
+    scripted_smtp("250 ok")
+}
+
+/// A submission server on this machine that answers every recipient with
+/// `rcpt_reply` and accepts whatever gets as far as `DATA`.
+fn scripted_smtp(rcpt_reply: &'static str) -> u16 {
     use std::io::{BufRead as _, BufReader, Write as _};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
@@ -1849,6 +1837,8 @@ fn accepting_smtp() -> u16 {
                     "250-smtp.test\r\n250 AUTH PLAIN LOGIN"
                 } else if command.starts_with("AUTH") {
                     "235 ok"
+                } else if command.starts_with("RCPT") {
+                    rcpt_reply
                 } else if command == "DATA" {
                     in_data = true;
                     "354 go ahead"
@@ -1900,21 +1890,23 @@ fn empty_pop3() -> u16 {
 /// machine. Port 1 refuses: the server is down.
 fn pop3_connection(root: &std::path::Path, smtp: u16, pop3: u16) -> Connection {
     let mut connection = connection(root);
-    connection.account.id = ACCOUNT.into();
     connection.credentials = cosmic_pim_mail::sasl::Credentials::Password("pw".into());
+    submitting_to(&mut connection, smtp);
     let endpoint = connection.account.mail.as_mut().expect("mail");
     endpoint.protocol = cosmic_pim_accounts::MailProtocol::Pop3;
     endpoint.pop3_host = "127.0.0.1".into();
     endpoint.pop3_port = pop3;
     endpoint.pop3_transport = cosmic_pim_accounts::Transport::Plaintext;
-    endpoint.smtp_host = "127.0.0.1".into();
-    endpoint.smtp_port = smtp;
-    endpoint.smtp_transport = cosmic_pim_accounts::Transport::Plaintext;
-    let submission = connection.submission.as_mut().expect("submission");
-    submission.endpoint.host = "127.0.0.1".into();
-    submission.endpoint.port = smtp;
-    submission.endpoint.security = Security::Plaintext;
     connection
+}
+
+/// Points the account's submission at `port` on this machine, in the clear.
+/// Port 1 refuses at once: a definite non-acceptance.
+fn submitting_to(connection: &mut Connection, port: u16) {
+    let endpoint = connection.account.mail.as_mut().expect("mail");
+    endpoint.smtp_host = "127.0.0.1".into();
+    endpoint.smtp_port = port;
+    endpoint.smtp_transport = cosmic_pim_accounts::Transport::Plaintext;
 }
 
 fn local_sent() -> Folder {
@@ -1988,14 +1980,22 @@ fn a_pop3_send_from_the_outbox_is_filed_read_in_sent_on_this_machine() {
 
 #[test]
 fn a_pop3_pass_files_what_it_sent_even_when_the_pop3_server_is_down() {
-    // The pass sends before it reaches POP3; when POP3 then fails, the pass
-    // is an error and its report of what went is lost with it.
+    // The pass sends before it reaches POP3. A POP3 server that is down is
+    // the inbox failing, reported beside what went, not an error that loses
+    // the report of what went.
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let connection = pop3_connection(root, accepting_smtp(), 1);
     scheduled_pop3_reply(root, &connection);
 
-    assert!(mail::sync(&connection, 1).is_err(), "POP3 is down");
+    let report = mail::sync(&connection, 1).expect("a pass that sent is not an error");
+    assert_eq!(report.sent, 1);
+    assert_eq!(
+        report.failures.len(),
+        1,
+        "POP3 is down: {:?}",
+        report.failures
+    );
     assert!(
         mail::list_outbox(&connection).expect("list").is_empty(),
         "not sent"
@@ -2035,8 +2035,8 @@ fn a_pop3_send_without_the_outbox_is_filed_in_sent_too() {
     });
     draft.subject = "Now".into();
 
-    let sent = mail::send(&connection, &draft, &[inbox()], None, None);
-    assert!(matches!(sent, mail::Sent::Ok { filed: true }), "{sent:?}");
+    let sent = mail::send(&connection, &draft, None, None);
+    assert!(matches!(sent, mail::Sent::Ok), "{sent:?}");
     let filed = filed_in_sent(root);
     assert_eq!(filed.len(), 1);
     assert!(filed[0].0.seen);
@@ -2068,4 +2068,209 @@ fn a_reply_drained_on_its_own_marks_what_it_answers() {
         is_answered(root, 1),
         "the reply went and its original is unmarked"
     );
+}
+
+/// A server on this machine that answers nothing: it counts who connects and
+/// hangs up on them.
+fn counting_server() -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let count = std::sync::Arc::new(AtomicUsize::new(0));
+    let seen = std::sync::Arc::clone(&count);
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            // Counted before the hang-up the client is waiting on, so the
+            // count is in by the time the send returns.
+            seen.fetch_add(1, Ordering::SeqCst);
+            drop(stream);
+        }
+    });
+    (port, count)
+}
+
+fn connections(count: &std::sync::atomic::AtomicUsize) -> usize {
+    count.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// An account of `protocol` that submits to `smtp` and reads from an IMAP
+/// server that only counts, on this machine, with a password.
+fn account_of(
+    root: &std::path::Path,
+    protocol: cosmic_pim_accounts::MailProtocol,
+    smtp: u16,
+    imap: u16,
+) -> Connection {
+    let mut connection = connection(root);
+    connection.credentials = cosmic_pim_mail::sasl::Credentials::Password("pw".into());
+    submitting_to(&mut connection, smtp);
+    let endpoint = connection.account.mail.as_mut().expect("mail");
+    endpoint.protocol = protocol;
+    endpoint.imap_host = "127.0.0.1".into();
+    endpoint.imap_port = imap;
+    endpoint.imap_transport = cosmic_pim_accounts::Transport::Plaintext;
+    connection
+}
+
+/// A message to Ada, saved as a draft first, as the composer saves one.
+fn saved_draft(connection: &Connection) -> (cosmic_pim_mail::Draft, String) {
+    let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "me@example.com".into(),
+    });
+    draft.to.push(cosmic_pim_mail::Mailbox {
+        name: None,
+        address: "ada@example.com".into(),
+    });
+    draft.subject = "Now".into();
+    let id = mail::save_draft(connection, None, &draft).expect("save");
+    (draft, id)
+}
+
+#[test]
+fn an_immediate_imap_send_submits_over_smtp_and_files_over_imap() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    deliver(root, &[(1, &from_ada(1), Flags::default())]);
+    let (imap, imap_count) = counting_server();
+    let connection = account_of(
+        root,
+        cosmic_pim_accounts::MailProtocol::Imap,
+        accepting_smtp(),
+        imap,
+    );
+    let (draft, id) = saved_draft(&connection);
+
+    let sent = mail::send(&connection, &draft, Some((inbox(), 1)), Some(&id));
+    assert!(matches!(sent, mail::Sent::Ok), "{sent:?}");
+    assert!(
+        connections(&imap_count) > 0,
+        "the Sent copy was not filed over IMAP"
+    );
+    assert!(mail::list_outbox(&connection).expect("list").is_empty());
+    assert!(
+        mail::list_drafts(&connection).expect("drafts").is_empty(),
+        "the sent message is still a draft"
+    );
+    assert!(
+        is_answered(root, 1),
+        "the reply went and its original is unmarked"
+    );
+}
+
+#[test]
+fn an_immediate_jmap_send_files_over_jmap_not_imap() {
+    // The immediate send filed every account's copy with an IMAP APPEND,
+    // including a JMAP account's, whose drain files over JMAP.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let (imap, imap_count) = counting_server();
+    let (jmap, jmap_count) = counting_server();
+    let mut connection = account_of(
+        root,
+        cosmic_pim_accounts::MailProtocol::Jmap,
+        accepting_smtp(),
+        imap,
+    );
+    connection
+        .account
+        .mail
+        .as_mut()
+        .expect("mail")
+        .jmap_session_url = Some(format!("http://127.0.0.1:{jmap}/session"));
+    let (draft, id) = saved_draft(&connection);
+
+    let sent = mail::send(&connection, &draft, None, Some(&id));
+    assert!(matches!(sent, mail::Sent::Ok), "{sent:?}");
+    assert!(
+        connections(&jmap_count) > 0,
+        "the Sent copy was not filed over JMAP"
+    );
+    assert_eq!(
+        connections(&imap_count),
+        0,
+        "a JMAP account was sent over IMAP"
+    );
+}
+
+/// A Gmail or Graph account: its drain sends through the provider's API,
+/// which takes an OAuth token. With a password it cannot start, so nothing
+/// reaches any server, and the message comes back to the composer intact.
+fn assert_sent_through_the_provider(protocol: cosmic_pim_accounts::MailProtocol) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let (smtp, smtp_count) = counting_server();
+    let (imap, imap_count) = counting_server();
+    let connection = account_of(root, protocol, smtp, imap);
+    let (draft, id) = saved_draft(&connection);
+
+    let sent = mail::send(&connection, &draft, None, Some(&id));
+    assert!(
+        matches!(&sent, mail::Sent::Failed(why) if why.contains("OAuth")),
+        "{protocol:?}: {sent:?}"
+    );
+    assert_eq!(
+        connections(&smtp_count),
+        0,
+        "{protocol:?} was submitted over SMTP"
+    );
+    assert_eq!(
+        connections(&imap_count),
+        0,
+        "{protocol:?} was filed over IMAP"
+    );
+    assert!(
+        mail::list_outbox(&connection).expect("list").is_empty(),
+        "a send the composer still holds was left in the outbox"
+    );
+    assert_eq!(
+        mail::list_drafts(&connection).expect("drafts").len(),
+        1,
+        "the draft of a message that did not go was deleted"
+    );
+}
+
+#[test]
+fn an_immediate_gmail_send_goes_through_the_gmail_api() {
+    assert_sent_through_the_provider(cosmic_pim_accounts::MailProtocol::Gmail);
+}
+
+#[test]
+fn an_immediate_graph_send_goes_through_graph() {
+    assert_sent_through_the_provider(cosmic_pim_accounts::MailProtocol::Graph);
+}
+
+#[test]
+fn an_immediate_send_the_server_refuses_comes_back_to_the_composer() {
+    // The outbox stops a refused message for a person to look at. Sent
+    // with the grace off, that person is at the composer, which still has
+    // it: the outbox and the draft record must not keep a second copy.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    deliver(root, &[(1, &from_ada(1), Flags::default())]);
+    let (imap, imap_count) = counting_server();
+    let connection = account_of(
+        root,
+        cosmic_pim_accounts::MailProtocol::Imap,
+        scripted_smtp("550 5.1.1 no such user"),
+        imap,
+    );
+    let (draft, id) = saved_draft(&connection);
+
+    let sent = mail::send(&connection, &draft, Some((inbox(), 1)), Some(&id));
+    assert!(
+        matches!(&sent, mail::Sent::Uncertain(why) if why.contains("550")),
+        "{sent:?}"
+    );
+    assert!(mail::list_outbox(&connection).expect("list").is_empty());
+    assert_eq!(mail::list_drafts(&connection).expect("drafts").len(), 1);
+    assert_eq!(
+        connections(&imap_count),
+        0,
+        "nothing went, so nothing is filed"
+    );
+    // Settling a later drain must not mark the original for a reply that
+    // never went.
+    mail::settle_answered(&connection, std::slice::from_ref(&id)).expect("settle");
+    assert!(!is_answered(root, 1));
 }

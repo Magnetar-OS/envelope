@@ -14,9 +14,18 @@ All notable changes to this project are documented here. The format follows
   addressed to `"Smith, John"` stays one recipient on the server's copy;
   and a sign-in abandoned in the browser gives up after five minutes
   instead of waiting for good.
+- Built against cosmic-pim 2.2: a POP3 account whose mail server is down
+  still reports what it sent, with the inbox listed as failing, instead of
+  the whole check failing.
 
 ### Fixed
 
+- With the undo delay set to 0, a message goes out the way the account's
+  outbox sends it: through the Gmail or Microsoft Graph API for those
+  accounts, and with the Sent copy filed over JMAP for a JMAP account. It
+  used to go over SMTP for every account and be filed with IMAP. A message
+  the server refuses comes back to the composer with the server's reason
+  and the advice to check Sent before sending it again.
 - What a POP3 account sends is kept: POP3 servers have no Sent folder, so
   the copy is filed, read, in a Sent folder on this machine, listed with the
   inbox. A sent message used to be kept nowhere.
