@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Rebuilt against the current COSMIC libraries (libcosmic `6af8b70`).
+- Built against cosmic-pim 2.1: a message queued on a POP3 account (Send
+  later, the undo grace, a send that failed) now goes out; an mbox import
+  arrives unread, as it was in the archive; a draft addressed to
+  `"Smith, John"` stays one recipient on the server's copy; and a sign-in
+  abandoned in the browser gives up after five minutes instead of waiting
+  for good.
+
 ### Fixed
 
 - "Open in calendar" tells Slate who the message was from, so Slate can
