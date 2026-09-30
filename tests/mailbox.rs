@@ -1472,7 +1472,7 @@ fn a_renumbering_to_higher_uids_is_not_mistaken_for_new_mail() {
 #[test]
 fn drafts_saved_in_the_same_instant_are_still_separate_drafts() {
     // Quitting with several unsaved composers open saves them in one loop,
-    // well inside a millisecond of each other. A fresh id is the clock, so
+    // well inside a millisecond of each other. A fresh id was the clock, so
     // each save after the first landed on the id before it and replaced
     // that draft — half-written messages lost on the way out.
     let dir = tempfile::tempdir().expect("tempdir");

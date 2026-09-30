@@ -301,9 +301,9 @@ fn queue_reply(
         bytes: ics.as_bytes().to_vec(),
     });
 
-    let id = crate::mail::fresh_id(&connection)?;
+    let now = chrono::Utc::now().timestamp_millis();
     crate::mail::outbox(&connection)?
-        .submit(&id, &draft, chrono::Utc::now().timestamp_millis())
+        .submit(&cosmic_pim_mail::drafts::new_id(now), &draft, now)
         .map_err(|why| why.to_string())?;
     Ok(connection)
 }

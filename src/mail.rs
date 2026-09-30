@@ -869,33 +869,6 @@ pub fn drafts(connection: &Connection) -> Result<Drafts, String> {
     Drafts::open(connection.root.join(&connection.account_id)).map_err(|why| why.to_string())
 }
 
-/// A new id for a draft or a queued message: one neither holds yet.
-///
-/// The substrate mints an id from the clock alone, so two minted inside one
-/// millisecond are the same id and the second write replaces the first. That
-/// is not hypothetical: quitting with several unsaved composers saves them in
-/// one loop, well inside a millisecond. Drafts and the outbox share ids — a
-/// draft becomes its queued message under the same one — so both are
-/// checked, and so are the tombstones of deleted drafts, whose server copies
-/// are still being retired by that id. A taken id steps forward a
-/// millisecond, which keeps the ids in the order they were made.
-pub fn fresh_id(connection: &Connection) -> Result<String, String> {
-    let store = drafts(connection)?;
-    let mut taken: std::collections::HashSet<String> = list_outbox(connection)?
-        .into_iter()
-        .map(|queued| queued.id)
-        .collect();
-    taken.extend(store.pending_retractions().into_iter().map(|(id, _)| id));
-    let mut ms = now_ms();
-    loop {
-        let id = drafts::new_id(ms);
-        if !taken.contains(&id) && store.peek(&id).map_err(|why| why.to_string())?.is_none() {
-            return Ok(id);
-        }
-        ms = ms.saturating_add(1);
-    }
-}
-
 /// Pushes local draft edits and discards to the server's Drafts folder.
 ///
 /// Cheap when there is nothing to say: the dirty check reads disk only, and
@@ -995,7 +968,7 @@ pub fn edit_server_draft(
         .cloned()
         .unwrap_or(identity);
     let draft = Draft::from_mirror(&message, &raw, identity);
-    let id = fresh_id(connection)?;
+    let id = drafts::new_id(now_ms());
     let uid_validity = store
         .state()
         .map_err(|why| why.to_string())?
@@ -1027,7 +1000,7 @@ pub fn save_draft(
     let store = drafts(connection)?;
     let id = match id.filter(|id| drafts::is_valid_id(id)) {
         Some(id) => id.to_owned(),
-        None => fresh_id(connection)?,
+        None => drafts::new_id(now_ms()),
     };
     store
         .save(&id, draft, now_ms())
@@ -1086,7 +1059,7 @@ pub fn schedule_send(
 ) -> Result<String, String> {
     let id = match draft_id.filter(|id| drafts::is_valid_id(id)) {
         Some(id) => id.to_owned(),
-        None => fresh_id(connection)?,
+        None => drafts::new_id(now_ms()),
     };
     outbox(connection)?
         .schedule(&id, draft, not_before_ms)
@@ -2462,19 +2435,18 @@ pub fn send(
         // for the user. An ambiguous failure is not queued — it may already
         // have arrived, and the queue would send it twice.
         outcome @ Outcome::NotSent(_) => {
-            let id = match draft_id.filter(|id| cosmic_pim_mail::drafts::is_valid_id(id)) {
-                Some(id) => Ok(id.to_owned()),
-                None => fresh_id(connection),
+            let id = match draft_id.filter(|id| drafts::is_valid_id(id)) {
+                Some(id) => id.to_owned(),
+                None => drafts::new_id(now_ms()),
             };
-            return match id.and_then(|id| {
-                outbox(connection)?
+            return match outbox(connection).and_then(|outbox| {
+                outbox
                     .queue(&id, draft, &outcome, now_ms())
-                    .map_err(|why| why.to_string())?;
-                Ok(id)
+                    .map_err(|why| why.to_string())
             }) {
                 // The draft becomes the queued message; leaving both would show
                 // it twice and send it once.
-                Ok(id) => {
+                Ok(()) => {
                     // The retry is a send like any other, and marks what it
                     // answers when it goes.
                     if let Some(answering) = answering.as_ref()
