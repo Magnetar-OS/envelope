@@ -10,17 +10,19 @@ All notable changes to this project are documented here. The format follows
 
 - Rebuilt against the current COSMIC libraries (libcosmic `6af8b70`).
 - Built against cosmic-pim 2.1: a message queued on a POP3 account (Send
-  later, the undo grace, a send that failed) now goes out; an mbox import
-  arrives unread, as it was in the archive; a draft addressed to
-  `"Smith, John"` stays one recipient on the server's copy; and a sign-in
-  abandoned in the browser gives up after five minutes instead of waiting
-  for good.
+  later, the undo grace, a send that failed) now goes out; a draft
+  addressed to `"Smith, John"` stays one recipient on the server's copy;
+  and a sign-in abandoned in the browser gives up after five minutes
+  instead of waiting for good.
 
 ### Fixed
 
 - What a POP3 account sends is kept: POP3 servers have no Sent folder, so
   the copy is filed, read, in a Sent folder on this machine, listed with the
   inbox. A sent message used to be kept nowhere.
+- An mbox import keeps which messages were read, answered and flagged, as
+  mutt and Thunderbird recorded them in the archive. Every imported message
+  used to arrive read.
 - "Open in calendar" tells Slate who the message was from, so Slate can
   refuse an invitation or a cancellation that was not mailed by the
   meeting's organizer.

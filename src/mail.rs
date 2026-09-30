@@ -1496,6 +1496,9 @@ pub fn unified_inbox(connections: &[Connection]) -> Result<Vec<UnifiedConversati
 /// makes them real mail, and the sync that follows brings them back down the
 /// same way everything else arrives.
 ///
+/// Each message arrives read, answered or flagged as the archive marked it
+/// ([`archived_flags`]), and unread when it says nothing.
+///
 /// Blocking for as long as the archive is large; strictly a worker call.
 /// Unparseable chunks are counted and skipped — one mangled message in a
 /// twenty-year archive must not abort the other ten thousand.
@@ -1522,7 +1525,7 @@ pub fn import_mbox(
             skipped += 1;
             continue;
         }
-        match session.append(&folder.wire_name, raw, Flags::default()) {
+        match session.append(&folder.wire_name, raw, archived_flags(raw)) {
             Ok(()) => imported += 1,
             Err(why) => {
                 // Stop rather than skip: an APPEND refused mid-run is the
@@ -1538,6 +1541,41 @@ pub fn import_mbox(
     }
     let _ = session.logout();
     Ok((imported, skipped))
+}
+
+/// The flags an mbox archive recorded for one of its messages, in the headers
+/// the writing client added: mutt's `Status:` (`R` read) and `X-Status:` (`A`
+/// answered, `F` flagged), and Thunderbird's `X-Mozilla-Status:`, four hex
+/// digits whose bits 0x1, 0x2 and 0x4 are read, replied and marked. A message
+/// with none of them has no recorded state and arrives unread.
+fn archived_flags(raw: &[u8]) -> Flags {
+    let mut flags = Flags::default();
+    // The header ends at the first blank line, whichever line ending the
+    // archive uses.
+    let header = raw
+        .windows(2)
+        .enumerate()
+        .find(|(at, pair)| *pair == b"\n\n" || (*pair == b"\r\n" && raw[..*at].ends_with(b"\r\n")))
+        .map_or(raw, |(at, _)| &raw[..at]);
+    for line in String::from_utf8_lossy(header).lines() {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("Status") {
+            flags.seen |= value.contains('R');
+        } else if name.eq_ignore_ascii_case("X-Status") {
+            flags.answered |= value.contains('A');
+            flags.flagged |= value.contains('F');
+        } else if name.eq_ignore_ascii_case("X-Mozilla-Status")
+            && let Ok(bits) = u16::from_str_radix(value, 16)
+        {
+            flags.seen |= bits & 0x1 != 0;
+            flags.answered |= bits & 0x2 != 0;
+            flags.flagged |= bits & 0x4 != 0;
+        }
+    }
+    flags
 }
 
 /// How a message says its list can be left.
@@ -2792,5 +2830,28 @@ mod tests {
         // A spacer table with no words in it is not worth a document; the
         // reader shows the extracted text instead.
         assert!(body_document(&html_message("<table><tr><td></td></tr></table>")).is_none());
+    }
+
+    #[test]
+    fn an_archived_message_keeps_the_state_its_mail_client_recorded() {
+        // IMAP APPEND used to mark every imported message read; it now files
+        // exactly the flags asked for, so an import that asked for none made
+        // a twenty-year archive twenty years of unread mail.
+        let flags = |headers: &str| archived_flags(format!("{headers}\r\n\r\nBody\r\n").as_bytes());
+
+        assert_eq!(flags("Subject: new"), Flags::default());
+        let mutt = flags("Status: RO\r\nX-Status: AF");
+        assert!(mutt.seen && mutt.answered && mutt.flagged);
+        let unread = flags("Status: O");
+        assert!(!unread.seen);
+        let thunderbird = flags("X-Mozilla-Status: 0003");
+        assert!(thunderbird.seen && thunderbird.answered && !thunderbird.flagged);
+        assert!(flags("X-Mozilla-Status: 0004").flagged);
+        assert!(!flags("X-Mozilla-Status: 0000").seen);
+
+        // Only the header counts: a body that quotes one is not the state.
+        assert!(!archived_flags(b"Subject: x\n\nStatus: RO\n").seen);
+        assert!(!archived_flags(b"Subject: x\r\n\r\nStatus: RO\r\n\r\n").seen);
+        assert!(!archived_flags(b"Subject: x\n\nStatus: RO\r\n\r\nmore").seen);
     }
 }
