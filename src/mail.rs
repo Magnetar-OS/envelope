@@ -849,8 +849,13 @@ pub fn discard_queued(connection: &Connection, id: &str) -> Result<(), String> {
 /// The outbox holds a message and nothing about where it came from, so the
 /// "mark the original answered" half of a send the grace delay or Send later
 /// put in the queue is kept here, beside the outbox. [`settle_answered`]
-/// applies it once a drain reports the id sent; taking the send back or
-/// discarding it drops it instead.
+/// applies it once a drain reports the id sent (a sync pass's `MailReport`
+/// or `drain_outbox`'s `DrainReport`, whose `sent` are both outbox ids);
+/// taking the send back or discarding it drops it instead.
+///
+/// It stays here for cosmic-pim 2.x: a (mailbox, UID) pointer is a store
+/// coordinate the substrate's outbox cannot keep valid across a sync, and a
+/// field on its records would be a breaking change.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct AnsweringState {
     #[serde(default)]

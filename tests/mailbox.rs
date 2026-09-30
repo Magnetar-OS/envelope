@@ -2042,3 +2042,30 @@ fn a_pop3_send_without_the_outbox_is_filed_in_sent_too() {
     assert!(filed[0].0.seen);
     assert!(filed[0].1.contains("Subject: Now"));
 }
+
+#[test]
+fn a_reply_drained_on_its_own_marks_what_it_answers() {
+    // The drain that sends a due reply without a sync pass reports the ids
+    // that went, as the pass does, and `.answering.json` turns them into
+    // the \Answered mark. The IMAP server that would get the Sent copy is
+    // down; the send is still a send.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let (mut connection, _) = scheduled_reply(root);
+    connection.account.id = ACCOUNT.into();
+    let endpoint = connection.account.mail.as_mut().expect("mail");
+    endpoint.imap_host = "127.0.0.1".into();
+    endpoint.imap_port = 1;
+    endpoint.imap_transport = cosmic_pim_accounts::Transport::Plaintext;
+    endpoint.smtp_host = "127.0.0.1".into();
+    endpoint.smtp_port = accepting_smtp();
+    endpoint.smtp_transport = cosmic_pim_accounts::Transport::Plaintext;
+    connection.credentials = cosmic_pim_mail::sasl::Credentials::Password("pw".into());
+
+    let drained = mail::drain_due(std::slice::from_ref(&connection), i64::MAX);
+    assert_eq!(drained.sent, 1, "{drained:?}");
+    assert!(
+        is_answered(root, 1),
+        "the reply went and its original is unmarked"
+    );
+}
