@@ -18,12 +18,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # `dbus-daemon` is for the tests, not the build: the scheduling tests
+      # start a private bus of their own.
       - name: System libraries the build needs
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-dev libssl-dev libsqlite3-dev pkg-config \
-            desktop-file-utils appstream
+            desktop-file-utils appstream dbus-daemon
 
       # rustup reads rust-toolchain.toml on the first cargo invocation and
       # installs the pinned channel with its components. No toolchain action
