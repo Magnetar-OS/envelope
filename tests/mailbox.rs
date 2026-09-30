@@ -1718,19 +1718,23 @@ fn a_send_in_flight_is_reported_as_sending_not_as_gone() {
 fn every_account_with_a_due_send_is_driven_and_no_other() {
     // Sends used to leave only in the selected account's sync, so a message
     // queued in any other account waited until the user looked at it again.
-    // No server answers here: the pass is attempted and fails to connect,
-    // which is the evidence it was attempted at all.
+    // No server answers here: the send is attempted and fails to connect,
+    // which the queued message records — the evidence it was attempted at
+    // all. A send that fails is not a failed drain; it stays queued.
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
 
     let mut idle = connection(root);
     idle.account_id = "account-idle".into();
+    idle.account.id = idle.account_id.clone();
     idle.account.display_name = "Idle".into();
     let mut later = connection(root);
     later.account_id = "account-later".into();
+    later.account.id = later.account_id.clone();
     later.account.display_name = "Later".into();
     let mut due = connection(root);
     due.account_id = "account-due".into();
+    due.account.id = due.account_id.clone();
     due.account.display_name = "Due".into();
 
     let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
@@ -1749,13 +1753,28 @@ fn every_account_with_a_due_send_is_driven_and_no_other() {
     assert!(!mail::has_due_sends(&later, now));
     assert!(mail::has_due_sends(&due, now));
 
-    let drained = mail::drain_due(&[idle, later, due], now);
-    let attempted: Vec<&str> = drained
-        .failures
-        .iter()
-        .map(|(account, _)| account.as_str())
-        .collect();
-    assert_eq!(attempted, ["Due"], "the wrong accounts were driven");
+    let drained = mail::drain_due(&[idle.clone(), later.clone(), due.clone()], now);
+    assert!(drained.failures.is_empty(), "{:?}", drained.failures);
+    assert_eq!(drained.sent, 0);
+
+    let attempts = |connection: &Connection| -> Vec<(u32, bool)> {
+        mail::list_outbox(connection)
+            .expect("list")
+            .iter()
+            .map(|queued| (queued.attempts, queued.last_error.is_some()))
+            .collect()
+    };
+    assert_eq!(
+        attempts(&due),
+        [(1, true)],
+        "the due send was not attempted"
+    );
+    assert_eq!(
+        attempts(&later),
+        [(0, false)],
+        "a send not yet due was sent"
+    );
+    assert!(attempts(&idle).is_empty());
 }
 
 #[test]

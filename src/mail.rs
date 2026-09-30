@@ -491,25 +491,17 @@ pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
 /// bookkeeping every drain of its outbox needs.
 ///
 /// One at a time so the foreground sync of the selected account and the
-/// background drain of every account ([`drain_due`]) do not both run a full
-/// pass over one account when one would do: the drain waits, re-checks, and
-/// finds the sync already sent what was due. Not a guard against sending
-/// twice — the outbox claims a message before sending it, and the maildir
-/// sidecars merge under their own lock.
+/// background drain of every account ([`drain_due`]) do not both send one
+/// account's due mail: the drain waits, re-checks, and finds the sync already
+/// sent what was due. Not a guard against sending twice — the outbox claims a
+/// message before sending it, and the maildir sidecars merge under their own
+/// lock.
 fn pass(
     connection: &Connection,
     options: SyncOptions,
 ) -> Result<cosmic_pim_sync::MailReport, String> {
     let lock = account_lock(&connection.account_id);
     let _held = hold(&lock);
-    pass_held(connection, options)
-}
-
-/// [`pass`], for a caller already holding the account's lock.
-fn pass_held(
-    connection: &Connection,
-    options: SyncOptions,
-) -> Result<cosmic_pim_sync::MailReport, String> {
     let credentials = fresh_credentials(connection)?;
     let report = cosmic_pim_sync::sync_account_mail(
         &connection.account,
@@ -519,12 +511,18 @@ fn pass_held(
         now_ms(),
     )
     .map_err(|why| why.to_string())?;
-    // Whatever the drain sent, the messages those replies answered are marked
-    // now — the same as an immediate send does.
-    if let Err(why) = settle_answered(connection, &report.sent) {
+    after_sending(connection, &report.sent);
+    Ok(report)
+}
+
+/// What every send the outbox reports needs once it has gone, whichever
+/// drain sent it: `sent` is the outbox ids of a pass's or a drain's report.
+fn after_sending(connection: &Connection, sent: &[String]) {
+    // The messages those replies answered are marked now — the same as an
+    // immediate send does.
+    if let Err(why) = settle_answered(connection, sent) {
         tracing::warn!(%why, "sent replies could not mark what they answered");
     }
-    Ok(report)
 }
 
 /// Takes an account's lock. A poisoned lock only means another pass
@@ -605,7 +603,9 @@ pub struct Drained {
     pub sent: usize,
     /// Sends the outboxes have given up on. These need a person.
     pub given_up: usize,
-    /// Accounts whose pass failed, by name, with the reason.
+    /// Accounts whose outbox could not be drained at all, by name, with the
+    /// reason. A message that fails to send is not one of these: it stays
+    /// queued, and its row in the outbox says why.
     pub failures: Vec<(String, String)>,
 }
 
@@ -613,9 +613,12 @@ pub struct Drained {
 ///
 /// A message queued for the undo grace, for Send later, or by the calendar's
 /// reply to an invitation belongs to an account, and it has to go when it is
-/// due whichever account the window happens to be showing. The substrate
-/// drains an outbox only inside an account's sync pass, so an account with
-/// something due gets a pass here; one with nothing due is not touched.
+/// due whichever account the window happens to be showing. An account with
+/// something due is drained with `cosmic_pim_sync::drain_outbox`, which
+/// submits the way the account's sync pass does — SMTP for IMAP, JMAP and
+/// POP3, the provider's own send for Gmail and Graph — files the Sent copy
+/// where that pass would, and lists or pulls no mailbox. One with nothing due
+/// is not touched.
 ///
 /// The due check is repeated under the account's lock: a foreground sync
 /// that drained the account while this waited leaves nothing to do.
@@ -628,25 +631,35 @@ pub fn drain_due(connections: &[Connection], now_ms: i64) -> Drained {
         if !has_due_sends(connection, now_ms) {
             continue;
         }
-        let options = SyncOptions {
-            reconcile: false,
-            since_ms: None,
-        };
         let lock = account_lock(&connection.account_id);
         let _held = hold(&lock);
-        let outcome = has_due_sends(connection, now_ms).then(|| pass_held(connection, options));
-        match outcome {
-            Some(Ok(report)) => {
+        if !has_due_sends(connection, now_ms) {
+            continue;
+        }
+        match drain_held(connection, now_ms) {
+            Ok(report) => {
                 drained.sent += report.sent.len();
                 drained.given_up += report.given_up;
             }
-            Some(Err(why)) => drained
+            Err(why) => drained
                 .failures
                 .push((connection.account.display_name.clone(), why)),
-            None => {}
         }
     }
     drained
+}
+
+/// One account's outbox drain, for a caller holding the account's lock.
+fn drain_held(
+    connection: &Connection,
+    now_ms: i64,
+) -> Result<cosmic_pim_sync::DrainReport, String> {
+    let credentials = fresh_credentials(connection)?;
+    let report =
+        cosmic_pim_sync::drain_outbox(&connection.account, &credentials, &connection.root, now_ms)
+            .map_err(|why| why.to_string())?;
+    after_sending(connection, &report.sent);
+    Ok(report)
 }
 
 /// Works out an account's servers from its address.
