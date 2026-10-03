@@ -111,7 +111,7 @@ fn decode(text: &str) -> String {
             }
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
+    String::from_utf8_lossy_owned(out)
 }
 
 /// One hex digit's value. Digits only — `from_str_radix` would also take a
@@ -229,6 +229,15 @@ mod tests {
         assert_eq!(draft.subject, "%a\u{e9}t\u{e9}");
         let draft = prefill("mailto:a@example.com?subject=%\u{e9}", me()).expect("a mailto");
         assert_eq!(draft.subject, "%\u{e9}");
+    }
+
+    #[test]
+    fn escapes_that_are_not_utf8_become_replacement_characters() {
+        // Nothing obliges a link to decode to text. The bytes that do not are
+        // marked rather than dropped, and the valid text around them is kept.
+        let draft =
+            prefill("mailto:a@example.com?subject=caf%E9%20%C3%A9", me()).expect("a mailto");
+        assert_eq!(draft.subject, "caf\u{fffd} \u{e9}");
     }
 
     #[test]
