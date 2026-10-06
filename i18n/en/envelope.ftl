@@ -369,3 +369,12 @@ show-cc = Cc/Bcc
 welcome-title = Welcome to Envelope
 welcome-body = Add your email account to get started. Its calendars and contacts come along to Slate and Circle, where your provider has them.
 welcome-add = Add an account…
+
+## Opening attachments
+
+# On an attachment a desktop application can open: a pass, an invitation, a contact card, a document.
+open = Open
+attachment-open-failed = The attachment could not be opened: { $reason }
+# The name ends like a document's and the contents are something else.
+attachment-disguised = { $name } is not the kind of file its name says, so it was not opened. It can still be saved.
+attachment-not-offered = { $name } is not a kind of file Envelope opens. It can still be saved.

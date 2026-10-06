@@ -88,7 +88,9 @@ Envelope reads, threads, syncs, and sends. What works:
   `has:attachment`. Result rows show the matching passage, and a half-typed
   word already matches.
 - **Attachments** — received ones save to Downloads, and files can be attached
-  to what you send. Nothing is ever opened for you.
+  to what you send. Nothing is ever opened for you; a pass, an invitation, a
+  contact card, a PDF or a picture has an Open button, which hands it to
+  Pocket, Slate, Circle or its viewer.
 - **An outbox.** A send that could not reach the server waits there and goes out
   on the next check, with its attachments. Undo send and Send later wait there
   too. Every account's outbox is sent when due, whichever account is on
@@ -207,7 +209,11 @@ waiting to be lifted:
   99% of mail that authenticates correctly trains people to ignore the
   indicator, which is exactly how it stops working on the message where it
   mattered.
-- **Attachments are listed, never opened.**
+- **Attachments are listed, never opened for you.** Open is a button, and
+  only on data: the name has to end like a pass, an invitation, a contact
+  card, a PDF or a picture, and the contents have to be one. A script or a
+  desktop entry named `invoice.pdf` is refused; a program is not offered the
+  button at all.
 
 ## Where the engine came from
 

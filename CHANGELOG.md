@@ -17,6 +17,13 @@ All notable changes to this project are documented here. The format follows
   welcome page turns into its inbox. One removed elsewhere goes the same
   way: the window moves to another account, or back to the welcome page. One
   whose server was changed elsewhere is reconnected with the new one.
+- An Open button on attachments a desktop application reads: a pass opens in
+  Pocket, an invitation in Slate, a contact card in Circle, and a PDF or a
+  picture in its viewer. The name has to end like one of those and the
+  contents have to be one: a program, a script or an archive is not offered
+  the button, and a script or a desktop entry named `invoice.pdf` is refused
+  with the reason. Everything else is saved as before. The copy that is
+  opened is Envelope's own, removed when Envelope next starts.
 
 ## [1.3.1] - 2026-10-03
 

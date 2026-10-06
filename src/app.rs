@@ -1085,6 +1085,10 @@ pub enum Message {
     SetUpAccount,
     /// Time to look whether the shared account list changed on disk.
     AccountsFileCheck,
+    /// Write an attachment out and open it in its application.
+    OpenAttachment(usize),
+    /// Where the attachment to open was written.
+    AttachmentStaged(Result<std::path::PathBuf, mail::NotOpened>),
     /// Reveal the Cc and Bcc rows.
     ComposeShowCc,
     ComposeToChanged(String),
@@ -1343,6 +1347,9 @@ impl cosmic::Application for AppModel {
                 }
             })
             .unwrap_or_default();
+
+        // Last session's opened attachments, before this one can add any.
+        mail::clear_opened();
 
         let mut model = Self::with_config(core, config);
         model.accounts_stamp = accounts_file_stamp();
@@ -2632,6 +2639,25 @@ impl AppModel {
                 Task::none()
             }
             Message::AccountsFileCheck => self.accounts_file_check(),
+            Message::OpenAttachment(index) => self.open_attachment(index),
+            Message::AttachmentStaged(Ok(path)) => {
+                if let Err(why) = open::that_detached(&path) {
+                    self.say(fl!("attachment-open-failed", reason = why.to_string()));
+                }
+                Task::none()
+            }
+            Message::AttachmentStaged(Err(why)) => {
+                self.say(match why {
+                    mail::NotOpened::NotOffered(name) => {
+                        fl!("attachment-not-offered", name = name)
+                    }
+                    mail::NotOpened::Disguised(name) => fl!("attachment-disguised", name = name),
+                    mail::NotOpened::Failed(reason) => {
+                        fl!("attachment-open-failed", reason = reason)
+                    }
+                });
+                Task::none()
+            }
             Message::ComposeShowCc => self.with_composer(|c| c.show_cc = true),
             Message::ComposeToChanged(text) => self.with_composer(|c| c.to = text),
             Message::ComposeCcChanged(text) => self.with_composer(|c| c.cc = text),
@@ -4540,6 +4566,26 @@ impl AppModel {
         Task::none()
     }
 
+    /// Writes one attachment of the open message out and opens it in its
+    /// application. Offered only where [`mail::openable`] says so, and
+    /// refused by [`mail::stage_attachment`] when the contents disagree.
+    fn open_attachment(&mut self, index: usize) -> Task<Message> {
+        let Some((connection, folder, uid)) = self
+            .target()
+            .map(|target| (target.connection.clone(), target.folder.clone(), target.uid))
+        else {
+            return Task::none();
+        };
+        cosmic::task::future(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                mail::stage_attachment(&connection, &folder, uid, index)
+            })
+            .await
+            .unwrap_or_else(|why| Err(mail::NotOpened::Failed(why.to_string())));
+            Message::AttachmentStaged(result)
+        })
+    }
+
     /// Saves one attachment of the open message.
     fn save_attachment(&mut self, index: usize) -> Task<Message> {
         let Some((connection, folder, uid)) = self
@@ -6262,6 +6308,23 @@ mod tests {
         let _ = model.dispatch(Message::SetUpAccount);
 
         assert!(!model.core.window.show_context);
+    }
+
+    #[test]
+    fn an_attachment_that_was_not_opened_says_why() {
+        let mut model = model();
+
+        let _ = model.dispatch(Message::AttachmentStaged(Err(mail::NotOpened::Disguised(
+            "invoice.pdf".into(),
+        ))));
+        let _ = model.dispatch(Message::AttachmentStaged(Err(mail::NotOpened::NotOffered(
+            "run.sh".into(),
+        ))));
+
+        assert_eq!(model.pending_toasts.len(), 2);
+        assert!(model.pending_toasts[0].contains("invoice.pdf"));
+        assert!(model.pending_toasts[1].contains("run.sh"));
+        assert_ne!(model.pending_toasts[0], model.pending_toasts[1]);
     }
 
     fn folder(name: &str) -> Folder {

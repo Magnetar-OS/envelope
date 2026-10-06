@@ -553,7 +553,9 @@ impl<'a> Reader<'a> {
         {
             // Saved on request, never opened for the user. An attachment that
             // opens itself is the oldest delivery mechanism there is, and the
-            // one step between "saved" and "ran" is the whole defence.
+            // one step between "saved" and "ran" is the whole defence. Open is
+            // a button the user presses, and only for kinds of file that are
+            // read rather than run.
             let importable = attachment
                 .mime_type
                 .eq_ignore_ascii_case("application/pgp-keys");
@@ -582,6 +584,13 @@ impl<'a> Reader<'a> {
                 .push_maybe(importable.then(|| {
                     widget::button::text(fl!("pgp-import-key"))
                         .on_press(Message::PgpKeyImport(index))
+                }))
+                // Only for data the desktop has an application for — a pass
+                // for Pocket, an invitation for Slate, a card for Circle, a
+                // document. By its name here; its contents are checked when
+                // the button is pressed. See `mail::stage_attachment`.
+                .push_maybe(crate::mail::openable(&attachment.name).then(|| {
+                    widget::button::text(fl!("open")).on_press(Message::OpenAttachment(index))
                 }))
                 .push(widget::button::text(fl!("save")).on_press(Message::SaveAttachment(index)));
 

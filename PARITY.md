@@ -90,6 +90,7 @@ Everything Geary does, and whether Envelope does it.
 | Feature | Status | Notes |
 |---|---|---|
 | Save received attachments | have | To Downloads; never opened for you. |
+| Open a received attachment | have | A button, on data only: a pass, an invitation, a contact card, a PDF or a picture, by its name and by its contents. Verified 2026-10-06. |
 | Attach files to send | have | Outbox carries them through offline retries. |
 | Drag-and-drop attach | verify | |
 
