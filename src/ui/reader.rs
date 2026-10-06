@@ -305,13 +305,26 @@ impl<'a> Reader<'a> {
             None => identity.push(widget::text::heading(address)),
         };
 
+        // The sender opens in Circle — their card if they have one, and a
+        // search for the address if not. The name is a link rather than a
+        // button beside it: it is the thing a person means when they want to
+        // know who this is.
+        let identity: Element<'static, Message> = match from {
+            Some(from) => widget::button::custom(identity)
+                .class(cosmic::theme::Button::Text)
+                .padding(0)
+                .on_press(Message::ShowSender(from.address.clone()))
+                .into(),
+            None => identity.into(),
+        };
+
         let mut column = widget::column::with_capacity(3)
             .spacing(spacing.space_xxs)
             .push(
                 widget::row::with_capacity(2)
                     .align_y(Alignment::Start)
                     .spacing(spacing.space_xxs)
-                    .push(identity.width(Length::Fill))
+                    .push(widget::container(identity).width(Length::Fill))
                     .push(widget::text::caption(crate::ui::relative_date(
                         message.date,
                     ))),

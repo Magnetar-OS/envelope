@@ -67,6 +67,8 @@ pub struct AppModel {
     /// The program that adds accounts for the whole desktop. A field so a
     /// test can name one that is not there.
     accounts_window: &'static str,
+    /// The contacts application. A field for the same reason.
+    contacts_app: &'static str,
     selected_account: Option<String>,
     /// Built from the selected account; `None` when it has no mail endpoint.
     connection: Option<Connection>,
@@ -1137,6 +1139,8 @@ pub enum Message {
     SetUpAccount,
     /// Time to look whether the shared account list changed on disk.
     AccountsFileCheck,
+    /// Show who sent the open message in Circle.
+    ShowSender(String),
     /// Write an attachment out and open it in its application.
     OpenAttachment(usize),
     /// Where the attachment to open was written.
@@ -2041,6 +2045,7 @@ impl AppModel {
             accounts_stamp: None,
             address_book: std::sync::Arc::default(),
             accounts_window: crate::handoff::ACCOUNTS_WINDOW,
+            contacts_app: crate::handoff::CONTACTS_APP,
             selected_account: None,
             connection: None,
             folders: Vec::new(),
@@ -2704,6 +2709,13 @@ impl AppModel {
             }
             Message::AccountsFileCheck => self.accounts_file_check(),
             Message::OpenAttachment(index) => self.open_attachment(index),
+            Message::ShowSender(address) => {
+                let circle = crate::handoff::show_person(self.contacts_app, &address);
+                if let Err(why) = crate::handoff::start(circle) {
+                    self.say(fl!("contacts-app-missing", reason = why.to_string()));
+                }
+                Task::none()
+            }
             Message::AttachmentStaged(Ok(path)) => {
                 if let Err(why) = open::that_detached(&path) {
                     self.say(fl!("attachment-open-failed", reason = why.to_string()));
@@ -6448,6 +6460,21 @@ mod tests {
         let _ = model.dispatch(Message::SetUpAccount);
 
         assert!(!model.core.window.show_context);
+    }
+
+    #[test]
+    fn without_circle_the_sender_link_says_so() {
+        let mut model = model();
+        model.contacts_app = "/nonexistent/circle";
+
+        let _ = model.dispatch(Message::ShowSender("ada@example.com".into()));
+
+        assert_eq!(model.pending_toasts.len(), 1);
+        assert!(
+            model.pending_toasts[0].contains("Circle"),
+            "{:?}",
+            model.pending_toasts
+        );
     }
 
     #[test]

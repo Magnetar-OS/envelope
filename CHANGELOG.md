@@ -28,6 +28,9 @@ All notable changes to this project are documented here. The format follows
   are typed in To, Cc and Bcc: from two letters of a name or an address, a
   person with two addresses offered as two, an address already in the field
   not offered again.
+- The sender's name in the reader opens them in Circle: their card when they
+  have one, a search for the address when they do not. Without Circle
+  installed, it says so.
 
 ## [1.3.1] - 2026-10-03
 

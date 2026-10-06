@@ -11,12 +11,29 @@ use std::process::{Command, Stdio};
 /// The desktop's Accounts window. See `magnetar-accounts`.
 pub const ACCOUNTS_WINDOW: &str = "magnetar-accounts";
 
+/// The suite's contacts application.
+pub const CONTACTS_APP: &str = "circle";
+
 /// The command that opens the Accounts window on its add page, saying that
 /// it is mail an account is wanted for.
 #[must_use]
 pub fn add_account(program: &str) -> Command {
     let mut command = Command::new(program);
     command.arg("--for=mail");
+    command
+}
+
+/// The command that shows who has `address` in Circle: their card when they
+/// have one, a search for the address when they do not. Circle is
+/// single-instance, so one already open shows it.
+///
+/// The address comes out of a message, so it is whatever its sender wrote.
+/// It travels as the value of one argument and is never read as an option
+/// of its own.
+#[must_use]
+pub fn show_person(program: &str, address: &str) -> Command {
+    let mut command = Command::new(program);
+    command.arg(format!("--search={address}"));
     command
 }
 
@@ -53,6 +70,23 @@ mod tests {
 
         assert_eq!(command.get_program(), "magnetar-accounts");
         assert_eq!(arguments(&command), ["--for=mail"]);
+    }
+
+    #[test]
+    fn an_address_is_one_argument_whatever_it_holds() {
+        // A sender chooses their own address. None of these may reach Circle
+        // as a second argument or as an option.
+        for address in [
+            "ada@analytical.example",
+            "--new-contact",
+            "ada@analytical.example --new-contact",
+            "",
+        ] {
+            let command = show_person(CONTACTS_APP, address);
+
+            assert_eq!(command.get_program(), "circle");
+            assert_eq!(arguments(&command), [format!("--search={address}")]);
+        }
     }
 
     #[test]

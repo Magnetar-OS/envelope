@@ -93,6 +93,8 @@ Envelope reads, threads, syncs, and sends. What works:
   Pocket, Slate, Circle or its viewer.
 - **Recipients from the address book.** To, Cc and Bcc complete from Circle's
   contacts as they are typed.
+- **The sender is a link.** Their name in the reader opens them in Circle:
+  their card when they have one, a search for the address when they do not.
 - **An outbox.** A send that could not reach the server waits there and goes out
   on the next check, with its attachments. Undo send and Send later wait there
   too. Every account's outbox is sent when due, whichever account is on
