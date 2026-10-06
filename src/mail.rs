@@ -2977,6 +2977,22 @@ mod tests {
     }
 
     #[test]
+    fn the_reader_parses_a_content_type_with_a_bare_charset() {
+        // `charset` with no `=value`: Nib's HTML parser read past the end of
+        // the attribute and panicked (fixed in Nib 1.2.1). Parsed here
+        // directly rather than through `Message::parse`, whose own text
+        // extraction in cosmic-pim-mail 2.2 still reaches the same defect in
+        // an older html5ever before the reader is asked.
+        let schema = nib_model::basic::schema();
+        let doc = nib_html::Html::new(&schema).parse(
+            "<html><head><meta http-equiv=\"Content-Type\" \
+             content=\"text/html; charset\"></head><body><p>Hello</p></body></html>",
+        );
+
+        assert_eq!(doc.text_content().trim(), "Hello");
+    }
+
+    #[test]
     fn an_html_message_keeps_the_structure_the_extracted_text_threw_away() {
         let opened = body_document(&html_message(
             "<h1>Title</h1><ul><li>one</li><li>two</li></ul>",

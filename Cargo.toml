@@ -51,16 +51,16 @@ cosmic-pim-auth = "2.2"
 #
 # Nib's libcosmic is unpinned and from the same URL as ours, so cargo unifies
 # the two rather than building both.
-nib = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.0", package = "cosmic-ext-nib" }
+nib = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.1", package = "cosmic-ext-nib" }
 # HTML into a document, for the reader. Not a renderer of arbitrary HTML: the
 # schema is the allow-list, so a `<script>`, a `<style>` and an inline
 # `style=` are dropped because there is nowhere in the model to put them —
 # and an `<img>` becomes a node that draws a placeholder rather than a
 # request. See `ui::reader` for why that is the display-security position
 # rather than a retreat from it.
-nib-html = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.0", package = "cosmic-ext-nib-html" }
-nib-model = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.0", package = "cosmic-ext-nib-model" }
-nib-text = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.0", package = "cosmic-ext-nib-text" }
+nib-html = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.1", package = "cosmic-ext-nib-html" }
+nib-model = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.1", package = "cosmic-ext-nib-model" }
+nib-text = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.1", package = "cosmic-ext-nib-text" }
 
 i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
 i18n-embed-fl = "0.10"
