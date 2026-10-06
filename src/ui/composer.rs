@@ -19,7 +19,7 @@ use cosmic::Element;
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget;
 
-use crate::app::{Composer, Message};
+use crate::app::{Composer, Message, RecipientField};
 use crate::fl;
 
 pub fn view<'a>(
@@ -38,14 +38,27 @@ pub fn view<'a>(
 
     header = header
         .push(widget::divider::horizontal::default())
-        .push(to_row(composer));
+        .push(to_row(composer))
+        .push_maybe(suggestions(composer, RecipientField::To));
 
     if composer.show_cc {
         header = header
             .push(widget::divider::horizontal::default())
-            .push(field(fl!("cc"), &composer.cc, Message::ComposeCcChanged))
+            .push(field(
+                fl!("cc"),
+                &composer.cc,
+                Message::ComposeCcChanged,
+                Some(crate::ui::COMPOSE_CC_ID.clone()),
+            ))
+            .push_maybe(suggestions(composer, RecipientField::Cc))
             .push(widget::divider::horizontal::default())
-            .push(field(fl!("bcc"), &composer.bcc, Message::ComposeBccChanged));
+            .push(field(
+                fl!("bcc"),
+                &composer.bcc,
+                Message::ComposeBccChanged,
+                Some(crate::ui::COMPOSE_BCC_ID.clone()),
+            ))
+            .push_maybe(suggestions(composer, RecipientField::Bcc));
     }
 
     header = header
@@ -54,6 +67,7 @@ pub fn view<'a>(
             fl!("subject"),
             &composer.draft.subject,
             Message::ComposeSubjectChanged,
+            None,
         ));
 
     let mut column = widget::column::with_capacity(4)
@@ -205,21 +219,57 @@ fn attachments(composer: &Composer) -> Element<'_, Message> {
     column.into()
 }
 
+/// The address book's completions for the recipient being typed in `field`,
+/// under it, on the same left edge as the values — or nothing.
+fn suggestions(composer: &Composer, field: RecipientField) -> Option<Element<'_, Message>> {
+    if composer.suggesting != Some(field) || composer.suggestions.is_empty() {
+        return None;
+    }
+    let spacing = cosmic::theme::spacing();
+    let mut column = widget::column::with_capacity(composer.suggestions.len());
+    for (index, known) in composer.suggestions.iter().enumerate() {
+        column = column.push(
+            widget::button::custom(
+                widget::row::with_capacity(2)
+                    .spacing(spacing.space_xs)
+                    .push_maybe(
+                        (!known.name.is_empty()).then(|| widget::text::body(known.name.clone())),
+                    )
+                    .push(crate::ui::muted(known.address.clone())),
+            )
+            .class(cosmic::theme::Button::MenuItem)
+            .width(Length::Fill)
+            .on_press(Message::ComposeSuggestionPicked(index)),
+        );
+    }
+    Some(
+        widget::container(column)
+            .padding(cosmic::iced::Padding {
+                top: 0.0,
+                right: f32::from(spacing.space_m),
+                bottom: f32::from(spacing.space_xxs),
+                left: f32::from(spacing.space_m) + crate::ui::LABEL_WIDTH,
+            })
+            .into(),
+    )
+}
+
 /// One header row: a muted label on the shared column, and a borderless
-/// value beside it.
+/// value beside it. Named with `id` when something has to find it again.
 fn field(
     label: String,
     value: &str,
     on_input: impl Fn(String) -> Message + 'static,
+    id: Option<cosmic::widget::Id>,
 ) -> Element<'_, Message> {
-    row(
-        label,
-        widget::text_input(String::new(), value)
-            .on_input(on_input)
-            .style(cosmic::theme::TextInput::Inline)
-            .width(Length::Fill)
-            .into(),
-    )
+    let mut input = widget::text_input(String::new(), value)
+        .on_input(on_input)
+        .style(cosmic::theme::TextInput::Inline)
+        .width(Length::Fill);
+    if let Some(id) = id {
+        input = input.id(id);
+    }
+    row(label, input.into())
 }
 
 /// The frame every header row shares: label column, then the value.

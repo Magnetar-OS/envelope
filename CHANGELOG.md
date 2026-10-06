@@ -24,6 +24,10 @@ All notable changes to this project are documented here. The format follows
   the button, and a script or a desktop entry named `invoice.pdf` is refused
   with the reason. Everything else is saved as before. The copy that is
   opened is Envelope's own, removed when Envelope next starts.
+- Recipients complete from the address book — Circle's contacts — as they
+  are typed in To, Cc and Bcc: from two letters of a name or an address, a
+  person with two addresses offered as two, an address already in the field
+  not offered again.
 
 ## [1.3.1] - 2026-10-03
 

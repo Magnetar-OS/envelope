@@ -385,6 +385,14 @@ pub fn notice<'a, M: 'static>(text: String, tone: Tone) -> cosmic::Element<'a, M
 pub static COMPOSE_TO_ID: std::sync::LazyLock<cosmic::widget::Id> =
     std::sync::LazyLock::new(|| cosmic::widget::Id::new("compose-to"));
 
+/// The composer's other recipient fields. Named, like the first, so that a
+/// completion picked with the pointer can hand the cursor back to the field
+/// it completed.
+pub static COMPOSE_CC_ID: std::sync::LazyLock<cosmic::widget::Id> =
+    std::sync::LazyLock::new(|| cosmic::widget::Id::new("compose-cc"));
+pub static COMPOSE_BCC_ID: std::sync::LazyLock<cosmic::widget::Id> =
+    std::sync::LazyLock::new(|| cosmic::widget::Id::new("compose-bcc"));
+
 /// The composer's body, so a reply can open with the cursor where the writing
 /// starts.
 ///

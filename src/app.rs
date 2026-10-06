@@ -61,6 +61,9 @@ pub struct AppModel {
     /// The account list's size and modification time when it was last read,
     /// so a change made by another application is noticed.
     accounts_stamp: Stamp,
+    /// Circle's contacts, as recipients to complete. Shared rather than
+    /// cloned into each keystroke's work.
+    address_book: std::sync::Arc<Vec<crate::recipients::Known>>,
     /// The program that adds accounts for the whole desktop. A field so a
     /// test can name one that is not there.
     accounts_window: &'static str,
@@ -411,9 +414,56 @@ pub struct Composer {
     /// hidden recipient.
     pub show_cc: bool,
     pub error: Option<String>,
+    /// Completions from the address book for the recipient being typed, and
+    /// which field it is being typed in.
+    pub suggestions: Vec<crate::recipients::Known>,
+    pub suggesting: Option<RecipientField>,
+}
+
+/// A recipient field of the composer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecipientField {
+    To,
+    Cc,
+    Bcc,
 }
 
 impl Composer {
+    /// The text of one recipient field.
+    fn recipients_mut(&mut self, field: RecipientField) -> &mut String {
+        match field {
+            RecipientField::To => &mut self.to,
+            RecipientField::Cc => &mut self.cc,
+            RecipientField::Bcc => &mut self.bcc,
+        }
+    }
+
+    /// A recipient field was edited: keep the text and complete what is
+    /// being typed at its end.
+    fn type_recipients(
+        &mut self,
+        field: RecipientField,
+        text: String,
+        book: &[crate::recipients::Known],
+    ) {
+        self.suggestions = crate::recipients::complete(book, &text);
+        self.suggesting = (!self.suggestions.is_empty()).then_some(field);
+        *self.recipients_mut(field) = text;
+    }
+
+    /// One of the completions was chosen: writes it into the field it was
+    /// offered for, and says which that was.
+    fn accept_suggestion(&mut self, index: usize) -> Option<RecipientField> {
+        let field = self.suggesting?;
+        let known = self.suggestions.get(index)?.clone();
+        let text = self.recipients_mut(field);
+        *text = crate::recipients::accept(text, &known);
+        self.suggestions.clear();
+        self.suggesting = None;
+        self.error = None;
+        Some(field)
+    }
+
     fn new(scope: Scope, draft: cosmic_pim_mail::Draft, answering: Option<(Folder, u32)>) -> Self {
         // Read before the draft is moved into the struct below.
         let show_cc = !draft.cc.is_empty() || !draft.bcc.is_empty();
@@ -439,6 +489,8 @@ impl Composer {
             show_cc,
             sending: false,
             error: None,
+            suggestions: Vec::new(),
+            suggesting: None,
         }
     }
 
@@ -1092,6 +1144,10 @@ pub enum Message {
     /// Reveal the Cc and Bcc rows.
     ComposeShowCc,
     ComposeToChanged(String),
+    /// One of the address book's completions for a recipient was chosen.
+    ComposeSuggestionPicked(usize),
+    /// The address book, read off the UI thread.
+    AddressBookLoaded(std::sync::Arc<Vec<crate::recipients::Known>>),
     ComposeCcChanged(String),
     ComposeBccChanged(String),
     ComposeSubjectChanged(String),
@@ -1392,7 +1448,14 @@ impl cosmic::Application for AppModel {
         let first_sync = model.sync_now();
         (
             model,
-            Task::batch([launched, cached, drafts, outbox, first_sync]),
+            Task::batch([
+                launched,
+                cached,
+                drafts,
+                outbox,
+                first_sync,
+                load_address_book(),
+            ]),
         )
     }
 
@@ -1976,6 +2039,7 @@ impl AppModel {
                 .collect(),
             accounts: Vec::new(),
             accounts_stamp: None,
+            address_book: std::sync::Arc::default(),
             accounts_window: crate::handoff::ACCOUNTS_WINDOW,
             selected_account: None,
             connection: None,
@@ -2659,9 +2723,42 @@ impl AppModel {
                 Task::none()
             }
             Message::ComposeShowCc => self.with_composer(|c| c.show_cc = true),
-            Message::ComposeToChanged(text) => self.with_composer(|c| c.to = text),
-            Message::ComposeCcChanged(text) => self.with_composer(|c| c.cc = text),
-            Message::ComposeBccChanged(text) => self.with_composer(|c| c.bcc = text),
+            Message::ComposeToChanged(text) => {
+                let book = self.address_book.clone();
+                self.with_composer(|c| c.type_recipients(RecipientField::To, text, &book))
+            }
+            Message::ComposeCcChanged(text) => {
+                let book = self.address_book.clone();
+                self.with_composer(|c| c.type_recipients(RecipientField::Cc, text, &book))
+            }
+            Message::ComposeBccChanged(text) => {
+                let book = self.address_book.clone();
+                self.with_composer(|c| c.type_recipients(RecipientField::Bcc, text, &book))
+            }
+            Message::ComposeSuggestionPicked(index) => {
+                let Some(field) = self
+                    .composer_mut()
+                    .and_then(|composer| composer.accept_suggestion(index))
+                else {
+                    return Task::none();
+                };
+                // Back into the field, after what was just written: picking
+                // with the pointer took the cursor out of it, and the next
+                // recipient is typed where this one ended.
+                let id = match field {
+                    RecipientField::To => crate::ui::COMPOSE_TO_ID.clone(),
+                    RecipientField::Cc => crate::ui::COMPOSE_CC_ID.clone(),
+                    RecipientField::Bcc => crate::ui::COMPOSE_BCC_ID.clone(),
+                };
+                Task::batch([
+                    widget::text_input::focus(id.clone()),
+                    widget::text_input::move_cursor_to_end(id),
+                ])
+            }
+            Message::AddressBookLoaded(book) => {
+                self.address_book = book;
+                Task::none()
+            }
             Message::ComposeSubjectChanged(text) => {
                 let edited = self.with_composer(|c| c.draft.subject = text);
                 // The window is named after the subject, so a window list is
@@ -4209,7 +4306,12 @@ impl AppModel {
     /// Opens a composer in a window of its own.
     fn open_composer(&mut self, composer: Composer) -> Task<Message> {
         let title = compose_title(&composer.draft.subject);
-        self.open_window(Detached::Compose(Box::new(composer)), title)
+        // Read again for each composer, so a contact added in Circle since
+        // the last one is there to complete.
+        Task::batch([
+            self.open_window(Detached::Compose(Box::new(composer)), title),
+            load_address_book(),
+        ])
     }
 
     /// Puts the open message in a window of its own, and gives the reading
@@ -6053,6 +6155,16 @@ fn mail_account(name: &str, email: &str, endpoint: Option<MailEndpoint>) -> Acco
     account
 }
 
+/// Reads the address book off the UI thread.
+fn load_address_book() -> Task<Message> {
+    cosmic::task::future(async {
+        let book = tokio::task::spawn_blocking(crate::recipients::read_address_book)
+            .await
+            .unwrap_or_default();
+        Message::AddressBookLoaded(std::sync::Arc::new(book))
+    })
+}
+
 /// How often to look whether the shared account list changed. A `stat`, so
 /// cheap enough to do this often: an account added in the Accounts window
 /// should appear here before the person has finished switching windows.
@@ -6172,6 +6284,34 @@ mod tests {
     /// so every worker task is skipped and only the state machine runs.
     fn model() -> AppModel {
         AppModel::with_config(Core::default(), Config::default())
+    }
+
+    #[test]
+    fn typing_a_recipient_completes_it_from_the_address_book_and_a_pick_fills_it_in() {
+        let book = vec![crate::recipients::Known {
+            name: "Grace Hopper".to_owned(),
+            address: "grace@navy.example".to_owned(),
+        }];
+        let mut composer = Composer::new(
+            scope_of("a", Path::new("/nonexistent")),
+            cosmic_pim_mail::Draft::new(cosmic_pim_mail::model::Mailbox::default()),
+            None,
+        );
+
+        composer.type_recipients(RecipientField::Cc, "gra".to_owned(), &book);
+        assert_eq!(composer.suggesting, Some(RecipientField::Cc));
+        assert_eq!(composer.suggestions.len(), 1);
+
+        assert_eq!(composer.accept_suggestion(0), Some(RecipientField::Cc));
+        assert_eq!(composer.accept_suggestion(0), None, "picked twice");
+
+        assert_eq!(composer.cc, "Grace Hopper <grace@navy.example>, ");
+        assert!(composer.suggestions.is_empty());
+        assert_eq!(
+            parse_addresses(&composer.cc)[0].address,
+            "grace@navy.example",
+            "the completed text does not parse back to the address"
+        );
     }
 
     #[test]

@@ -91,6 +91,8 @@ Envelope reads, threads, syncs, and sends. What works:
   to what you send. Nothing is ever opened for you; a pass, an invitation, a
   contact card, a PDF or a picture has an Open button, which hands it to
   Pocket, Slate, Circle or its viewer.
+- **Recipients from the address book.** To, Cc and Bcc complete from Circle's
+  contacts as they are typed.
 - **An outbox.** A send that could not reach the server waits there and goes out
   on the next check, with its attachments. Undo send and Send later wait there
   too. Every account's outbox is sent when due, whichever account is on

@@ -154,7 +154,7 @@ Only the rows Thunderbird adds beyond the baseline table above.
 | Feature | Status | Notes |
 |---|---|---|
 | Per-identity signatures | gap | |
-| Address autocomplete from contacts | gap | Planned via Circle (`core::model::Contact` is a library call away); Milestone 3/4. |
+| Address autocomplete from contacts | have | To, Cc and Bcc complete from Circle's contacts, read through `cosmic-pim-core`. Verified 2026-10-06. |
 | Scheduled send (Send Later) | have | Through the outbox, which every account drains when due. Verified 2026-09-29. |
 | Return receipts (MDN) / DSN | partial | DSN bounces are parsed after a sync and announced; no MDN. Verified 2026-09-29. |
 

@@ -17,6 +17,9 @@ publish = false
 # Slate and Circle — one account, one password, one file. `mail` is the engine:
 # the message model, the maildir store, threading, and IMAP.
 cosmic-pim-accounts = "2.2"
+# The contact store, read to complete recipients from Circle's address book.
+# Already in the graph through cosmic-pim-mail.
+cosmic-pim-core = "2.2"
 cosmic-pim-mail = "2.2"
 # The dispatch layer: one sync pass per account, over whichever protocol the
 # account says. Envelope stopped running its own IMAP-only pass the day the

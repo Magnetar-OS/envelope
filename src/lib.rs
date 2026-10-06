@@ -32,6 +32,7 @@ pub mod handoff;
 pub mod i18n;
 pub mod mail;
 pub mod mailto;
+pub mod recipients;
 pub mod scheduling;
 #[cfg(test)]
 mod testbus;

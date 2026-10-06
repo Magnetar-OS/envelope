@@ -2329,6 +2329,7 @@ dependencies = [
  "cosmic-ext-nib-text 1.2.0 (git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.0)",
  "cosmic-pim-accounts",
  "cosmic-pim-auth",
+ "cosmic-pim-core",
  "cosmic-pim-mail",
  "cosmic-pim-sync",
  "dirs 7.0.0",
