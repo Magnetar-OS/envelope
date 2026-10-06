@@ -12,6 +12,11 @@ All notable changes to this project are documented here. The format follows
   desktop's Accounts window on its add page. Without the Accounts window
   installed, it opens Envelope's own account form. Envelope opened on three
   empty panes.
+- An account added in another application — the Accounts window, Slate,
+  Circle — appears within a couple of seconds, without a restart, and the
+  welcome page turns into its inbox. One removed elsewhere goes the same
+  way: the window moves to another account, or back to the welcome page. One
+  whose server was changed elsewhere is reconnected with the new one.
 
 ## [1.3.1] - 2026-10-03
 

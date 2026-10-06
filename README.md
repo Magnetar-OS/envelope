@@ -33,7 +33,9 @@ IMAP with an app password when it is not.
 `$XDG_CONFIG_HOME/cosmic-pim/accounts.toml`, so an account added in Slate shows
 up here with its password already stored, and one added here shows up there.
 The one thing a Slate account will not have is a mail server — a CalDAV URL
-says nothing about an IMAP host — and the same discovery fills that in.
+says nothing about an IMAP host — and the same discovery fills that in. The
+file is looked at every two seconds, so an account added or removed elsewhere
+is added or removed here without a restart.
 
 **Before there is an account, there is one button.** Envelope opens on a
 welcome page whose button starts the desktop's Accounts window

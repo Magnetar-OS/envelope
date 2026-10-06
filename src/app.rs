@@ -58,6 +58,9 @@ pub struct AppModel {
 
     /// The suite's account store, re-read whenever it is written.
     accounts: Vec<Account>,
+    /// The account list's size and modification time when it was last read,
+    /// so a change made by another application is noticed.
+    accounts_stamp: Stamp,
     /// The program that adds accounts for the whole desktop. A field so a
     /// test can name one that is not there.
     accounts_window: &'static str,
@@ -1080,6 +1083,8 @@ pub enum Message {
     /// Open the desktop's Accounts window on its add page, from the welcome
     /// page.
     SetUpAccount,
+    /// Time to look whether the shared account list changed on disk.
+    AccountsFileCheck,
     /// Reveal the Cc and Bcc rows.
     ComposeShowCc,
     ComposeToChanged(String),
@@ -1340,6 +1345,7 @@ impl cosmic::Application for AppModel {
             .unwrap_or_default();
 
         let mut model = Self::with_config(core, config);
+        model.accounts_stamp = accounts_file_stamp();
         model.accounts = load_accounts();
         model.sign_in_providers = mail::sign_in_providers();
         // A crash last session is said once, here, rather than never: the
@@ -1540,6 +1546,9 @@ impl cosmic::Application for AppModel {
             // the timer does not exist yet when one is added, and the first
             // check would wait for a restart.
             cosmic::iced::time::every(self.config.poll_interval()).map(|_| Message::Poll),
+            // Accounts are the suite's: one added in the Accounts window, or
+            // in Slate or Circle, appears here without a restart.
+            cosmic::iced::time::every(ACCOUNTS_FILE_CHECK).map(|_| Message::AccountsFileCheck),
             // Settings changed by another process — cosmic-settings, a text
             // editor — take effect without a restart.
             self.core()
@@ -1959,6 +1968,7 @@ impl AppModel {
                 .map(|(bind, action)| (bind, MenuAction(action)))
                 .collect(),
             accounts: Vec::new(),
+            accounts_stamp: None,
             accounts_window: crate::handoff::ACCOUNTS_WINDOW,
             selected_account: None,
             connection: None,
@@ -2621,6 +2631,7 @@ impl AppModel {
                 }
                 Task::none()
             }
+            Message::AccountsFileCheck => self.accounts_file_check(),
             Message::ComposeShowCc => self.with_composer(|c| c.show_cc = true),
             Message::ComposeToChanged(text) => self.with_composer(|c| c.to = text),
             Message::ComposeCcChanged(text) => self.with_composer(|c| c.cc = text),
@@ -4462,6 +4473,73 @@ impl AppModel {
         }
     }
 
+    /// Reads the shared account list again if it changed on disk since it
+    /// was last read — an account added in the Accounts window, or in Slate
+    /// or Circle.
+    ///
+    /// The file's size and modification time decide, which is one `stat` per
+    /// look. A list that cannot be read is not a list with nobody in it: what
+    /// is on screen stays, and the file is read again when it next changes.
+    fn accounts_file_check(&mut self) -> Task<Message> {
+        let path = cosmic_pim_accounts::account::default_config_path();
+        if !stamp_changed(&mut self.accounts_stamp, &path) {
+            return Task::none();
+        }
+        match AccountStore::open_default() {
+            Ok(store) => self.accounts_reloaded(store.accounts().to_vec()),
+            Err(why) => {
+                tracing::warn!(%why, "could not re-read the shared account store");
+                Task::none()
+            }
+        }
+    }
+
+    /// Takes a list of accounts read again from disk, and follows what
+    /// happened to the account on screen.
+    fn accounts_reloaded(&mut self, accounts: Vec<Account>) -> Task<Message> {
+        let moved = reloaded(self.account(), &accounts);
+        self.accounts = accounts;
+        if self.mail_form.as_ref().is_some_and(|form| {
+            !self
+                .accounts
+                .iter()
+                .any(|account| account.id == form.account_id)
+        }) {
+            self.mail_form = None;
+        }
+        match moved {
+            Reloaded::Kept => Task::none(),
+            Reloaded::Edited => {
+                // The connection carries the account as it was: its servers,
+                // its login. The mailbox on screen is still this account's.
+                self.watch_generation += 1;
+                self.watching = false;
+                self.rebuild_connection();
+                if self.syncing || self.connection.is_none() {
+                    return Task::none();
+                }
+                self.sync_now()
+            }
+            Reloaded::Elsewhere => self.leave_account(),
+        }
+    }
+
+    /// The account on screen is not in the list: moves to the first one
+    /// there is — which is the welcome page turning into an inbox, when there
+    /// was none — or to nothing.
+    fn leave_account(&mut self) -> Task<Message> {
+        self.selected_account = None;
+        self.watch_generation += 1;
+        self.watching = false;
+        self.undo_stack.clear();
+        self.clear_mailbox_state();
+        if let Some(next) = self.accounts.first().map(|account| account.id.clone()) {
+            return self.update(Message::AccountSelected(next));
+        }
+        self.rebuild_connection();
+        Task::none()
+    }
+
     /// Saves one attachment of the open message.
     fn save_attachment(&mut self, index: usize) -> Task<Message> {
         let Some((connection, folder, uid)) = self
@@ -5789,18 +5867,8 @@ impl AppModel {
         if self.selected_account.as_deref() != Some(id) {
             return Task::none();
         }
-        // The window was showing the account just removed: move to another,
-        // or to nothing.
-        self.selected_account = None;
-        self.watch_generation += 1;
-        self.watching = false;
-        self.undo_stack.clear();
-        self.clear_mailbox_state();
-        if let Some(next) = self.accounts.first().map(|account| account.id.clone()) {
-            return self.update(Message::AccountSelected(next));
-        }
-        self.rebuild_connection();
-        Task::none()
+        // The window was showing the account just removed.
+        self.leave_account()
     }
 
     fn save_form(&mut self) -> Task<Message> {
@@ -5939,6 +6007,66 @@ fn mail_account(name: &str, email: &str, endpoint: Option<MailEndpoint>) -> Acco
     account
 }
 
+/// How often to look whether the shared account list changed. A `stat`, so
+/// cheap enough to do this often: an account added in the Accounts window
+/// should appear here before the person has finished switching windows.
+const ACCOUNTS_FILE_CHECK: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// What identifies one version of a file on disk: its size and its
+/// modification time. `None` when there is no file.
+type Stamp = Option<(u64, std::time::SystemTime)>;
+
+/// The account list's stamp, as it is on disk now.
+fn accounts_file_stamp() -> Stamp {
+    file_stamp(&cosmic_pim_accounts::account::default_config_path())
+}
+
+fn file_stamp(path: &std::path::Path) -> Stamp {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.len(), metadata.modified().ok()?))
+}
+
+/// Whether the file at `path` is a different version from the one `last`
+/// names, which is brought up to date.
+///
+/// However many times the file was written since the last look, that is one
+/// change: the list is read once per look, not once per write.
+fn stamp_changed(last: &mut Stamp, path: &std::path::Path) -> bool {
+    let now = file_stamp(path);
+    if now == *last {
+        return false;
+    }
+    *last = now;
+    true
+}
+
+/// What a list of accounts read again from disk means for the account on
+/// screen.
+#[derive(Debug, PartialEq, Eq)]
+enum Reloaded {
+    /// It is there as it was, or there was none and there is none.
+    Kept,
+    /// It is there, and something about it was changed elsewhere.
+    Edited,
+    /// It is gone, or there was none and now there is one to show.
+    Elsewhere,
+}
+
+fn reloaded(shown: Option<&Account>, accounts: &[Account]) -> Reloaded {
+    let Some(shown) = shown else {
+        return if accounts.is_empty() {
+            Reloaded::Kept
+        } else {
+            Reloaded::Elsewhere
+        };
+    };
+    match accounts.iter().find(|account| account.id == shown.id) {
+        Some(now) if now == shown => Reloaded::Kept,
+        Some(_) => Reloaded::Edited,
+        None => Reloaded::Elsewhere,
+    }
+}
+
 fn load_accounts() -> Vec<Account> {
     match AccountStore::open_default() {
         Ok(store) => store.accounts().to_vec(),
@@ -5998,6 +6126,118 @@ mod tests {
     /// so every worker task is skipped and only the state machine runs.
     fn model() -> AppModel {
         AppModel::with_config(Core::default(), Config::default())
+    }
+
+    #[test]
+    fn a_change_to_the_account_list_changes_its_stamp() {
+        // The stamp is how an account added in the Accounts window is
+        // noticed. A rewrite of the same size in the same second is the case
+        // it cannot see, and the size is what catches an added account.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accounts.toml");
+        assert_eq!(file_stamp(&path), None);
+
+        std::fs::write(&path, "").unwrap();
+        let empty = file_stamp(&path);
+        std::fs::write(&path, "[[account]]\nid = \"a\"\n").unwrap();
+
+        assert!(empty.is_some());
+        assert_ne!(file_stamp(&path), empty);
+    }
+
+    #[test]
+    fn the_account_list_is_read_once_per_look_however_often_it_was_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accounts.toml");
+        let mut last = file_stamp(&path);
+
+        // Nothing there, nothing written: nothing to read.
+        assert!(!stamp_changed(&mut last, &path));
+
+        // The Accounts window adding an account is several writes: the
+        // account, then what discovery found for it.
+        std::fs::write(&path, "[[account]]\nid = \"a\"\n").unwrap();
+        std::fs::write(
+            &path,
+            "[[account]]\nid = \"a\"\nurl = \"https://dav.example\"\n",
+        )
+        .unwrap();
+        assert!(stamp_changed(&mut last, &path));
+        assert!(
+            !stamp_changed(&mut last, &path),
+            "one change was read twice"
+        );
+        assert!(!stamp_changed(&mut last, &path));
+
+        // Every account removed, and the file with them.
+        std::fs::remove_file(&path).unwrap();
+        assert!(stamp_changed(&mut last, &path));
+        assert!(!stamp_changed(&mut last, &path));
+    }
+
+    fn account(id: &str) -> Account {
+        let mut account = Account::new(id, "https://dav.example", "ada@example.com");
+        account.id = id.to_owned();
+        account
+    }
+
+    #[test]
+    fn a_reloaded_list_is_followed_by_what_happened_to_the_account_on_screen() {
+        let a = account("a");
+        let b = account("b");
+
+        // Another account added beside it, or nothing at all: as it was.
+        assert_eq!(reloaded(Some(&a), std::slice::from_ref(&a)), Reloaded::Kept);
+        assert_eq!(reloaded(Some(&a), &[b.clone(), a.clone()]), Reloaded::Kept);
+        assert_eq!(reloaded(None, &[]), Reloaded::Kept);
+
+        // Its server changed in the Accounts window.
+        let mut moved = a.clone();
+        moved.mail = Some(MailEndpoint::tls("imap.example.org"));
+        assert_eq!(reloaded(Some(&a), &[moved]), Reloaded::Edited);
+
+        // Removed elsewhere, with and without another to show.
+        assert_eq!(
+            reloaded(Some(&a), std::slice::from_ref(&b)),
+            Reloaded::Elsewhere
+        );
+        assert_eq!(reloaded(Some(&a), &[]), Reloaded::Elsewhere);
+
+        // The first account, added from the welcome page.
+        assert_eq!(reloaded(None, &[a]), Reloaded::Elsewhere);
+    }
+
+    #[test]
+    fn the_last_account_removed_elsewhere_leaves_the_welcome_page_and_no_mailbox() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut model = two_accounts(dir.path());
+        model.accounts = vec![account("a")];
+        model.watching = true;
+        let watch = model.watch_generation;
+
+        let _ = model.accounts_reloaded(Vec::new());
+
+        assert!(model.accounts.is_empty(), "the welcome page is not shown");
+        assert_eq!(model.selected_account, None);
+        assert!(model.connection.is_none(), "still connected to the account");
+        assert!(model.opened.is_none(), "its message is still open");
+        assert!(model.folders.is_empty());
+        assert!(!model.watching);
+        assert_ne!(model.watch_generation, watch, "its watch was not retired");
+    }
+
+    #[test]
+    fn an_account_added_beside_the_one_on_screen_changes_nothing_on_screen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut model = two_accounts(dir.path());
+        model.accounts = vec![account("a")];
+
+        let _ = model.accounts_reloaded(vec![account("a"), account("b")]);
+
+        assert_eq!(model.accounts.len(), 2);
+        assert_eq!(model.selected_account.as_deref(), Some("a"));
+        assert!(model.opened.is_some(), "the open message was closed");
+        assert!(model.connection.is_some());
     }
 
     #[test]
