@@ -35,6 +35,11 @@ up here with its password already stored, and one added here shows up there.
 The one thing a Slate account will not have is a mail server — a CalDAV URL
 says nothing about an IMAP host — and the same discovery fills that in.
 
+**Before there is an account, there is one button.** Envelope opens on a
+welcome page whose button starts the desktop's Accounts window
+(`magnetar-accounts --for=mail`), where an account is added for the whole
+suite. Where that is not installed, the button opens Envelope's own form.
+
 [cosmic-pim/ARCHITECTURE.md](https://github.com/Magnetar-OS/cosmic-pim/blob/main/ARCHITECTURE.md)
 describes how the layers fit and where new code belongs, including the section
 on what the suite's invariants mean for mail. Read it before changing anything

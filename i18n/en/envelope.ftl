@@ -363,3 +363,9 @@ redo = Redo
 
 # Composer
 show-cc = Cc/Bcc
+
+## First run
+
+welcome-title = Welcome to Envelope
+welcome-body = Add your email account to get started. Its calendars and contacts come along to Slate and Circle, where your provider has them.
+welcome-add = Add an account…

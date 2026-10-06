@@ -58,6 +58,9 @@ pub struct AppModel {
 
     /// The suite's account store, re-read whenever it is written.
     accounts: Vec<Account>,
+    /// The program that adds accounts for the whole desktop. A field so a
+    /// test can name one that is not there.
+    accounts_window: &'static str,
     selected_account: Option<String>,
     /// Built from the selected account; `None` when it has no mail endpoint.
     connection: Option<Connection>,
@@ -1074,6 +1077,9 @@ pub enum Message {
     /// Open the Accounts page — the sidebar's empty state offers it, since
     /// that is the one thing to do about having no folders.
     OpenAccounts,
+    /// Open the desktop's Accounts window on its add page, from the welcome
+    /// page.
+    SetUpAccount,
     /// Reveal the Cc and Bcc rows.
     ComposeShowCc,
     ComposeToChanged(String),
@@ -1775,6 +1781,12 @@ impl cosmic::Application for AppModel {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
+        // Before there is an account, three empty panes say nothing anyone
+        // can act on; the welcome page says what to do.
+        if self.accounts.is_empty() {
+            return widget::toaster(&self.toasts, crate::ui::welcome::view());
+        }
+
         let list = if self.showing_unified {
             crate::ui::list::unified(&self.unified)
         } else if self.is_searching() {
@@ -1947,6 +1959,7 @@ impl AppModel {
                 .map(|(bind, action)| (bind, MenuAction(action)))
                 .collect(),
             accounts: Vec::new(),
+            accounts_window: crate::handoff::ACCOUNTS_WINDOW,
             selected_account: None,
             connection: None,
             folders: Vec::new(),
@@ -2597,6 +2610,17 @@ impl AppModel {
                 }
             }),
             Message::OpenAccounts => self.act(Action::Accounts),
+            Message::SetUpAccount => {
+                // The desktop's Accounts window, where an account is added
+                // for the whole suite. Without it installed, this window's
+                // own form does the same job.
+                let window = crate::handoff::add_account(self.accounts_window);
+                if let Err(why) = crate::handoff::start(window) {
+                    tracing::info!(%why, "no Accounts window; using the built-in form");
+                    return self.update(Message::OpenAccounts);
+                }
+                Task::none()
+            }
             Message::ComposeShowCc => self.with_composer(|c| c.show_cc = true),
             Message::ComposeToChanged(text) => self.with_composer(|c| c.to = text),
             Message::ComposeCcChanged(text) => self.with_composer(|c| c.cc = text),
@@ -5974,6 +5998,30 @@ mod tests {
     /// so every worker task is skipped and only the state machine runs.
     fn model() -> AppModel {
         AppModel::with_config(Core::default(), Config::default())
+    }
+
+    #[test]
+    fn without_the_accounts_window_the_welcome_button_opens_the_built_in_form() {
+        // A desktop without the Accounts window installed must still be able
+        // to add an account from the welcome page.
+        let mut model = model();
+        model.accounts_window = "/nonexistent/magnetar-accounts";
+
+        let _ = model.dispatch(Message::SetUpAccount);
+
+        assert!(matches!(model.context_page, ContextPage::Accounts));
+        assert!(model.core.window.show_context);
+    }
+
+    #[test]
+    fn with_the_accounts_window_the_welcome_button_leaves_the_form_closed() {
+        // `true` stands in for the Accounts window: it starts.
+        let mut model = model();
+        model.accounts_window = "true";
+
+        let _ = model.dispatch(Message::SetUpAccount);
+
+        assert!(!model.core.window.show_context);
     }
 
     fn folder(name: &str) -> Folder {

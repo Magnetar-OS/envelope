@@ -28,6 +28,7 @@ pub mod app;
 pub mod config;
 pub mod crash;
 pub mod flags;
+pub mod handoff;
 pub mod i18n;
 pub mod mail;
 pub mod mailto;

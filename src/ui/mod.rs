@@ -12,6 +12,7 @@ pub mod rules;
 pub mod settings;
 pub mod shortcuts;
 pub mod sidebar;
+pub mod welcome;
 
 use chrono::{DateTime, Datelike as _, Local, Utc};
 

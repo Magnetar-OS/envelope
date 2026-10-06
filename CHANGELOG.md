@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A welcome page before there is an account, with one button that opens the
+  desktop's Accounts window on its add page. Without the Accounts window
+  installed, it opens Envelope's own account form. Envelope opened on three
+  empty panes.
+
 ## [1.3.1] - 2026-10-03
 
 ### Changed
