@@ -379,14 +379,15 @@ pub fn outbox(queued: &[cosmic_pim_mail::outbox::Queued], now_ms: i64) -> Elemen
         // A stopped message says so, in the theme's alarming colour: one
         // sitting in a queue the user thinks is working is the worst thing an
         // outbox can do.
-        if message.given_up {
-            body = body.push(crate::ui::destructive(fl!("outbox-stopped")));
-        }
-        if let Some(error) = message.failure.as_ref().and_then(|f| f.reason()) {
-            body = body.push(
-                crate::ui::muted(error.to_owned())
-                    .wrapping(cosmic::iced::core::text::Wrapping::Word),
-            );
+        let status = status(message);
+        if let Some(line) = status.line {
+            body = body.push(if status.stopped {
+                crate::ui::destructive(line)
+            } else {
+                crate::ui::muted(line)
+                    .wrapping(cosmic::iced::core::text::Wrapping::Word)
+                    .into()
+            });
         }
         // Going out right now: past the point where it can be taken back or
         // thrown away, so it says so and offers neither.
@@ -396,10 +397,12 @@ pub fn outbox(queued: &[cosmic_pim_mail::outbox::Queued], now_ms: i64) -> Elemen
         // When it goes: a Send later row that did not say so was a row the
         // user could not tell from one stuck in the queue.
         if !message.given_up && !message.sending && message.next_attempt_ms > now_ms {
-            body = body.push(widget::text::caption(fl!(
-                "outbox-due",
-                when = crate::ui::relative_date_ms(message.next_attempt_ms)
-            )));
+            let when = crate::ui::relative_date_ms(message.next_attempt_ms);
+            body = body.push(widget::text::caption(if message.failure.is_some() {
+                fl!("outbox-retry-due", when = when)
+            } else {
+                fl!("outbox-due", when = when)
+            }));
         }
 
         let mut row = widget::row::with_capacity(4)
@@ -407,7 +410,7 @@ pub fn outbox(queued: &[cosmic_pim_mail::outbox::Queued], now_ms: i64) -> Elemen
             .spacing(spacing.space_s)
             .push(body);
 
-        if message.given_up {
+        if status.retry {
             row = row.push(
                 widget::button::text(fl!("try-again"))
                     .on_press(Message::QueuedRetried(message.id.clone())),
@@ -443,6 +446,74 @@ pub fn outbox(queued: &[cosmic_pim_mail::outbox::Queued], now_ms: i64) -> Elemen
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+}
+
+/// What an outbox row says about a message that has not gone, and whether it
+/// offers to try again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Status {
+    /// Why it has not gone, or nothing for a message nobody has tried yet.
+    line: Option<String>,
+    /// It has stopped and needs the user.
+    stopped: bool,
+    /// "Try again" is offered: for a stopped message that the same attempt
+    /// could still send. Not for one that cannot be built as written, which
+    /// only an edit can change.
+    retry: bool,
+}
+
+/// The words for why a queued message has not gone, by the stop reason the
+/// outbox recorded.
+fn status(message: &cosmic_pim_mail::outbox::Queued) -> Status {
+    use cosmic_pim_mail::outbox::{MAX_ATTEMPTS, SendFailure};
+
+    if !message.given_up {
+        return Status {
+            line: message.failure.as_ref().map(|failure| {
+                fl!(
+                    "outbox-retrying",
+                    reason = failure.reason().unwrap_or_default()
+                )
+            }),
+            stopped: false,
+            retry: false,
+        };
+    }
+    let (line, retry) = match message.failure.as_ref() {
+        Some(SendFailure::Transient { reason }) => (
+            fl!(
+                "outbox-out-of-attempts",
+                count = MAX_ATTEMPTS,
+                reason = reason.as_str()
+            ),
+            true,
+        ),
+        Some(SendFailure::Refused { reason }) => {
+            (fl!("outbox-refused", reason = reason.as_str()), true)
+        }
+        Some(SendFailure::Unsendable { reason }) => {
+            (fl!("outbox-unsendable", reason = reason.as_str()), false)
+        }
+        Some(SendFailure::Uncertain { reason }) => {
+            (fl!("outbox-uncertain", reason = reason.as_str()), true)
+        }
+        // Stopped with no record of why, interrupted, or a kind a later
+        // cosmic-pim adds: the careful reading, which cannot cause a
+        // duplicate.
+        Some(SendFailure::Interrupted) | None => (fl!("outbox-interrupted"), true),
+        Some(other) => (
+            fl!(
+                "outbox-uncertain",
+                reason = other.reason().unwrap_or_default()
+            ),
+            true,
+        ),
+    };
+    Status {
+        line: Some(line),
+        stopped: true,
+        retry,
+    }
 }
 
 /// The unified inbox: every account's INBOX, merged, each row saying whose.
@@ -507,4 +578,79 @@ pub fn unified(entries: &[crate::mail::UnifiedConversation]) -> Element<'_, Mess
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cosmic_pim_mail::Error;
+    use cosmic_pim_mail::outbox::Outbox;
+    use cosmic_pim_mail::smtp::Outcome;
+
+    /// One message queued and drained once with `outcome`, as the outbox
+    /// lists it afterwards.
+    fn after(outcome: impl Fn() -> Outcome) -> cosmic_pim_mail::outbox::Queued {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outbox = Outbox::open(dir.path()).expect("outbox");
+        let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
+            name: None,
+            address: "me@example.com".into(),
+        });
+        draft.to.push(cosmic_pim_mail::Mailbox {
+            name: None,
+            address: "ada@example.com".into(),
+        });
+        outbox
+            .schedule(&cosmic_pim_mail::drafts::new_id(1), &draft, None, 0)
+            .expect("schedule");
+        let drained = outbox.drain_with(|_| outcome(), 1_000);
+        assert!(drained.sent.is_empty());
+        outbox.list().expect("list").remove(0)
+    }
+
+    #[test]
+    fn a_refusal_says_refused_with_the_servers_reply_and_nothing_about_delivery() {
+        let status = status(&after(|| {
+            Outcome::Rejected(Error::Smtp("550 5.1.1 no such user".into()))
+        }));
+        let line = status.line.expect("a line");
+        assert!(line.contains("refused"), "{line}");
+        assert!(line.contains("550 5.1.1 no such user"), "{line}");
+        assert!(line.contains("Nothing was delivered"), "{line}");
+        assert!(!line.contains("may have been delivered"), "{line}");
+        assert!(status.stopped && status.retry);
+    }
+
+    #[test]
+    fn a_send_whose_outcome_was_lost_says_it_may_have_been_delivered() {
+        let status = status(&after(|| {
+            Outcome::Ambiguous(Error::Smtp("connection reset after DATA".into()))
+        }));
+        let line = status.line.expect("a line");
+        assert!(line.contains("may have been delivered"), "{line}");
+        assert!(line.contains("connection reset after DATA"), "{line}");
+        assert!(status.stopped);
+    }
+
+    #[test]
+    fn a_draft_that_cannot_be_built_offers_an_edit_not_a_retry() {
+        let status = status(&after(|| {
+            Outcome::Rejected(Error::Draft("no recipient".into()))
+        }));
+        let line = status.line.expect("a line");
+        assert!(line.contains("cannot be sent as written"), "{line}");
+        assert!(line.contains("no recipient"), "{line}");
+        assert!(status.stopped && !status.retry);
+    }
+
+    #[test]
+    fn a_server_that_could_not_be_reached_is_being_retried_not_stopped() {
+        let status = status(&after(|| {
+            Outcome::NotSent(Error::Smtp("connection refused".into()))
+        }));
+        let line = status.line.expect("a line");
+        assert!(line.contains("Could not reach the server"), "{line}");
+        assert!(line.contains("connection refused"), "{line}");
+        assert!(!status.stopped && !status.retry);
+    }
 }

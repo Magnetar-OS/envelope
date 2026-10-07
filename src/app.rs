@@ -3556,8 +3556,9 @@ impl AppModel {
                 for (account, why) in &drained.failures {
                     tracing::warn!(account, why, "could not send what was due");
                 }
-                if drained.given_up > 0 {
-                    self.say(fl!("outbox-given-up", count = drained.given_up));
+                let stopped = stopped_lines(&drained.stopped);
+                if !stopped.is_empty() {
+                    self.say(stopped.join(" "));
                 } else if drained.sent > 0 {
                     self.say(fl!("sync-sent", count = drained.sent));
                 }
@@ -5885,23 +5886,29 @@ impl AppModel {
                 // account it was sent from.
                 return Task::batch([closed, self.reload_drafts(), Self::sweep_drafts_of(scope)]);
             }
-            mail::Sent::Queued => {
+            mail::Sent::Queued(why) => {
                 // Gone from the screen, because the message is no longer the
                 // user's problem: it is queued, durable, and will go out on
                 // the next check.
                 let closed = self.discard_composer();
-                self.say(fl!("send-queued"));
+                self.say(fl!("send-queued", reason = why));
                 return Task::batch([closed, self.reload_outbox()]);
             }
             mail::Sent::Failed(why) => {
                 composer.error = Some(fl!("send-failed", reason = why));
             }
+            mail::Sent::Refused(why) => {
+                // Not "try again": the server answered, and the same message
+                // gets the same answer. The composer stays so it can change.
+                composer.error = Some(fl!("send-rejected", reason = why));
+            }
+            mail::Sent::Unsendable(why) => {
+                composer.error = Some(fl!("send-unsendable", reason = why));
+            }
             mail::Sent::Uncertain(why) => {
                 // Deliberately different words. "Try again" would be wrong
                 // advice here: the message may already have arrived, and the
-                // client must not be the thing that sends it twice. A refusal
-                // lands here too; its reason says so, and the composer stays
-                // so the message can change.
+                // client must not be the thing that sends it twice.
                 composer.error = Some(fl!("send-uncertain", reason = why));
             }
         }
@@ -6265,7 +6272,31 @@ fn summarise(report: &SyncReport) -> String {
     if report.stuck > 0 {
         parts.push(fl!("sync-stuck", count = report.stuck));
     }
+    parts.extend(stopped_lines(&report.stopped));
     parts.join(" ")
+}
+
+/// What to say about sends the outbox stopped: a sentence per reason, since
+/// each needs different advice — a refused message was not delivered and has
+/// to change, one that may have been delivered must be checked first.
+fn stopped_lines(stopped: &mail::StoppedSends) -> Vec<String> {
+    let mut lines = Vec::new();
+    if stopped.refused > 0 {
+        lines.push(fl!("outbox-refused-count", count = stopped.refused));
+    }
+    if stopped.unsendable > 0 {
+        lines.push(fl!("outbox-unsendable-count", count = stopped.unsendable));
+    }
+    if stopped.may_have_been_delivered > 0 {
+        lines.push(fl!(
+            "outbox-uncertain-count",
+            count = stopped.may_have_been_delivered
+        ));
+    }
+    if stopped.out_of_attempts > 0 {
+        lines.push(fl!("outbox-given-up", count = stopped.out_of_attempts));
+    }
+    lines
 }
 
 /// The inverse of `Folder::local_name` — percent-decoding a maildir directory
@@ -6789,6 +6820,26 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_send_is_not_announced_as_perhaps_delivered() {
+        let lines = stopped_lines(&mail::StoppedSends {
+            refused: 1,
+            ..mail::StoppedSends::default()
+        });
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("refused"), "{lines:?}");
+        assert!(!lines[0].contains("may have been delivered"), "{lines:?}");
+
+        let lines = stopped_lines(&mail::StoppedSends {
+            may_have_been_delivered: 2,
+            out_of_attempts: 1,
+            ..mail::StoppedSends::default()
+        });
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].contains("may have been delivered"), "{lines:?}");
+        assert!(stopped_lines(&mail::StoppedSends::default()).is_empty());
+    }
+
+    #[test]
     fn a_message_the_server_refuses_stays_in_the_composer_and_is_not_queued() {
         // A permanent refusal — bad credentials, a recipient the server will
         // not take — is not a network blip: queued, it would be refused again
@@ -6801,7 +6852,7 @@ mod tests {
 
         let _ = model.dispatch(Message::InWindow(
             id,
-            Box::new(Message::ComposeSent(Box::new(mail::Sent::Uncertain(
+            Box::new(Message::ComposeSent(Box::new(mail::Sent::Refused(
                 "550 5.1.1 no such user".into(),
             )))),
         ));
@@ -6814,8 +6865,10 @@ mod tests {
             composer
                 .error
                 .as_deref()
-                .is_some_and(|error| error.contains("550 5.1.1")),
-            "the refusal was not shown: {:?}",
+                .is_some_and(|error| error.contains("550 5.1.1")
+                    && error.contains("refused")
+                    && !error.contains("may or may not")),
+            "the refusal was not shown as one: {:?}",
             composer.error
         );
         assert!(

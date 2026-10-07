@@ -32,6 +32,17 @@ All notable changes to this project are documented here. The format follows
   have one, a search for the address when they do not. Without Circle
   installed, it says so.
 
+### Fixed
+
+- A message the server refused says so again, with the server's reply, and
+  that nothing was delivered: in the composer, in the Outbox and in the
+  status line. Since 1.3.0 every stopped send was described as one that
+  "may or may not have been delivered". The Outbox now words each case on
+  its own: refused (edit it, or try again), cannot be sent as written (edit
+  it; no Try again), may have been delivered (check Sent first), sending
+  interrupted, still retrying a server it could not reach (with when), and
+  stopped after the last of its tries.
+
 ### Changed
 
 - Built against cosmic-pim 3.0.0 and libcosmic `60ad2cc`. Queued mail now

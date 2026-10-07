@@ -98,6 +98,64 @@ pub struct SyncReport {
     /// Writes that will not move on their own — bad credentials, no permission,
     /// a renumbering mid-flight.
     pub stuck: usize,
+    /// Sends the outbox stopped retrying on this pass, by why.
+    pub stopped: StoppedSends,
+}
+
+/// Sends the outbox stopped retrying, counted by why it stopped.
+///
+/// Counted apart because each needs different advice: a refused message was
+/// not delivered and has to change; one that may have been delivered must be
+/// checked before anybody sends it again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StoppedSends {
+    /// The server refused them. Nothing was delivered.
+    pub refused: usize,
+    /// They cannot be built into a message as written. Nothing was sent.
+    pub unsendable: usize,
+    /// The outcome was lost, or the send was interrupted: they may be in the
+    /// recipients' inboxes already.
+    pub may_have_been_delivered: usize,
+    /// The server could not be reached for
+    /// [`MAX_ATTEMPTS`](cosmic_pim_mail::outbox::MAX_ATTEMPTS) tries.
+    pub out_of_attempts: usize,
+}
+
+impl StoppedSends {
+    /// Counts what a drain or a pass reports as stopped.
+    #[must_use]
+    pub fn tally(stopped: &[cosmic_pim_mail::outbox::Stopped]) -> Self {
+        let mut tally = Self::default();
+        for stopped in stopped {
+            tally.add_one(&stopped.failure);
+        }
+        tally
+    }
+
+    fn add_one(&mut self, failure: &SendFailure) {
+        match failure {
+            SendFailure::Refused { .. } => self.refused += 1,
+            SendFailure::Unsendable { .. } => self.unsendable += 1,
+            SendFailure::Transient { .. } => self.out_of_attempts += 1,
+            // `Uncertain`, `Interrupted`, and whatever a later cosmic-pim
+            // adds: the careful reading, which cannot cause a duplicate.
+            _ => self.may_have_been_delivered += 1,
+        }
+    }
+
+    /// Adds another tally to this one.
+    pub fn add(&mut self, other: Self) {
+        self.refused += other.refused;
+        self.unsendable += other.unsendable;
+        self.may_have_been_delivered += other.may_have_been_delivered;
+        self.out_of_attempts += other.out_of_attempts;
+    }
+
+    /// How many stopped, whatever the reason.
+    #[must_use]
+    pub fn total(&self) -> usize {
+        self.refused + self.unsendable + self.may_have_been_delivered + self.out_of_attempts
+    }
 }
 
 /// Everything needed to reach one account's mail.
@@ -151,6 +209,7 @@ impl SyncReport {
             || self.sent > 0
             || !self.failures.is_empty()
             || self.stuck > 0
+            || self.stopped.total() > 0
     }
 }
 
@@ -436,9 +495,9 @@ pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
 
     let mut report = SyncReport {
         sent: pass.sent.len(),
-        // Sends the outbox has given up on need a person, the same as a push
-        // the flag queue has given up on.
-        stuck: pass.stopped.len(),
+        // Sends the outbox has given up on need a person, each in its own
+        // words.
+        stopped: StoppedSends::tally(&pass.stopped),
         ..SyncReport::default()
     };
     // The pull ran, but the outbox was not drained, or only in part. What
@@ -699,8 +758,8 @@ pub fn due_connections(now_ms: i64) -> Result<Vec<Connection>, String> {
 pub struct Drained {
     /// Messages that left.
     pub sent: usize,
-    /// Sends the outboxes have given up on. These need a person.
-    pub given_up: usize,
+    /// Sends the outboxes stopped retrying, by why. These need a person.
+    pub stopped: StoppedSends,
     /// Accounts whose outbox could not be drained at all, by name, with the
     /// reason. A message that fails to send is not one of these: it stays
     /// queued, and its row in the outbox says why.
@@ -739,7 +798,7 @@ pub fn drain_due(connections: &[Connection], now_ms: i64) -> Drained {
         {
             Ok(report) => {
                 drained.sent += report.sent.len();
-                drained.given_up += report.stopped.len();
+                drained.stopped.add(StoppedSends::tally(&report.stopped));
                 // What went before a local failure stopped the drain is
                 // counted above; the failure is the account's.
                 if let Some(why) = report.error {
@@ -2714,24 +2773,48 @@ fn transport(transport: Transport) -> Security {
 }
 
 /// What happened to a send, as the composer needs to hear it.
+///
+/// Each variant needs its own words, which is why they are carried apart all
+/// the way to the user: "try again", "change it", and "check before you do"
+/// are different advice, and the wrong one either loses a message or sends it
+/// twice.
 #[derive(Debug, Clone)]
 pub enum Sent {
     /// Delivered. The Sent copy went where the account's drain files it; a
     /// copy that could not be filed is logged, as for every queued send.
     Ok,
-    /// Not delivered, but definitely not delivered — so it is in the outbox and
-    /// will go out on its own.
-    Queued,
+    /// Not delivered, but definitely not delivered, for a reason that passes
+    /// — the server could not be reached. It is in the outbox and will be
+    /// tried again on its own. Carries the reason.
+    Queued(String),
     /// Definitely not delivered. The draft is intact and may be sent again.
     Failed(String),
-    /// Not delivered for certain: the server refused it, or the send broke off
-    /// where it may already have arrived. The outbox stops both the same way
-    /// and records only the reason, so the composer says the careful thing.
-    ///
-    /// Carried separately from [`Self::Failed`] all the way to the user,
-    /// because the two need different words: one says "try again", the other
-    /// says "check before you do".
+    /// The server refused it, with this reply. Nothing was delivered, and
+    /// sending it again unchanged would be refused again.
+    Refused(String),
+    /// It cannot be turned into a message as written: why. Nothing was sent.
+    Unsendable(String),
+    /// The send broke off where it may already have arrived.
     Uncertain(String),
+}
+
+impl Sent {
+    /// How a send the outbox stopped is told to the composer.
+    fn stopped(failure: &SendFailure) -> Self {
+        match failure {
+            SendFailure::Refused { reason } => Self::Refused(reason.clone()),
+            SendFailure::Unsendable { reason } => Self::Unsendable(reason.clone()),
+            // Out of attempts without ever reaching the server: not
+            // delivered.
+            SendFailure::Transient { reason } => Self::Failed(reason.clone()),
+            SendFailure::Uncertain { reason } => Self::Uncertain(reason.clone()),
+            SendFailure::Interrupted => {
+                Self::Uncertain("sending was interrupted before the outcome was recorded".into())
+            }
+            // A kind a later cosmic-pim adds: the careful reading.
+            other => Self::Uncertain(other.reason().unwrap_or_default().to_owned()),
+        }
+    }
 }
 
 /// Sends a draft now, with the undo grace off.
@@ -2744,8 +2827,8 @@ pub enum Sent {
 /// copy itself) for Gmail and Graph — and the message it answers is marked
 /// once it goes, the same as for a queued reply.
 ///
-/// What the drain left in the outbox says how it went. A send that failed
-/// for a reason that will pass stays queued. One the outbox stopped — refused,
+/// What the drain reports says how it went. A send that failed for a reason
+/// that will pass stays queued. One the outbox stopped — refused, unsendable,
 /// or perhaps delivered — or one the drain never reached is taken back out,
 /// so the composer that still holds it is its only copy, as before it was
 /// sent; its draft record is kept too.
@@ -2772,7 +2855,7 @@ pub fn send(
 
     // Once the message is the outbox's or the recipients': leaving the draft
     // as well would show it twice and send it once.
-    if matches!(sent, Sent::Ok | Sent::Queued)
+    if matches!(sent, Sent::Ok | Sent::Queued(_))
         && let Some(previous) = draft_id
         && let Err(why) = delete_draft(connection, previous)
     {
@@ -2787,11 +2870,20 @@ fn settle_send(
     id: &str,
     drained: Result<cosmic_pim_sync::DrainReport, String>,
 ) -> Sent {
-    let drained = match drained {
-        Ok(report) if report.sent.iter().any(|sent| sent.id == id) => return Sent::Ok,
-        // A drain that a local failure stopped part-way may not have reached
-        // the message.
-        Ok(report) => report.error.map_or(Ok(()), |why| Err(why.to_string())),
+    let reached = match drained {
+        Ok(report) => {
+            if report.sent.iter().any(|sent| sent.id == id) {
+                return Sent::Ok;
+            }
+            // Stopped by this drain: the report says why, in so many words.
+            if let Some(stopped) = report.stopped.iter().find(|stopped| stopped.id == id) {
+                take_back(connection, id);
+                return Sent::stopped(&stopped.failure);
+            }
+            // A drain that a local failure stopped part-way may not have
+            // reached the message.
+            report.error.map_or(Ok(()), |why| Err(why.to_string()))
+        }
         Err(why) => Err(why),
     };
     let queued = match list_outbox(connection) {
@@ -2804,25 +2896,28 @@ fn settle_send(
     if queued.sending {
         // Claimed by a drain that has not settled it, so it may be arriving.
         return Sent::Uncertain(
-            drained
+            reached
                 .err()
                 .unwrap_or_else(|| "it is being sent right now".into()),
         );
     }
     if queued.given_up {
         take_back(connection, id);
-        return Sent::Uncertain(
+        return queued
+            .failure
+            .as_ref()
+            .map_or_else(|| Sent::stopped(&SendFailure::Interrupted), Sent::stopped);
+    }
+    match reached {
+        // Failed for a reason that passes, and rescheduled.
+        Ok(()) => Sent::Queued(
             queued
                 .failure
                 .as_ref()
                 .and_then(SendFailure::reason)
                 .unwrap_or_default()
                 .to_owned(),
-        );
-    }
-    match drained {
-        // Failed for a reason that passes, and rescheduled.
-        Ok(()) => Sent::Queued,
+        ),
         // The drain stopped before it reached the message.
         Err(why) => {
             take_back(connection, id);
@@ -3128,6 +3223,45 @@ mod tests {
         // A spacer table with no words in it is not worth a document; the
         // reader shows the extracted text instead.
         assert!(body_document(&html_message("<table><tr><td></td></tr></table>")).is_none());
+    }
+
+    #[test]
+    fn stopped_sends_are_counted_by_why_they_stopped() {
+        use cosmic_pim_mail::smtp::Outcome;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outbox = Outbox::open(dir.path()).expect("outbox");
+        let mut draft = Draft::new(Mailbox {
+            name: None,
+            address: "me@example.com".into(),
+        });
+        draft.to.push(Mailbox {
+            name: None,
+            address: "ada@example.com".into(),
+        });
+        for n in 1..=3 {
+            outbox
+                .schedule(&drafts::new_id(n), &draft, None, 0)
+                .expect("schedule");
+        }
+        let mut outcomes = vec![
+            Outcome::Rejected(cosmic_pim_mail::Error::Smtp("550 no".into())),
+            Outcome::Rejected(cosmic_pim_mail::Error::Draft("no recipient".into())),
+            Outcome::Ambiguous(cosmic_pim_mail::Error::Smtp("reset".into())),
+        ]
+        .into_iter();
+        let drained = outbox.drain_with(|_| outcomes.next().expect("an outcome"), 1_000);
+
+        let tally = StoppedSends::tally(&drained.stopped);
+        assert_eq!(
+            (
+                tally.refused,
+                tally.unsendable,
+                tally.may_have_been_delivered
+            ),
+            (1, 1, 1)
+        );
+        assert_eq!(tally.out_of_attempts, 0);
+        assert_eq!(tally.total(), 3);
     }
 
     #[test]

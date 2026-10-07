@@ -809,7 +809,7 @@ fn a_send_that_never_reached_the_server_lands_in_the_outbox() {
 
     let sent = mail::send(&connection, &draft, None, None);
     assert!(
-        matches!(sent, mail::Sent::Queued),
+        matches!(sent, mail::Sent::Queued(_)),
         "an offline send was not queued: {sent:?}"
     );
 
@@ -841,7 +841,7 @@ fn queueing_a_send_takes_its_draft_with_it() {
     assert_eq!(mail::list_drafts(&connection).expect("list").len(), 1);
 
     let sent = mail::send(&connection, &draft, None, Some(&id));
-    assert!(matches!(sent, mail::Sent::Queued), "{sent:?}");
+    assert!(matches!(sent, mail::Sent::Queued(_)), "{sent:?}");
 
     assert!(
         mail::list_drafts(&connection).expect("list").is_empty(),
@@ -2255,7 +2255,7 @@ fn an_immediate_send_the_server_refuses_comes_back_to_the_composer() {
 
     let sent = mail::send(&connection, &draft, Some((inbox(), 1)), Some(&id));
     assert!(
-        matches!(&sent, mail::Sent::Uncertain(why) if why.contains("550")),
+        matches!(&sent, mail::Sent::Refused(why) if why.contains("550")),
         "{sent:?}"
     );
     assert!(mail::list_outbox(&connection).expect("list").is_empty());

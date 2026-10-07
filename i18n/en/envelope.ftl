@@ -106,6 +106,8 @@ edit = Edit
 sent = Sent.
 send-failed = Not sent: { $reason } Nothing was delivered, so you can try again.
 send-uncertain = This may or may not have been delivered: { $reason } Check your Sent folder or ask the recipient before sending it again.
+send-rejected = The server refused this message: { $reason } Nothing was delivered. Change what it says, then send it again.
+send-unsendable = This message cannot be sent as written: { $reason } Nothing was sent.
 draft-not-saved = The draft could not be saved: { $reason }
 draft-gone = That draft is no longer there.
 drafts = Drafts
@@ -135,11 +137,17 @@ finding-settings = Looking…
 found-known = These are the published settings for this provider.
 found-autoconfig = Found where this domain publishes its settings.
 found-guessed = Guessed from the domain — something answered, but check them.
-send-queued = In the outbox. It will go out on the next check.
+send-queued = Not sent yet: { $reason } It is in the outbox and will be tried again by itself.
 outbox = Outbox
 outbox-empty = Nothing waiting to go.
-outbox-stopped = Stopped after too many tries.
 outbox-due = Due { $when }
+outbox-retry-due = Trying again { $when }
+outbox-retrying = Could not reach the server: { $reason }
+outbox-out-of-attempts = Stopped after { $count } tries without reaching the server. The last: { $reason }
+outbox-refused = The server refused it: { $reason } Nothing was delivered. Edit it, or try again once the problem is fixed.
+outbox-unsendable = It cannot be sent as written: { $reason } Edit it to send it.
+outbox-uncertain = It may have been delivered: { $reason } Check your Sent folder or ask the recipient before trying again.
+outbox-interrupted = Sending was interrupted, so it may have been delivered. Check your Sent folder or ask the recipient before trying again.
 outbox-sending = Sending now…
 discard-queued-title = Discard { $name }?
 discard-queued-warning = It has not been sent, and this is the only copy. To change it instead, use Edit.
@@ -151,8 +159,20 @@ sync-sent = { $count ->
        *[other] { $count } sent.
     }
 outbox-given-up = { $count ->
-        [one] One queued message has stopped trying. The Outbox says why.
-       *[other] { $count } queued messages have stopped trying. The Outbox says why.
+        [one] One queued message could not reach the server and has stopped trying. The Outbox says why.
+       *[other] { $count } queued messages could not reach the server and have stopped trying. The Outbox says why.
+    }
+outbox-refused-count = { $count ->
+        [one] The server refused one queued message. Nothing was delivered; the Outbox has its reply.
+       *[other] The server refused { $count } queued messages. Nothing was delivered; the Outbox has its replies.
+    }
+outbox-unsendable-count = { $count ->
+        [one] One queued message cannot be sent as written. The Outbox says why.
+       *[other] { $count } queued messages cannot be sent as written. The Outbox says why.
+    }
+outbox-uncertain-count = { $count ->
+        [one] One queued message may have been delivered: sending broke off. Check your Sent folder before trying it again.
+       *[other] { $count } queued messages may have been delivered: sending broke off. Check your Sent folder before trying them again.
     }
 
 # Actions and shortcuts
