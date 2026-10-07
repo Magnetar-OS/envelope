@@ -382,9 +382,10 @@ pub fn outbox(queued: &[cosmic_pim_mail::outbox::Queued], now_ms: i64) -> Elemen
         if message.given_up {
             body = body.push(crate::ui::destructive(fl!("outbox-stopped")));
         }
-        if let Some(error) = &message.last_error {
+        if let Some(error) = message.failure.as_ref().and_then(|f| f.reason()) {
             body = body.push(
-                crate::ui::muted(error.clone()).wrapping(cosmic::iced::core::text::Wrapping::Word),
+                crate::ui::muted(error.to_owned())
+                    .wrapping(cosmic::iced::core::text::Wrapping::Word),
             );
         }
         // Going out right now: past the point where it can be taken back or

@@ -1554,9 +1554,8 @@ fn a_reply_that_leaves_the_outbox_marks_what_it_answers() {
 
     let drained = mail::outbox(&connection)
         .expect("outbox")
-        .drain_with(|_| Outcome::Sent(b"sent".to_vec()), i64::MAX)
-        .expect("drain");
-    let sent: Vec<String> = drained.sent.into_iter().map(|(id, _)| id).collect();
+        .drain_with(|_| Outcome::Sent(b"sent".to_vec()), i64::MAX);
+    let sent: Vec<String> = drained.sent.into_iter().map(|sent| sent.id).collect();
     assert_eq!(sent.len(), 1);
 
     assert_eq!(
@@ -1625,9 +1624,8 @@ fn a_reply_that_went_after_a_renumbering_marks_no_stranger() {
 
     let drained = mail::outbox(&connection)
         .expect("outbox")
-        .drain_with(|_| Outcome::Sent(b"sent".to_vec()), i64::MAX)
-        .expect("drain");
-    let sent: Vec<String> = drained.sent.into_iter().map(|(id, _)| id).collect();
+        .drain_with(|_| Outcome::Sent(b"sent".to_vec()), i64::MAX);
+    let sent: Vec<String> = drained.sent.into_iter().map(|sent| sent.id).collect();
     assert_eq!(
         mail::settle_answered(&connection, &sent).expect("settle"),
         0
@@ -1672,17 +1670,15 @@ fn a_send_in_flight_is_reported_as_sending_not_as_gone() {
 
     let mut during = None;
     let mut due_during = true;
-    mail::outbox(&connection)
-        .expect("outbox")
-        .drain_with(
-            |_| {
-                during = Some(mail::cancel_send(&connection, &id).expect("cancel"));
-                due_during = mail::has_due_sends(&connection, i64::MAX);
-                Outcome::Sent(b"sent".to_vec())
-            },
-            i64::MAX,
-        )
-        .expect("drain");
+    let drained = mail::outbox(&connection).expect("outbox").drain_with(
+        |_| {
+            during = Some(mail::cancel_send(&connection, &id).expect("cancel"));
+            due_during = mail::has_due_sends(&connection, i64::MAX);
+            Outcome::Sent(b"sent".to_vec())
+        },
+        i64::MAX,
+    );
+    assert_eq!(drained.sent.len(), 1);
     // Nor is it due for another pass while one is sending it.
     assert!(!due_during, "a send in flight counted as waiting");
 
@@ -1743,7 +1739,7 @@ fn every_account_with_a_due_send_is_driven_and_no_other() {
         mail::list_outbox(connection)
             .expect("list")
             .iter()
-            .map(|queued| (queued.attempts, queued.last_error.is_some()))
+            .map(|queued| (queued.attempts, queued.failure.is_some()))
             .collect()
     };
     assert_eq!(

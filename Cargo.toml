@@ -13,21 +13,21 @@ publish = false
 
 [dependencies]
 # --- the shared PIM substrate (MPL-2.0) ---
-# Registry versions: cosmic-pim 2.2 is on crates.io. `accounts` is shared with
+# Registry versions: cosmic-pim 3 is on crates.io. `accounts` is shared with
 # Slate and Circle — one account, one password, one file. `mail` is the engine:
 # the message model, the maildir store, threading, and IMAP.
-cosmic-pim-accounts = "2.2"
+cosmic-pim-accounts = "3"
 # The contact store, read to complete recipients from Circle's address book.
 # Already in the graph through cosmic-pim-mail.
-cosmic-pim-core = "2.2"
-cosmic-pim-mail = "2.2"
+cosmic-pim-core = "3"
+cosmic-pim-mail = "3"
 # The dispatch layer: one sync pass per account, over whichever protocol the
 # account says. Envelope stopped running its own IMAP-only pass the day the
 # substrate could route all five.
-cosmic-pim-sync = "2.2"
+cosmic-pim-sync = "3"
 # The OAuth flow: sign-in in the user's own browser, and token renewal. What
 # turns "Gmail needs an app password" into "sign in with Google".
-cosmic-pim-auth = "2.2"
+cosmic-pim-auth = "3"
 
 # --- the text engine (MPL-2.0) ---
 # Nib began here, as the composer's quoting, wrapping and undo, and outgrew the

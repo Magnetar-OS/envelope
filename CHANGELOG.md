@@ -32,6 +32,14 @@ All notable changes to this project are documented here. The format follows
   have one, a search for the address when they do not. Without Circle
   installed, it says so.
 
+### Changed
+
+- Built against cosmic-pim 3.0.0 and libcosmic `60ad2cc`. Queued mail now
+  leaves oldest first. Yahoo, AOL, Proton, mailbox.org, Posteo and GMX
+  addresses are recognised when an account is added. A sync that fetched
+  mail but could not send the outbox now says so, as a failure, instead of
+  only logging it.
+
 ## [1.3.1] - 2026-10-03
 
 ### Changed

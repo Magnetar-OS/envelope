@@ -303,7 +303,7 @@ fn queue_reply(
 
     let now = chrono::Utc::now().timestamp_millis();
     crate::mail::outbox(&connection)?
-        .submit(&cosmic_pim_mail::drafts::new_id(now), &draft, now)
+        .submit(&cosmic_pim_mail::drafts::new_id(now), &draft, None, now)
         .map_err(|why| why.to_string())?;
     Ok(connection)
 }

@@ -26,11 +26,12 @@ use cosmic_pim_mail::imap::{Endpoint, Security, Session, SyncOptions, Watched};
 use cosmic_pim_mail::index::{self, Hit, Index};
 use cosmic_pim_mail::maildir::{self, MaildirStore};
 use cosmic_pim_mail::model::{Flags, Mailbox, Message};
-use cosmic_pim_mail::outbox::{Outbox, Queued};
+use cosmic_pim_mail::outbox::{Outbox, Queued, SendFailure};
 use cosmic_pim_mail::push::{PushOp, PushQueue};
 use cosmic_pim_mail::sasl::Credentials;
 use cosmic_pim_mail::snooze;
 use cosmic_pim_mail::store::{Cursor, MailStore, RemoteMessage};
+use cosmic_pim_sync::SentMessage;
 
 /// How often a cycle does the full-mailbox reconciliation pass.
 ///
@@ -383,7 +384,7 @@ pub fn sign_in(provider_id: &str, email: &str) -> Result<String, String> {
         .map_err(|why| format!("could not open the browser: {why}"))?;
 
     let code = pending.wait().map_err(|why| why.to_string())?;
-    let credential = pending
+    let grant = pending
         .exchange(&code, oauth)
         .map_err(|why| why.to_string())?;
 
@@ -394,7 +395,7 @@ pub fn sign_in(provider_id: &str, email: &str) -> Result<String, String> {
     let id = account.id.clone();
     let mut accounts = AccountStore::open_default().map_err(|why| why.to_string())?;
     accounts
-        .add_oauth(account, &provider.id, &credential)
+        .add_oauth(account, &provider.id, &grant.credential)
         .map_err(|why| why.to_string())?;
     Ok(id)
 }
@@ -437,9 +438,14 @@ pub fn sync(connection: &Connection, cycle: u64) -> Result<SyncReport, String> {
         sent: pass.sent.len(),
         // Sends the outbox has given up on need a person, the same as a push
         // the flag queue has given up on.
-        stuck: pass.given_up,
+        stuck: pass.stopped.len(),
         ..SyncReport::default()
     };
+    // The pull ran, but the outbox was not drained, or only in part. What
+    // went before the failure is in `sent` and was settled with the pass.
+    if let Some(why) = &pass.outbox_error {
+        report.failures.push(("Outbox".to_owned(), why.to_string()));
+    }
 
     for mailbox in pass.mailboxes {
         // IMAP hands the full folder over — delimiter and the server's own
@@ -514,17 +520,18 @@ fn pass(
 }
 
 /// What every send the outbox reports needs once it has gone, whichever
-/// drain sent it: `sent` is the outbox ids of a pass's or a drain's report,
+/// drain sent it: `sent` is what a pass's or a drain's report says went,
 /// and `kept` what [`kept_for_sent`] read before that drain.
-fn after_sending(connection: &Connection, sent: &[String], kept: &HashMap<String, Draft>) {
+fn after_sending(connection: &Connection, sent: &[SentMessage], kept: &HashMap<String, Draft>) {
     // The messages those replies answered are marked now.
-    if let Err(why) = settle_answered(connection, sent) {
+    let ids: Vec<String> = sent.iter().map(|sent| sent.id.clone()).collect();
+    if let Err(why) = settle_answered(connection, &ids) {
         tracing::warn!(%why, "sent replies could not mark what they answered");
     }
     if !is_pop3(connection) {
         return;
     }
-    for id in sent {
+    for SentMessage { id, .. } in sent {
         let filed = kept
             .get(id)
             .ok_or_else(|| "it was queued after the outbox was read".to_owned())
@@ -732,7 +739,14 @@ pub fn drain_due(connections: &[Connection], now_ms: i64) -> Drained {
         {
             Ok(report) => {
                 drained.sent += report.sent.len();
-                drained.given_up += report.given_up;
+                drained.given_up += report.stopped.len();
+                // What went before a local failure stopped the drain is
+                // counted above; the failure is the account's.
+                if let Some(why) = report.error {
+                    drained
+                        .failures
+                        .push((connection.account.display_name.clone(), why.to_string()));
+                }
             }
             Err(why) => drained
                 .failures
@@ -1180,7 +1194,7 @@ fn enqueue(
         None => drafts::new_id(now_ms()),
     };
     outbox(connection)?
-        .schedule(&id, draft, not_before_ms)
+        .schedule(&id, draft, None, not_before_ms)
         .map_err(|why| why.to_string())?;
     // After the message is queued: a record for an entry that never made it
     // would only sit here. Not fatal: the reply still goes, and saying the
@@ -1219,7 +1233,7 @@ pub enum Cancelled {
 /// or are about to have.
 pub fn cancel_send(connection: &Connection, id: &str) -> Result<Cancelled, String> {
     let outbox = outbox(connection)?;
-    let Some(draft) = outbox.cancel(id).map_err(|why| why.to_string())? else {
+    let Some(queued) = outbox.cancel(id).map_err(|why| why.to_string())? else {
         // The claim a drain makes before sending is what refused the take;
         // the listing shows it as sending until the answer comes back.
         let sending = outbox
@@ -1234,7 +1248,7 @@ pub fn cancel_send(connection: &Connection, id: &str) -> Result<Cancelled, Strin
         });
     };
     Ok(Cancelled::TakenBack(Box::new(TakenBack {
-        draft,
+        draft: queued.draft,
         answering: take_answering(connection, id)?,
     })))
 }
@@ -2774,8 +2788,10 @@ fn settle_send(
     drained: Result<cosmic_pim_sync::DrainReport, String>,
 ) -> Sent {
     let drained = match drained {
-        Ok(report) if report.sent.iter().any(|sent| sent == id) => return Sent::Ok,
-        Ok(_) => Ok(()),
+        Ok(report) if report.sent.iter().any(|sent| sent.id == id) => return Sent::Ok,
+        // A drain that a local failure stopped part-way may not have reached
+        // the message.
+        Ok(report) => report.error.map_or(Ok(()), |why| Err(why.to_string())),
         Err(why) => Err(why),
     };
     let queued = match list_outbox(connection) {
@@ -2795,7 +2811,14 @@ fn settle_send(
     }
     if queued.given_up {
         take_back(connection, id);
-        return Sent::Uncertain(queued.last_error.unwrap_or_default());
+        return Sent::Uncertain(
+            queued
+                .failure
+                .as_ref()
+                .and_then(SendFailure::reason)
+                .unwrap_or_default()
+                .to_owned(),
+        );
     }
     match drained {
         // Failed for a reason that passes, and rescheduled.
