@@ -401,7 +401,7 @@ pub struct Composer {
     pub bcc: String,
     /// The message being answered, so it can be marked as answered once the
     /// reply is actually away.
-    pub answering: Option<(Folder, u32)>,
+    pub answering: Option<cosmic_pim_mail::Answers>,
     /// Set once this has been saved, so re-saving replaces rather than
     /// accumulating a file per edit.
     pub draft_id: Option<String>,
@@ -466,7 +466,11 @@ impl Composer {
         Some(field)
     }
 
-    fn new(scope: Scope, draft: cosmic_pim_mail::Draft, answering: Option<(Folder, u32)>) -> Self {
+    fn new(
+        scope: Scope,
+        draft: cosmic_pim_mail::Draft,
+        answering: Option<cosmic_pim_mail::Answers>,
+    ) -> Self {
         // Read before the draft is moved into the struct below.
         let show_cc = !draft.cc.is_empty() || !draft.bcc.is_empty();
         Self {
@@ -1410,6 +1414,10 @@ impl cosmic::Application for AppModel {
 
         // Last session's opened attachments, before this one can add any.
         mail::clear_opened();
+        // Replies Envelope 1.3 queued kept what they answer beside the
+        // outbox; it moves onto their records before the first drain sends
+        // one without it. Disk only, and nothing to do after the first run.
+        mail::retire_answering_sidecars();
 
         let mut model = Self::with_config(core, config);
         model.accounts_stamp = accounts_file_stamp();
@@ -4491,9 +4499,11 @@ impl AppModel {
 
         // A reply marks the message it answers — but only once it is actually
         // away, so a cancelled reply leaves no trace.
-        let answering = target
-            .as_ref()
-            .and_then(|target| Some((target.folder.clone(), target.opened?.uid)));
+        let answering = target.as_ref().and_then(|target| {
+            target
+                .opened
+                .map(|opened| mail::answers_for(target.folder, opened))
+        });
 
         let draft = build(opened, identity);
         self.open_composer(Composer::new(scope, draft, answering))
@@ -5853,7 +5863,7 @@ impl AppModel {
                     draft_id.as_deref(),
                     &draft,
                     not_before_ms,
-                    answering.as_ref(),
+                    answering,
                 )
                 .map(|id| Scheduled {
                     scope,

@@ -42,6 +42,10 @@ All notable changes to this project are documented here. The format follows
   it; no Try again), may have been delivered (check Sent first), sending
   interrupted, still retrying a server it could not reach (with when), and
   stopped after the last of its tries.
+- A reply marks the message it answers even when that mailbox was
+  renumbered before the reply went, or the message was moved: it is found
+  again by its Message-ID. Before, the mark was dropped. Replies already in
+  the outbox keep what they answer across the upgrade.
 
 ### Changed
 

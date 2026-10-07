@@ -26,7 +26,7 @@ use cosmic_pim_mail::imap::{Endpoint, Security, Session, SyncOptions, Watched};
 use cosmic_pim_mail::index::{self, Hit, Index};
 use cosmic_pim_mail::maildir::{self, MaildirStore};
 use cosmic_pim_mail::model::{Flags, Mailbox, Message};
-use cosmic_pim_mail::outbox::{Outbox, Queued, SendFailure};
+use cosmic_pim_mail::outbox::{Answers, Origin, Outbox, Queued, SendFailure};
 use cosmic_pim_mail::push::{PushOp, PushQueue};
 use cosmic_pim_mail::sasl::Credentials;
 use cosmic_pim_mail::snooze;
@@ -51,6 +51,9 @@ pub use cosmic_pim_mail::index::Conversation;
 #[derive(Debug, Clone)]
 pub struct Opened {
     pub uid: u32,
+    /// The mailbox's UIDVALIDITY when the message was read: what makes `uid`
+    /// mean this message, for a reply that has to find it again.
+    pub uid_validity: u32,
     pub message: Message,
     pub flags: Flags,
     /// The `Authentication-Results` rollup, or empty when the message carried
@@ -583,8 +586,7 @@ fn pass(
 /// and `kept` what [`kept_for_sent`] read before that drain.
 fn after_sending(connection: &Connection, sent: &[SentMessage], kept: &HashMap<String, Draft>) {
     // The messages those replies answered are marked now.
-    let ids: Vec<String> = sent.iter().map(|sent| sent.id.clone()).collect();
-    if let Err(why) = settle_answered(connection, &ids) {
+    if let Err(why) = settle_answered(connection, sent) {
         tracing::warn!(%why, "sent replies could not mark what they answered");
     }
     if !is_pop3(connection) {
@@ -885,150 +887,211 @@ pub fn retry_queued(connection: &Connection, id: &str) -> Result<(), String> {
 }
 
 pub fn discard_queued(connection: &Connection, id: &str) -> Result<(), String> {
+    // Discarded, not sent: the message it answered stays unanswered, and
+    // what it answered went with its record.
     outbox(connection)?
         .remove(id)
-        .map_err(|why| why.to_string())?;
-    // Discarded, not sent: the message it answered stays unanswered.
-    take_answering(connection, id).map(|_| ())
+        .map_err(|why| why.to_string())
 }
 
-/// The message a queued reply answers, by queue id, until the reply goes.
-///
-/// The outbox holds a message and nothing about where it came from, so the
-/// "mark the original answered" half of a send the grace delay or Send later
-/// put in the queue is kept here, beside the outbox. [`settle_answered`]
-/// applies it once a drain reports the id sent (a sync pass's `MailReport`
-/// or `drain_outbox`'s `DrainReport`, whose `sent` are both outbox ids);
-/// taking the send back or discarding it drops it instead.
-///
-/// It stays here for cosmic-pim 2.x: a (mailbox, UID) pointer is a store
-/// coordinate the substrate's outbox cannot keep valid across a sync, and a
-/// field on its records would be a breaking change.
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-struct AnsweringState {
-    #[serde(default)]
-    replies: BTreeMap<String, Answers>,
-}
-
-/// One answered message, pinned to the numbering it was read under.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct Answers {
-    /// The folder's wire name and delimiter, which is all a maildir path needs.
-    mailbox: String,
-    delimiter: char,
-    uid: u32,
-    /// A UID means nothing under another UIDVALIDITY: after a renumbering it
-    /// names a different message or none, and marking it would mark a
-    /// stranger's mail answered.
-    uid_validity: u32,
-}
-
-fn answering_path(connection: &Connection) -> PathBuf {
-    connection
-        .root
-        .join(&connection.account_id)
-        .join(".answering.json")
-}
-
-fn read_answering(connection: &Connection) -> Result<AnsweringState, String> {
-    match std::fs::read_to_string(answering_path(connection)) {
-        Ok(text) => serde_json::from_str(&text)
-            .map_err(|why| format!("the record of which replies answer what is unreadable: {why}")),
-        Err(why) if why.kind() == std::io::ErrorKind::NotFound => Ok(AnsweringState::default()),
-        Err(why) => Err(why.to_string()),
-    }
-}
-
-fn write_answering(connection: &Connection, state: &AnsweringState) -> Result<(), String> {
-    let path = answering_path(connection);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|why| why.to_string())?;
-    }
-    let json = serde_json::to_string_pretty(state).map_err(|why| why.to_string())?;
-    // Write-then-rename, like the rules state: a torn file would forget every
-    // pending mark at once.
-    let temp = path.with_extension("json.new");
-    std::fs::write(&temp, json).map_err(|why| why.to_string())?;
-    std::fs::rename(&temp, path).map_err(|why| why.to_string())
-}
-
-/// Records that the queued message `id` answers `answering`.
-fn remember_answering(
-    connection: &Connection,
-    id: &str,
-    (folder, uid): &(Folder, u32),
-) -> Result<(), String> {
-    let uid_validity = MaildirStore::open(connection.mailbox_path(folder))
-        .and_then(|store| store.state())
-        .map_err(|why| why.to_string())?
-        .cursor
-        .uid_validity;
-    let mut state = read_answering(connection)?;
-    state.replies.insert(
-        id.to_owned(),
-        Answers {
-            mailbox: folder.wire_name.clone(),
-            delimiter: folder.delimiter,
-            uid: *uid,
-            uid_validity,
-        },
-    );
-    write_answering(connection, &state)
-}
-
-/// Forgets what the queued message `id` answers, returning it.
-fn take_answering(connection: &Connection, id: &str) -> Result<Option<(Folder, u32)>, String> {
-    let mut state = read_answering(connection)?;
-    let Some(answers) = state.replies.remove(id) else {
-        return Ok(None);
+/// What a reply to the message open in the reader answers: the message's
+/// `Message-ID`, which survives a renumbering, and where it is now, which is
+/// exact for as long as its mailbox keeps its numbering.
+#[must_use]
+pub fn answers_for(folder: &Folder, opened: &Opened) -> Answers {
+    let origin = Origin {
+        mailbox: folder.wire_name.clone(),
+        delimiter: Some(folder.delimiter),
+        uid: opened.uid,
+        uid_validity: opened.uid_validity,
     };
-    write_answering(connection, &state)?;
-    let folder =
-        cosmic_pim_mail::folder::from_list_entry(&answers.mailbox, Some(answers.delimiter), &[]);
-    Ok(Some((folder, answers.uid)))
+    match opened.message.message_id.as_deref() {
+        Some(id) => Answers::to_message(id).found_at(origin),
+        None => Answers::at(origin),
+    }
+}
+
+/// Where Envelope 1.3 kept what each queued reply answered, beside the
+/// outbox. cosmic-pim 3 keeps it on the outbox record itself.
+const ANSWERING_SIDECAR: &str = ".answering.json";
+
+/// Moves what `.answering.json` recorded onto the outbox records it was
+/// about, then deletes the file. Returns how many records took one.
+///
+/// For replies queued by Envelope 1.3, before the outbox could hold it. Run
+/// once per account at startup; an account with no file has nothing to do.
+/// Done under the account's lock, so no drain of Envelope's sends a reply
+/// while its record is being rewritten, and through `Outbox::set_answers`,
+/// which takes the record the way a drain does. An entry whose message has
+/// gone, or is being sent, is dropped: there is nothing left to attach it to.
+///
+/// The file is deleted only once every entry has been moved or dropped; a
+/// failure leaves it for the next start.
+pub fn retire_answering_sidecar(root: &std::path::Path, account_id: &str) -> Result<usize, String> {
+    /// One entry, as Envelope 1.3 wrote it.
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        mailbox: String,
+        delimiter: char,
+        uid: u32,
+        uid_validity: u32,
+    }
+    #[derive(serde::Deserialize)]
+    struct Sidecar {
+        #[serde(default)]
+        replies: BTreeMap<String, Entry>,
+    }
+
+    let path = root.join(account_id).join(ANSWERING_SIDECAR);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(why) => return Err(format!("{} could not be read: {why}", path.display())),
+    };
+    let sidecar: Sidecar = serde_json::from_str(&text)
+        .map_err(|why| format!("{} could not be read: {why}", path.display()))?;
+
+    let lock = account_lock(account_id);
+    let _held = hold(&lock);
+    let outbox = Outbox::open(root.join(account_id)).map_err(|why| why.to_string())?;
+    let mut moved = 0;
+    for (id, entry) in sidecar.replies {
+        let origin = Origin {
+            mailbox: entry.mailbox,
+            delimiter: Some(entry.delimiter),
+            uid: entry.uid,
+            uid_validity: entry.uid_validity,
+        };
+        if outbox
+            .set_answers(&id, Some(Answers::at(origin)))
+            .map_err(|why| why.to_string())?
+        {
+            moved += 1;
+        }
+    }
+    std::fs::remove_file(&path)
+        .map_err(|why| format!("{} could not be removed: {why}", path.display()))?;
+    Ok(moved)
+}
+
+/// [`retire_answering_sidecar`] for every account in the shared store.
+/// Failures are logged per account and retried at the next start.
+pub fn retire_answering_sidecars() {
+    let accounts = match AccountStore::open_default() {
+        Ok(accounts) => accounts,
+        Err(why) => {
+            tracing::warn!(%why, "queued replies could not be checked for an answering record");
+            return;
+        }
+    };
+    let root = maildir::default_root();
+    for account in accounts.accounts() {
+        match retire_answering_sidecar(&root, &account.id) {
+            Ok(0) => {}
+            Ok(moved) => tracing::info!(
+                account = account.display_name,
+                moved,
+                "moved what queued replies answer onto the outbox"
+            ),
+            Err(why) => tracing::warn!(
+                account = account.display_name,
+                why,
+                "what queued replies answer could not be moved onto the outbox"
+            ),
+        }
+    }
 }
 
 /// Marks answered every message a reply in `sent` answered.
 ///
-/// `sent` is the outbox ids a drain reports as gone, which is the only
-/// evidence of a send: a message still listed may be waiting, being sent
-/// right now, or given up on. Run after every pass that drains the outbox,
-/// whichever engine's drain sent the message. Returns how many were marked.
-pub fn settle_answered(connection: &Connection, sent: &[String]) -> Result<usize, String> {
-    let mut state = read_answering(connection)?;
-    if state.replies.is_empty() || sent.is_empty() {
-        return Ok(0);
-    }
-
+/// `sent` is what a drain reports as gone, which is the only evidence of a
+/// send: a message still listed may be waiting, being sent right now, or
+/// stopped. Run after every pass that drains the outbox, whichever engine's
+/// drain sent the message. Returns how many messages were marked.
+///
+/// Two ways to the message, in order. Where the reply was written, while
+/// that mailbox keeps the numbering it had — exact, and no index needed.
+/// Otherwise by its `Message-ID`, through the index: the mailbox was
+/// renumbered, or the message moved. The index is brought up to date for the
+/// mailbox the message was in first, and every place it names is checked
+/// against the message actually stored there before it is marked, so an
+/// index row left over from before a renumbering cannot mark a stranger.
+pub fn settle_answered(connection: &Connection, sent: &[SentMessage]) -> Result<usize, String> {
     let mut marked = 0;
-    for id in sent {
-        let Some(answers) = state.replies.remove(id) else {
-            continue;
-        };
-        let folder = cosmic_pim_mail::folder::from_list_entry(
-            &answers.mailbox,
-            Some(answers.delimiter),
-            &[],
-        );
-        let same_numbering = MaildirStore::open(connection.mailbox_path(&folder))
-            .and_then(|store| store.state())
-            .is_ok_and(|mailbox| mailbox.cursor.uid_validity == answers.uid_validity);
-        if !same_numbering {
+    for answers in sent.iter().filter_map(|sent| sent.answers.as_ref()) {
+        if let Some(origin) = &answers.origin {
+            let folder =
+                cosmic_pim_mail::folder::from_list_entry(&origin.mailbox, origin.delimiter, &[]);
+            let names_it = MaildirStore::open(connection.mailbox_path(&folder))
+                .and_then(|store| store.state())
+                .is_ok_and(|state| origin.still_names(&state));
+            if names_it {
+                set_flags(connection, &folder, &[origin.uid], mark_answered)?;
+                marked += 1;
+                continue;
+            }
+        }
+        let Some(message_id) = answers.message_id.as_deref() else {
             tracing::info!(
-                id,
-                mailbox = answers.mailbox,
-                "a reply went, but the mailbox it answered was renumbered; not marked"
+                "a reply went, but what it answered is no longer where it was and has no \
+                 Message-ID to find it by; not marked"
             );
             continue;
+        };
+        marked += mark_answered_by_id(connection, answers.origin.as_ref(), message_id)?;
+    }
+    Ok(marked)
+}
+
+/// Marks answered every stored copy of the message with this `Message-ID`.
+fn mark_answered_by_id(
+    connection: &Connection,
+    origin: Option<&Origin>,
+    message_id: &str,
+) -> Result<usize, String> {
+    let mut index = Index::open(&connection.index_path).map_err(|why| why.to_string())?;
+    // The mailbox it was in is where a renumbering left it; the index has to
+    // know that mailbox's new numbers to say where it is now.
+    if let Some(origin) = origin {
+        let folder =
+            cosmic_pim_mail::folder::from_list_entry(&origin.mailbox, origin.delimiter, &[]);
+        let path = connection.mailbox_path(&folder);
+        if path.join("cur").is_dir() {
+            let store = MaildirStore::open(path).map_err(|why| why.to_string())?;
+            index
+                .sync_mailbox(&connection.account_id, &origin.mailbox, &store)
+                .map_err(|why| why.to_string())?;
         }
-        set_flags(connection, &folder, &[answers.uid], |flags| Flags {
-            answered: true,
-            ..flags
-        })?;
+    }
+    let mut marked = 0;
+    for found in index
+        .locate(&connection.account_id, message_id)
+        .map_err(|why| why.to_string())?
+    {
+        let folder = cosmic_pim_mail::folder::from_list_entry(&found.mailbox, None, &[]);
+        let holds_it = MaildirStore::open(connection.mailbox_path(&folder))
+            .and_then(|store| store.raw(found.uid))
+            .ok()
+            .flatten()
+            .and_then(|raw| Message::parse(&raw))
+            .and_then(|message| message.message_id)
+            .is_some_and(|stored| {
+                Answers::to_message(&stored).message_id.as_deref() == Some(message_id)
+            });
+        if !holds_it {
+            continue;
+        }
+        set_flags(connection, &folder, &[found.uid], mark_answered)?;
         marked += 1;
     }
-    write_answering(connection, &state)?;
     Ok(marked)
+}
+
+fn mark_answered(flags: Flags) -> Flags {
+    Flags {
+        answered: true,
+        ..flags
+    }
 }
 
 /// This account's drafts: local records, mirrored to the server.
@@ -1227,7 +1290,7 @@ pub fn schedule_send(
     draft_id: Option<&str>,
     draft: &Draft,
     not_before_ms: i64,
-    answering: Option<&(Folder, u32)>,
+    answering: Option<Answers>,
 ) -> Result<String, String> {
     let id = enqueue(connection, draft_id, draft, not_before_ms, answering)?;
     if let Some(previous) = draft_id
@@ -1238,40 +1301,33 @@ pub fn schedule_send(
     Ok(id)
 }
 
-/// Puts a message in the outbox, due at `not_before_ms`, remembering what it
-/// answers, and returns its queue id: the draft's own id when it has one.
-/// The draft record is the caller's to retire.
+/// Puts a message in the outbox, due at `not_before_ms`, with what it
+/// answers on its record, and returns its queue id: the draft's own id when
+/// it has one. The draft record is the caller's to retire.
 fn enqueue(
     connection: &Connection,
     draft_id: Option<&str>,
     draft: &Draft,
     not_before_ms: i64,
-    answering: Option<&(Folder, u32)>,
+    answering: Option<Answers>,
 ) -> Result<String, String> {
     let id = match draft_id.filter(|id| drafts::is_valid_id(id)) {
         Some(id) => id.to_owned(),
         None => drafts::new_id(now_ms()),
     };
     outbox(connection)?
-        .schedule(&id, draft, None, not_before_ms)
+        .schedule(&id, draft, answering, not_before_ms)
         .map_err(|why| why.to_string())?;
-    // After the message is queued: a record for an entry that never made it
-    // would only sit here. Not fatal: the reply still goes, and saying the
-    // send failed would invite a second.
-    if let Some(answering) = answering
-        && let Err(why) = remember_answering(connection, &id, answering)
-    {
-        tracing::warn!(%why, "a queued reply will not mark the message it answers");
-    }
     Ok(id)
 }
 
-/// A scheduled send taken back: the draft to edit, and the message it was
-/// answering, so a reopened reply is still a reply.
+/// A scheduled send taken back: the draft to edit, and what it was
+/// answering, so a reopened reply is still a reply — pinned to the numbering
+/// the original was read under, not re-read now.
 #[derive(Debug, Clone)]
 pub struct TakenBack {
     pub draft: Draft,
-    pub answering: Option<(Folder, u32)>,
+    pub answering: Option<Answers>,
 }
 
 /// What asking for a queued send back came to.
@@ -1308,7 +1364,7 @@ pub fn cancel_send(connection: &Connection, id: &str) -> Result<Cancelled, Strin
     };
     Ok(Cancelled::TakenBack(Box::new(TakenBack {
         draft: queued.draft,
-        answering: take_answering(connection, id)?,
+        answering: queued.answers,
     })))
 }
 
@@ -2068,15 +2124,11 @@ pub fn open(connection: &Connection, folder: &Folder, uid: u32) -> Result<Opened
         .ok_or_else(|| "that message is no longer in this mailbox".to_string())?;
     let message =
         Message::parse(&raw).ok_or_else(|| "that message could not be read".to_string())?;
-    let flags = store
-        .state()
-        .map_err(|why| why.to_string())?
-        .entries
-        .get(&uid)
-        .copied()
-        .unwrap_or_default();
+    let state = store.state().map_err(|why| why.to_string())?;
+    let flags = state.entries.get(&uid).copied().unwrap_or_default();
 
     Ok(Opened {
+        uid_validity: state.cursor.uid_validity,
         body_doc: body_document(&message),
         auth: cosmic_pim_mail::auth::rollup(&message.auth),
         bounces: bounces_in(&raw, &message),
@@ -2837,7 +2889,7 @@ impl Sent {
 pub fn send(
     connection: &Connection,
     draft: &Draft,
-    answering: Option<(Folder, u32)>,
+    answering: Option<Answers>,
     draft_id: Option<&str>,
 ) -> Sent {
     let lock = account_lock(&connection.account_id);
@@ -2847,7 +2899,7 @@ pub fn send(
         Err(why) => return Sent::Failed(why),
     };
     let now = now_ms();
-    let id = match enqueue(connection, draft_id, draft, now, answering.as_ref()) {
+    let id = match enqueue(connection, draft_id, draft, now, answering) {
         Ok(id) => id,
         Err(why) => return Sent::Failed(why),
     };
@@ -2935,13 +2987,8 @@ fn take_back(connection: &Connection, id: &str) {
             .map_err(|why| why.to_string())?
             .ok_or_else(|| "a drain has it".to_owned())
     });
-    match taken {
-        Ok(_) => {
-            if let Err(why) = take_answering(connection, id) {
-                tracing::warn!(%why, "a send taken back kept its answering record");
-            }
-        }
-        Err(why) => tracing::warn!(id, %why, "a stopped send stays in the outbox"),
+    if let Err(why) = taken {
+        tracing::warn!(id, %why, "a stopped send stays in the outbox");
     }
 }
 

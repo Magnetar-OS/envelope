@@ -1516,10 +1516,29 @@ fn snoozing_is_refused_where_nothing_could_wake_the_mail() {
     );
 }
 
+/// What a reply to the message at `uid` in the inbox answers, as the reader
+/// that opened it would say.
+fn answers(connection: &Connection, uid: u32) -> cosmic_pim_mail::Answers {
+    let opened = mail::open(connection, &inbox(), uid).expect("open the original");
+    mail::answers_for(&inbox(), &opened)
+}
+
 /// Ada's message, delivered, and a reply to it scheduled in the outbox.
 fn scheduled_reply(root: &std::path::Path) -> (Connection, String) {
     deliver(root, &[(1, &from_ada(1), Flags::default())]);
     let connection = connection(root);
+    let id = mail::schedule_send(
+        &connection,
+        None,
+        &reply_draft(),
+        0,
+        Some(answers(&connection, 1)),
+    )
+    .expect("schedule");
+    (connection, id)
+}
+
+fn reply_draft() -> cosmic_pim_mail::Draft {
     let mut draft = cosmic_pim_mail::Draft::new(cosmic_pim_mail::Mailbox {
         name: None,
         address: "me@example.com".into(),
@@ -1529,9 +1548,7 @@ fn scheduled_reply(root: &std::path::Path) -> (Connection, String) {
         address: "ada@example.com".into(),
     });
     draft.subject = "Re: 1".into();
-    let id =
-        mail::schedule_send(&connection, None, &draft, 0, Some(&(inbox(), 1))).expect("schedule");
-    (connection, id)
+    draft
 }
 
 fn is_answered(root: &std::path::Path, uid: u32) -> bool {
@@ -1539,25 +1556,33 @@ fn is_answered(root: &std::path::Path, uid: u32) -> bool {
     store.state().expect("state").entries[&uid].answered
 }
 
+/// Drains the outbox as if every send went, and says what went the way a
+/// sync pass's report does.
+fn drain_all(connection: &Connection) -> Vec<cosmic_pim_sync::SentMessage> {
+    let drained = mail::outbox(connection)
+        .expect("outbox")
+        .drain_with(|_| Outcome::Sent(b"sent".to_vec()), i64::MAX);
+    drained
+        .sent
+        .iter()
+        .map(cosmic_pim_sync::SentMessage::from)
+        .collect()
+}
+
 #[test]
 fn a_reply_that_leaves_the_outbox_marks_what_it_answers() {
     // With the undo grace on — the default — every reply goes through the
-    // outbox, and the outbox has nowhere to keep what a message answers. The
-    // original was never marked answered, while a send with the grace off
-    // marked it. The drain is the substrate's own, as a sync pass runs it.
+    // outbox. The outbox record carries what it answers, and the report of
+    // the drain that sent it hands that back.
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let (connection, _) = scheduled_reply(root);
 
-    mail::settle_answered(&connection, &[]).expect("settle while queued");
+    assert_eq!(mail::settle_answered(&connection, &[]).expect("settle"), 0);
     assert!(!is_answered(root, 1), "marked before the reply went");
 
-    let drained = mail::outbox(&connection)
-        .expect("outbox")
-        .drain_with(|_| Outcome::Sent(b"sent".to_vec()), i64::MAX);
-    let sent: Vec<String> = drained.sent.into_iter().map(|sent| sent.id).collect();
+    let sent = drain_all(&connection);
     assert_eq!(sent.len(), 1);
-
     assert_eq!(
         mail::settle_answered(&connection, &sent).expect("settle"),
         1
@@ -1587,13 +1612,14 @@ fn a_reply_taken_back_marks_nothing_and_still_knows_what_it_answers() {
     else {
         panic!("it had not gone");
     };
+    let answering = taken
+        .answering
+        .expect("the reopened reply forgot what it answers");
+    assert_eq!(answering.message_id.as_deref(), Some("ada-1@x"));
     assert_eq!(
-        taken.answering.map(|(folder, uid)| (folder.wire_name, uid)),
-        Some(("INBOX".to_owned(), 1)),
-        "the reopened reply would no longer mark its original when sent"
+        answering.origin.map(|origin| (origin.mailbox, origin.uid)),
+        Some(("INBOX".to_owned(), 1))
     );
-
-    mail::settle_answered(&connection, &[id]).expect("settle");
     assert!(
         !is_answered(root, 1),
         "a reply that never went marked its original"
@@ -1607,55 +1633,165 @@ fn a_discarded_reply_marks_nothing() {
     let (connection, id) = scheduled_reply(root);
 
     mail::discard_queued(&connection, &id).expect("discard");
-    mail::settle_answered(&connection, &[id]).expect("settle");
+    assert_eq!(drain_all(&connection), []);
     assert!(
         !is_answered(root, 1),
         "a discarded reply marked its original"
     );
 }
 
+/// The mailbox fetched again under `uid_validity`, holding these messages.
+fn refetch(root: &std::path::Path, uid_validity: u32, messages: &[(u32, String)]) {
+    let path = maildir::mailbox_path(root, ACCOUNT, &inbox());
+    let mut store = MaildirStore::open(path).expect("open the maildir");
+    store.reset(uid_validity).expect("reset");
+    for (uid, raw) in messages {
+        store
+            .upsert(&RemoteMessage {
+                uid: *uid,
+                flags: Flags::default(),
+                raw: raw.clone().into_bytes(),
+                internal_date_ms: i64::from(*uid) * 60_000,
+            })
+            .expect("refetch");
+    }
+}
+
 #[test]
-fn a_reply_that_went_after_a_renumbering_marks_no_stranger() {
-    // The UID it answered now names another message, or none.
+fn a_reply_that_went_after_a_renumbering_marks_the_message_where_it_is_now() {
+    // 1.3 gave up on a renumbered mailbox: the UID it had answered names a
+    // different message, or none, and nothing was marked. The record now
+    // carries the original's Message-ID, and the index finds it again.
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let (connection, _) = scheduled_reply(root);
-    renumber(root, 99, &[1]);
+    // The index has seen the mailbox before the renumbering, so it still
+    // says UID 1 is Ada's first note.
+    mail::conversations(&connection, &inbox()).expect("index the inbox");
 
-    let drained = mail::outbox(&connection)
-        .expect("outbox")
-        .drain_with(|_| Outcome::Sent(b"sent".to_vec()), i64::MAX);
-    let sent: Vec<String> = drained.sent.into_iter().map(|sent| sent.id).collect();
+    // Renumbered: UID 1 is now somebody else's message, and the answered
+    // one came back as UID 7.
+    refetch(root, 99, &[(1, from_ada(2)), (7, from_ada(1))]);
+
+    let sent = drain_all(&connection);
+    assert_eq!(
+        mail::settle_answered(&connection, &sent).expect("settle"),
+        1
+    );
+    assert!(
+        is_answered(root, 7),
+        "the answered message was not found again"
+    );
+    assert!(
+        !is_answered(root, 1),
+        "the message that now holds the old UID was marked answered"
+    );
+}
+
+#[test]
+fn a_reply_whose_original_is_gone_marks_no_stranger() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let (connection, _) = scheduled_reply(root);
+    mail::conversations(&connection, &inbox()).expect("index the inbox");
+    refetch(root, 99, &[(1, from_ada(2))]);
+
+    let sent = drain_all(&connection);
     assert_eq!(
         mail::settle_answered(&connection, &sent).expect("settle"),
         0
     );
     assert!(
         !is_answered(root, 1),
-        "a renumbered message was marked answered"
+        "a renumbered stranger was marked answered"
     );
 }
 
 #[test]
 fn a_reply_that_left_the_queue_without_being_sent_marks_nothing() {
-    // Only the drain's list of sent ids is evidence of a send. The old
+    // Only a drain's report of what went is evidence of a send. The old
     // bookkeeping read "no longer queued" as "sent", so a queue entry that
     // vanished any other way marked the original answered anyway.
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    let (connection, id) = scheduled_reply(root);
+    let (connection, _) = scheduled_reply(root);
     std::fs::remove_dir_all(root.join(ACCOUNT).join(".outbox")).expect("lose the queue");
 
-    assert_eq!(mail::settle_answered(&connection, &[]).expect("settle"), 0);
+    assert_eq!(drain_all(&connection), []);
     assert!(
         !is_answered(root, 1),
         "a reply nobody sent marked its original"
     );
+}
 
-    // And the record is still there for the send that does go.
+#[test]
+fn what_envelope_1_3_recorded_beside_the_outbox_moves_onto_it_once() {
+    // A reply queued by 1.3 has nothing on its outbox record; what it
+    // answers is in `.answering.json`. The first start of this version moves
+    // it across and deletes the file.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    deliver(root, &[(1, &from_ada(1), Flags::default())]);
+    let connection = connection(root);
+    let id = mail::schedule_send(&connection, None, &reply_draft(), 0, None).expect("schedule");
+    let uid_validity = MaildirStore::open(maildir::mailbox_path(root, ACCOUNT, &inbox()))
+        .expect("open")
+        .state()
+        .expect("state")
+        .cursor
+        .uid_validity;
+    let sidecar = root.join(ACCOUNT).join(".answering.json");
+    std::fs::write(
+        &sidecar,
+        format!(
+            r#"{{"replies": {{
+                "{id}": {{"mailbox": "INBOX", "delimiter": "/", "uid": 1, "uid_validity": {uid_validity}}},
+                "0123456789abcdef0123456789abcdef": {{"mailbox": "INBOX", "delimiter": "/", "uid": 9, "uid_validity": 1}}
+            }}}}"#
+        ),
+    )
+    .expect("write the 1.3 record");
+
     assert_eq!(
-        mail::settle_answered(&connection, &[id]).expect("settle"),
+        mail::retire_answering_sidecar(root, ACCOUNT).expect("migrate"),
+        1,
+        "the entry for a message no longer queued is dropped, the other moved"
+    );
+    assert!(!sidecar.exists(), "the file outlived its migration");
+    let queued = mail::list_outbox(&connection).expect("list");
+    let origin = queued[0]
+        .answers
+        .as_ref()
+        .and_then(|answers| answers.origin.as_ref())
+        .expect("the record says what it answers");
+    assert_eq!((origin.mailbox.as_str(), origin.uid), ("INBOX", 1));
+    assert_eq!(
+        mail::retire_answering_sidecar(root, ACCOUNT).expect("again"),
+        0,
+        "a second start found something to move"
+    );
+
+    let sent = drain_all(&connection);
+    assert_eq!(
+        mail::settle_answered(&connection, &sent).expect("settle"),
         1
+    );
+    assert!(is_answered(root, 1));
+}
+
+#[test]
+fn an_unreadable_record_beside_the_outbox_is_left_for_a_person() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let sidecar = root.join(ACCOUNT).join(".answering.json");
+    std::fs::create_dir_all(sidecar.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&sidecar, "{ torn").expect("write");
+
+    assert!(mail::retire_answering_sidecar(root, ACCOUNT).is_err());
+    assert!(sidecar.exists(), "an unreadable record was deleted unread");
+    assert_eq!(
+        mail::retire_answering_sidecar(root, "account-without-one").expect("nothing"),
+        0
     );
 }
 
@@ -1942,7 +2078,8 @@ fn scheduled_pop3_reply(root: &std::path::Path, connection: &Connection) -> Stri
         address: "archive@example.com".into(),
     });
     draft.subject = "Re: Note 1".into();
-    mail::schedule_send(connection, None, &draft, 0, Some(&(inbox(), 1))).expect("schedule")
+    mail::schedule_send(connection, None, &draft, 0, Some(answers(connection, 1)))
+        .expect("schedule")
 }
 
 #[test]
@@ -2041,9 +2178,9 @@ fn a_pop3_send_without_the_outbox_is_filed_in_sent_too() {
 
 #[test]
 fn a_reply_drained_on_its_own_marks_what_it_answers() {
-    // The drain that sends a due reply without a sync pass reports the ids
-    // that went, as the pass does, and `.answering.json` turns them into
-    // the \Answered mark. The IMAP server that would get the Sent copy is
+    // The drain that sends a due reply without a sync pass reports what
+    // went and what each answers, as the pass does, and that becomes the
+    // \Answered mark. The IMAP server that would get the Sent copy is
     // down; the send is still a send.
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
@@ -2137,7 +2274,12 @@ fn an_immediate_imap_send_submits_over_smtp_and_files_over_imap() {
     );
     let (draft, id) = saved_draft(&connection);
 
-    let sent = mail::send(&connection, &draft, Some((inbox(), 1)), Some(&id));
+    let sent = mail::send(
+        &connection,
+        &draft,
+        Some(answers(&connection, 1)),
+        Some(&id),
+    );
     assert!(matches!(sent, mail::Sent::Ok), "{sent:?}");
     assert!(
         connections(&imap_count) > 0,
@@ -2253,7 +2395,12 @@ fn an_immediate_send_the_server_refuses_comes_back_to_the_composer() {
     );
     let (draft, id) = saved_draft(&connection);
 
-    let sent = mail::send(&connection, &draft, Some((inbox(), 1)), Some(&id));
+    let sent = mail::send(
+        &connection,
+        &draft,
+        Some(answers(&connection, 1)),
+        Some(&id),
+    );
     assert!(
         matches!(&sent, mail::Sent::Refused(why) if why.contains("550")),
         "{sent:?}"
@@ -2265,8 +2412,8 @@ fn an_immediate_send_the_server_refuses_comes_back_to_the_composer() {
         0,
         "nothing went, so nothing is filed"
     );
-    // Settling a later drain must not mark the original for a reply that
-    // never went.
-    mail::settle_answered(&connection, std::slice::from_ref(&id)).expect("settle");
+    // Taken back with it, so no later drain marks the original for a reply
+    // that never went.
+    assert_eq!(drain_all(&connection), []);
     assert!(!is_answered(root, 1));
 }
