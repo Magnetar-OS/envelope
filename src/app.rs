@@ -1119,10 +1119,11 @@ pub enum Message {
     AddFormEmailChanged(String),
     AddFormPasswordChanged(String),
     AddFormConfirm,
-    AddFormDiscovered(Box<Result<cosmic_pim_mail::Discovered, String>>),
+    /// The add form's account was stored, or why not.
+    AddFormFinished(Box<Result<String, String>>),
     AccountRemove(String),
     SignInStarted(String),
-    SignInFinished(Box<Result<String, String>>),
+    SignInFinished(Box<Result<mail::SignedIn, String>>),
     PaletteQueryChanged(String),
     PaletteSubmitted,
     PaletteInvoked(Action),
@@ -2626,9 +2627,7 @@ impl AppModel {
                 self.with_add_form(|form| form.password = password)
             }
             Message::AddFormConfirm => self.confirm_add(),
-            Message::AddFormDiscovered(result) => {
-                self.add_account(result.map(|found| mail::endpoint_of(&found)))
-            }
+            Message::AddFormFinished(result) => self.add_finished(*result),
             Message::AccountRemove(id) => {
                 let name = self
                     .accounts
@@ -2654,12 +2653,22 @@ impl AppModel {
             Message::SignInFinished(result) => {
                 self.signing_in = false;
                 match *result {
-                    Ok(account_id) => {
+                    Ok(signed_in) => {
                         self.add_form = None;
                         self.accounts = load_accounts();
+                        // Said, because the account is not the one typed:
+                        // the browser signed in another of the user's
+                        // accounts, and that is the one now added.
+                        if signed_in.is_other_address() {
+                            self.say(fl!(
+                                "sign-in-other-address",
+                                address = signed_in.address.clone(),
+                                typed = signed_in.typed.clone()
+                            ));
+                        }
                         // Straight into the new account: the sign-in was the
                         // whole point of the visit.
-                        self.update(Message::AccountSelected(account_id))
+                        self.update(Message::AccountSelected(signed_in.account_id))
                     }
                     Err(why) => {
                         let why = fl!("sign-in-failed", reason = why);
@@ -5942,10 +5951,9 @@ impl AppModel {
         Task::none()
     }
 
-    /// Adds the account the form describes, with a password.
-    ///
-    /// The servers come from the address: the registry and the built-in table
-    /// answer at once, and any other domain goes to the network first.
+    /// Adds the account the form describes, with a password, on a worker:
+    /// the servers are found from the address and the password is tried
+    /// before anything is stored.
     fn confirm_add(&mut self) -> Task<Message> {
         let Some(form) = self.add_form.as_mut() else {
             return Task::none();
@@ -5962,61 +5970,37 @@ impl AppModel {
             form.error = Some(fl!("add-needs-password"));
             return Task::none();
         }
-        if let Some(endpoint) = mail::password_settings(&email) {
-            return self.add_account(Ok(endpoint));
-        }
         form.adding = true;
         form.error = None;
+        let (name, password) = (form.name.trim().to_owned(), form.password.clone());
 
         cosmic::task::future(async move {
-            let found = tokio::task::spawn_blocking(move || mail::discover(&email))
-                .await
-                .unwrap_or_else(|why| Err(why.to_string()));
-            Message::AddFormDiscovered(Box::new(found))
+            let result = tokio::task::spawn_blocking(move || {
+                mail::add_with_password(&name, &email, &password)
+            })
+            .await
+            .unwrap_or_else(|why| Err(why.to_string()));
+            Message::AddFormFinished(Box::new(result))
         })
     }
 
-    /// Stores the account the add form describes, and opens it.
-    ///
-    /// With no server found it is stored all the same: the address and the
-    /// password are right, and the server form opens on the new account with
-    /// the reason, so the one missing fact is typed where it belongs rather
-    /// than the whole form done over.
-    fn add_account(&mut self, endpoint: Result<MailEndpoint, String>) -> Task<Message> {
-        let Some(form) = self.add_form.take() else {
-            return Task::none();
-        };
-        let (endpoint, problem) = match endpoint {
-            Ok(endpoint) => (Some(endpoint), None),
-            Err(why) => (None, Some(why)),
-        };
-        let account = mail_account(&form.name, &form.email, endpoint);
-        let id = account.id.clone();
-
-        // Written through the shared store, so Slate and Circle see the same
-        // account the moment they next read the file.
-        let stored = AccountStore::open_default()
-            .and_then(|mut store| store.add(account, &form.password).map(|()| store));
-        let store = match stored {
-            Ok(store) => store,
-            Err(why) => {
-                self.add_form = Some(AddForm {
-                    adding: false,
-                    error: Some(why.to_string()),
-                    ..form
-                });
-                return Task::none();
+    /// The add form's account is stored, and opens; or the form says why
+    /// not, with everything still typed in it.
+    fn add_finished(&mut self, result: Result<String, String>) -> Task<Message> {
+        match result {
+            Ok(id) => {
+                self.add_form = None;
+                self.accounts = load_accounts();
+                self.update(Message::AccountSelected(id))
             }
-        };
-        self.accounts = store.accounts().to_vec();
-        let task = self.update(Message::AccountSelected(id.clone()));
-        if let Some(why) = problem {
-            self.mail_form = self.accounts.iter().find(|a| a.id == id).map(MailForm::new);
-            if let Some(form) = self.mail_form.as_mut() {
-                form.error = Some(fl!("add-no-server", reason = why));
+            Err(why) => {
+                if let Some(form) = self.add_form.as_mut() {
+                    form.adding = false;
+                    form.error = Some(fl!("add-failed", reason = why));
+                }
+                Task::none()
             }
         }
-        task
     }
 
     /// Forgets an account and its password.
@@ -6162,26 +6146,6 @@ fn next_selection(current: Option<usize>, len: usize, by: isize) -> Option<usize
 /// One menu entry for a registry action.
 fn item(action: Action) -> menu::Item<MenuAction, String> {
     menu::Item::Button(action.label(), None, MenuAction(action))
-}
-
-/// A password account for an address, as the add form describes it.
-///
-/// No `CalDAV` URL: this is a mail account until somebody tells Slate
-/// otherwise. The name typed goes on outgoing mail and names the account in
-/// the sidebar, falling back to the address, which is the only other thing
-/// an account can be called. A login discovery reports as the address itself
-/// is not stored: the account already carries it.
-fn mail_account(name: &str, email: &str, endpoint: Option<MailEndpoint>) -> Account {
-    let email = email.trim();
-    let name = name.trim();
-    let mut account = Account::new(if name.is_empty() { email } else { name }, "", email);
-    account.mail = endpoint.map(|endpoint| MailEndpoint {
-        from_address: email.to_owned(),
-        from_name: name.to_owned(),
-        imap_username: endpoint.imap_username.filter(|login| login != email),
-        ..endpoint
-    });
-    account
 }
 
 /// Reads the address book off the UI thread.
@@ -7107,37 +7071,28 @@ mod tests {
     }
 
     #[test]
-    fn an_added_account_is_named_sends_as_its_address_and_has_no_calendar() {
-        let found = cosmic_pim_mail::discovery::known("ada@gmail.com").expect("gmail is known");
-        let account = mail_account("  Ada ", " ada@gmail.com ", Some(mail::endpoint_of(&found)));
+    fn an_account_the_server_refused_leaves_the_form_as_it_was_typed() {
+        let mut model = model();
+        model.add_form = Some(AddForm {
+            name: "Ada".into(),
+            email: "ada@example.test".into(),
+            password: "wrong".into(),
+            adding: true,
+            ..AddForm::default()
+        });
 
-        assert_eq!(account.display_name, "Ada");
-        assert_eq!(account.username, "ada@gmail.com");
-        assert_eq!(account.url, "");
-        assert_eq!(account.auth, cosmic_pim_accounts::AuthMethod::Password);
-        assert_eq!(
-            account.from_identity(),
-            Some(("Ada".to_owned(), "ada@gmail.com".to_owned()))
-        );
-        let mail = account.mail.as_ref().expect("the endpoint was given");
-        assert_eq!(mail.imap_host, "imap.gmail.com");
-        assert_eq!(mail.smtp_host, "smtp.gmail.com");
-        // Discovery reports the address as the login; that is the account's
-        // own username and storing it twice would be one more thing to drift.
-        assert_eq!(mail.imap_username, None);
-        assert_eq!(account.mail_username(), "ada@gmail.com");
-    }
+        let _ = model.dispatch(Message::AddFormFinished(Box::new(Err(
+            "the password was not accepted: Invalid credentials".into(),
+        ))));
 
-    #[test]
-    fn an_added_account_with_no_name_is_called_by_its_address() {
-        let account = mail_account("", "ada@example.org", None);
-        assert_eq!(account.display_name, "ada@example.org");
-        assert!(account.mail.is_none());
-        // Still sends as the address: the login is one.
-        assert_eq!(
-            account.from_identity(),
-            Some(("ada@example.org".to_owned(), "ada@example.org".to_owned()))
-        );
+        let form = model.add_form.as_ref().expect("the form stays open");
+        assert!(!form.adding, "the form still says it is adding");
+        assert_eq!(form.email, "ada@example.test");
+        assert_eq!(form.password, "wrong", "what was typed is kept to correct");
+        let error = form.error.as_deref().unwrap_or_default();
+        assert!(error.contains("not accepted"), "{error}");
+        assert!(error.contains("Nothing was saved"), "{error}");
+        assert!(model.accounts.is_empty());
     }
 
     #[test]

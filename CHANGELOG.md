@@ -46,6 +46,16 @@ All notable changes to this project are documented here. The format follows
   renumbered before the reply went, or the message was moved: it is found
   again by its Message-ID. Before, the mark was dropped. Replies already in
   the outbox keep what they answer across the upgrade.
+- Adding an account with a password tries the password first, and stores
+  the account only if the server took it. A wrong password used to be
+  stored and fail later as a sync error, and an address whose servers could
+  not be found was stored with none. The form now says why the account was
+  not added and keeps what was typed. An account added this way also
+  carries its provider, so Slate and Circle find its calendars and contacts.
+- Signing in with the browser adds the account for whoever actually signed
+  in, as the provider reports it, and says so when that is not the address
+  typed. Choosing another account in the provider's chooser used to store
+  an account named after one address holding the sign-in of another.
 
 ### Changed
 

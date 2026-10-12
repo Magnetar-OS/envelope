@@ -376,41 +376,6 @@ pub fn provider_note(email: &str) -> Option<ProviderNote> {
     })
 }
 
-/// The servers a password can drive for an address, without a network.
-///
-/// The registry's endpoint when the provider takes a password — Fastmail's
-/// JMAP, iCloud's IMAP — and the discovery table otherwise. An OAuth
-/// provider's registry entry is skipped on purpose: it names the Gmail or
-/// Graph engine, which a password cannot log in to, whereas the table's IMAP
-/// hosts still take an app password.
-#[must_use]
-pub fn password_settings(email: &str) -> Option<MailEndpoint> {
-    let email = email.trim();
-    let registry = cosmic_pim_accounts::Registry::load();
-    if let Some(provider) = registry.for_email(email)
-        && provider.oauth.is_none()
-        && let Some(mail) = provider.services.mail.as_ref()
-    {
-        return Some(mail.endpoint_for(email));
-    }
-    known_settings(email).map(|found| endpoint_of(&found))
-}
-
-/// A discovered server pair as a storable endpoint — IMAP, since that is all
-/// discovery can find.
-#[must_use]
-pub fn endpoint_of(found: &Discovered) -> MailEndpoint {
-    MailEndpoint {
-        imap_port: found.imap_port,
-        imap_transport: transport_of(found.imap_security),
-        imap_username: Some(found.username.clone()).filter(|u| !u.is_empty()),
-        smtp_host: found.smtp_host.clone(),
-        smtp_port: found.smtp_port,
-        smtp_transport: transport_of(found.smtp_security),
-        ..MailEndpoint::tls(found.imap_host.clone())
-    }
-}
-
 /// The inverse of [`transport`], for what discovery reports.
 #[must_use]
 pub fn transport_of(security: Security) -> Transport {
@@ -421,17 +386,79 @@ pub fn transport_of(security: Security) -> Transport {
     }
 }
 
+/// Adds a password account for an address, and stores it only once its
+/// server has taken the password.
+///
+/// The servers come from the provider registry, or from discovery for an
+/// address no provider claims, and the password is tried against them with
+/// one login before anything is written: a password stored untried failed
+/// an hour later as a sync error, far from the form where it could have been
+/// corrected, and an address whose servers could not be found was stored with
+/// none. The account is stored with its provider and its DAV addresses, so
+/// Slate and Circle find its calendars and contacts too.
+///
+/// Blocking — it may fetch an autoconfig document and it logs in — so a
+/// worker call. Returns the new account's id.
+pub fn add_with_password(name: &str, email: &str, password: &str) -> Result<String, String> {
+    let registry = cosmic_pim_accounts::Registry::load();
+    let mut accounts = AccountStore::open_default().map_err(|why| why.to_string())?;
+    add_with_password_to(&mut accounts, &registry, name, email, password)
+}
+
+/// [`add_with_password`], into `accounts`, with the providers in `registry`.
+pub fn add_with_password_to(
+    accounts: &mut AccountStore,
+    registry: &cosmic_pim_accounts::Registry,
+    name: &str,
+    email: &str,
+    password: &str,
+) -> Result<String, String> {
+    let plan = cosmic_pim_sync::setup::plan(registry, email, false)
+        .ok_or_else(|| "that is not a whole email address".to_owned())?;
+    cosmic_pim_sync::setup::add_with_password(accounts, registry, &plan, name, password)
+        .map_err(|why| why.to_string())
+}
+
+/// A finished browser sign-in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedIn {
+    /// The new account's id, already in the shared store.
+    pub account_id: String,
+    /// The address the account is for: who the provider says signed in.
+    pub address: String,
+    /// The address that was typed before the browser opened.
+    pub typed: String,
+}
+
+impl SignedIn {
+    /// Whether the browser signed in somebody other than the address typed
+    /// — another of the user's accounts, picked in the provider's chooser.
+    #[must_use]
+    pub fn is_other_address(&self) -> bool {
+        !self.address.eq_ignore_ascii_case(self.typed.trim())
+    }
+}
+
 /// Runs one OAuth sign-in, start to finish, and stores the account.
 ///
 /// Blocking for up to the flow's five-minute redirect deadline, so strictly a
 /// worker call. The browser is the user's own — opened here, next to the
 /// listener, so the port is already bound when the redirect comes back.
-/// Everything else — PKCE, the loopback listener, the code exchange — is the
-/// substrate's.
+/// Everything else — PKCE, the loopback listener, the code exchange, the ID
+/// token's checks — is the substrate's.
 ///
-/// Returns the new account's id, already in the shared store with its grant,
-/// so Slate and Circle see it too.
-pub fn sign_in(provider_id: &str, email: &str) -> Result<String, String> {
+/// The account is created for whoever actually signed in, as the provider's
+/// ID token names them, not for the address typed: picking another account in
+/// the provider's chooser used to store an account labelled with one address
+/// holding a grant for the other. The typed address is used only when the
+/// provider names nobody.
+///
+/// The provider is the one whose button was pressed rather than the one the
+/// address's domain names, so an address on a domain the provider hosts
+/// (Google Workspace, Microsoft 365) can sign in too. That is why this does
+/// not go through `cosmic_pim_sync::setup::sign_in`, which takes its provider
+/// from the address.
+pub fn sign_in(provider_id: &str, email: &str) -> Result<SignedIn, String> {
     let registry = cosmic_pim_accounts::Registry::load();
     let provider = registry
         .get(provider_id)
@@ -450,16 +477,46 @@ pub fn sign_in(provider_id: &str, email: &str) -> Result<String, String> {
         .exchange(&code, oauth)
         .map_err(|why| why.to_string())?;
 
-    // The provider builds the account — protocol, endpoints, JMAP URL — which
-    // is how a Google sign-in comes out as a Gmail-engine account rather than
-    // an IMAP one with a token stuffed in the password slot.
-    let account = provider.account_for(email.trim());
-    let id = account.id.clone();
+    let account = signed_in_account(
+        provider,
+        email,
+        grant
+            .identity
+            .as_ref()
+            .map(|identity| (identity.email.as_str(), identity.name.as_deref())),
+    );
+    let signed_in = SignedIn {
+        account_id: account.id.clone(),
+        address: account.username.clone(),
+        typed: email.trim().to_owned(),
+    };
     let mut accounts = AccountStore::open_default().map_err(|why| why.to_string())?;
     accounts
         .add_oauth(account, &provider.id, &grant.credential)
         .map_err(|why| why.to_string())?;
-    Ok(id)
+    Ok(signed_in)
+}
+
+/// The account a sign-in stores: for the address the provider says signed in
+/// (`identity`: address and name), or the typed one when it says nothing.
+///
+/// The provider builds it — protocol, endpoints, JMAP URL — which is how a
+/// Google sign-in comes out as a Gmail-engine account rather than an IMAP one
+/// with a token stuffed in the password slot.
+fn signed_in_account(
+    provider: &cosmic_pim_accounts::Provider,
+    typed: &str,
+    identity: Option<(&str, Option<&str>)>,
+) -> Account {
+    let (address, name) = identity.unwrap_or((typed.trim(), None));
+    let mut account = provider.account_for(address);
+    if let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) {
+        account.display_name = name.to_owned();
+        if let Some(mail) = account.mail.as_mut() {
+            mail.from_name = name.to_owned();
+        }
+    }
+    account
 }
 
 /// The credentials to use right now, renewed if the stored ones expired.
@@ -3270,6 +3327,131 @@ mod tests {
         // A spacer table with no words in it is not worth a document; the
         // reader shows the extracted text instead.
         assert!(body_document(&html_message("<table><tr><td></td></tr></table>")).is_none());
+    }
+
+    #[test]
+    fn a_sign_in_creates_the_account_for_whoever_signed_in() {
+        let registry =
+            cosmic_pim_accounts::Registry::load_from(std::path::Path::new("/nonexistent"));
+        let google = registry.get("google").expect("Google is built in");
+
+        // Another account picked in Google's chooser.
+        let account = signed_in_account(
+            google,
+            "ada@gmail.com",
+            Some(("countess@gmail.com", Some("Ada King"))),
+        );
+        assert_eq!(account.username, "countess@gmail.com");
+        assert_eq!(account.display_name, "Ada King");
+        let mail = account.mail.as_ref().expect("a mail endpoint");
+        assert_eq!(mail.from_address, "countess@gmail.com");
+        assert_eq!(mail.from_name, "Ada King");
+
+        // A provider that names nobody: the typed address, as before.
+        let account = signed_in_account(google, " ada@gmail.com ", None);
+        assert_eq!(account.username, "ada@gmail.com");
+
+        let signed_in = |address: &str, typed: &str| SignedIn {
+            account_id: String::new(),
+            address: address.into(),
+            typed: typed.into(),
+        };
+        assert!(signed_in("countess@gmail.com", "ada@gmail.com").is_other_address());
+        assert!(!signed_in("ada@gmail.com", "Ada@Gmail.com ").is_other_address());
+    }
+
+    /// A plaintext IMAP server on 127.0.0.1 that takes one login, and
+    /// accepts it only with `password`.
+    fn imap_server(password: &'static str) -> u16 {
+        use std::io::{BufRead as _, BufReader, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut out = stream.try_clone().expect("clone");
+            let mut reader = BufReader::new(stream);
+            let _ = write!(out, "* OK ready\r\n");
+            let mut line = String::new();
+            while reader.read_line(&mut line).is_ok_and(|n| n > 0) {
+                let command = line.trim_end().to_owned();
+                line.clear();
+                let (tag, rest) = command.split_once(' ').unwrap_or((&command, ""));
+                let upper = rest.to_ascii_uppercase();
+                let _ = if upper.starts_with("LOGIN") {
+                    if rest.ends_with(&format!(" \"{password}\""))
+                        || rest.ends_with(&format!(" {password}"))
+                    {
+                        write!(out, "{tag} OK logged in\r\n")
+                    } else {
+                        write!(
+                            out,
+                            "{tag} NO [AUTHENTICATIONFAILED] Invalid credentials\r\n"
+                        )
+                    }
+                } else if upper.starts_with("CAPABILITY") {
+                    write!(out, "* CAPABILITY IMAP4rev1\r\n{tag} OK done\r\n")
+                } else if upper.starts_with("LOGOUT") {
+                    let _ = write!(out, "* BYE\r\n{tag} OK done\r\n");
+                    break;
+                } else {
+                    write!(out, "{tag} OK done\r\n")
+                };
+            }
+        });
+        port
+    }
+
+    /// A provider whose mail server is `port` on this machine, claiming
+    /// `example.test`, and an account store whose secrets stay in `dir`.
+    fn local_provider(
+        dir: &std::path::Path,
+        port: u16,
+    ) -> (cosmic_pim_accounts::Registry, AccountStore) {
+        let providers = dir.join("providers");
+        std::fs::create_dir_all(&providers).expect("mkdir");
+        std::fs::write(
+            providers.join("local.toml"),
+            format!(
+                "id = \"local\"\nname = \"Local Mail\"\ndomains = [\"example.test\"]\n\n\
+                 [services.mail]\nprotocol = \"imap\"\nimap_host = \"127.0.0.1\"\n\
+                 imap_port = {port}\nimap_transport = \"plaintext\"\nsmtp_host = \"127.0.0.1\"\n\
+                 smtp_port = 1\nsmtp_transport = \"plaintext\"\n"
+            ),
+        )
+        .expect("write the manifest");
+        let secrets = cosmic_pim_accounts::SecretStore::open_envelope_only("envelope-test", dir);
+        let store = AccountStore::open(&dir.join("accounts.toml"), secrets).expect("the store");
+        (cosmic_pim_accounts::Registry::load_from(&providers), store)
+    }
+
+    #[test]
+    fn an_account_is_stored_only_once_its_server_takes_the_password() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (registry, mut store) = local_provider(dir.path(), imap_server("right"));
+
+        let refused =
+            add_with_password_to(&mut store, &registry, "Ada", "ada@example.test", "wrong");
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.contains("not accepted")),
+            "{refused:?}"
+        );
+        assert_eq!(store.accounts(), [], "a refused password was stored");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (registry, mut store) = local_provider(dir.path(), imap_server("right"));
+        let id = add_with_password_to(&mut store, &registry, "Ada", "ada@example.test", "right")
+            .expect("the server took the password");
+        let account = store.get(&id).expect("stored");
+        assert_eq!(account.display_name, "Ada");
+        assert_eq!(account.provider.as_deref(), Some("local"));
+        assert_eq!(account.mail.as_ref().expect("mail").imap_host, "127.0.0.1");
+        assert_eq!(store.password(&id).expect("read").as_deref(), Some("right"));
+
+        assert!(add_with_password_to(&mut store, &registry, "", "ada", "right").is_err());
     }
 
     #[test]
