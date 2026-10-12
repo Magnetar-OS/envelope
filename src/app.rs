@@ -24,7 +24,10 @@ use cosmic::iced::window;
 use cosmic::widget::{self, about::About, menu};
 use cosmic::{Application as _, ApplicationExt as _};
 use cosmic::{Apply as _, Element};
-use cosmic_pim_accounts::{Account, AccountStore, MailEndpoint, MailProtocol, Transport};
+use cosmic_pim_accounts::account::ACCOUNTS_FILE_CHECK_INTERVAL;
+use cosmic_pim_accounts::{
+    Account, AccountStore, FileStamp, MailEndpoint, MailProtocol, Transport,
+};
 use cosmic_pim_mail::folder::{Folder, SpecialUse};
 use cosmic_pim_mail::model::Flags;
 use nib_model::history::Options as HistoryOptions;
@@ -60,7 +63,7 @@ pub struct AppModel {
     accounts: Vec<Account>,
     /// The account list's size and modification time when it was last read,
     /// so a change made by another application is noticed.
-    accounts_stamp: Stamp,
+    accounts_stamp: FileStamp,
     /// Circle's contacts, as recipients to complete. Shared rather than
     /// cloned into each keystroke's work.
     address_book: std::sync::Arc<Vec<cosmic_pim_core::recipients::Known>>,
@@ -1421,7 +1424,7 @@ impl cosmic::Application for AppModel {
         mail::retire_answering_sidecars();
 
         let mut model = Self::with_config(core, config);
-        model.accounts_stamp = accounts_file_stamp();
+        model.accounts_stamp = FileStamp::accounts_file();
         model.accounts = load_accounts();
         model.sign_in_providers = mail::sign_in_providers();
         // A crash last session is said once, here, rather than never: the
@@ -1631,7 +1634,8 @@ impl cosmic::Application for AppModel {
             cosmic::iced::time::every(self.config.poll_interval()).map(|_| Message::Poll),
             // Accounts are the suite's: one added in the Accounts window, or
             // in Slate or Circle, appears here without a restart.
-            cosmic::iced::time::every(ACCOUNTS_FILE_CHECK).map(|_| Message::AccountsFileCheck),
+            cosmic::iced::time::every(ACCOUNTS_FILE_CHECK_INTERVAL)
+                .map(|_| Message::AccountsFileCheck),
             // Settings changed by another process — cosmic-settings, a text
             // editor — take effect without a restart.
             self.core()
@@ -2051,7 +2055,7 @@ impl AppModel {
                 .map(|(bind, action)| (bind, MenuAction(action)))
                 .collect(),
             accounts: Vec::new(),
-            accounts_stamp: None,
+            accounts_stamp: FileStamp::default(),
             address_book: std::sync::Arc::default(),
             accounts_window: crate::handoff::ACCOUNTS_WINDOW,
             contacts_app: crate::handoff::CONTACTS_APP,
@@ -4642,7 +4646,7 @@ impl AppModel {
     /// is on screen stays, and the file is read again when it next changes.
     fn accounts_file_check(&mut self) -> Task<Message> {
         let path = cosmic_pim_accounts::account::default_config_path();
-        if !stamp_changed(&mut self.accounts_stamp, &path) {
+        if !self.accounts_stamp.changed(&path) {
             return Task::none();
         }
         match AccountStore::open_default() {
@@ -6158,39 +6162,6 @@ fn load_address_book() -> Task<Message> {
     })
 }
 
-/// How often to look whether the shared account list changed. A `stat`, so
-/// cheap enough to do this often: an account added in the Accounts window
-/// should appear here before the person has finished switching windows.
-const ACCOUNTS_FILE_CHECK: std::time::Duration = std::time::Duration::from_secs(2);
-
-/// What identifies one version of a file on disk: its size and its
-/// modification time. `None` when there is no file.
-type Stamp = Option<(u64, std::time::SystemTime)>;
-
-/// The account list's stamp, as it is on disk now.
-fn accounts_file_stamp() -> Stamp {
-    file_stamp(&cosmic_pim_accounts::account::default_config_path())
-}
-
-fn file_stamp(path: &std::path::Path) -> Stamp {
-    let metadata = std::fs::metadata(path).ok()?;
-    Some((metadata.len(), metadata.modified().ok()?))
-}
-
-/// Whether the file at `path` is a different version from the one `last`
-/// names, which is brought up to date.
-///
-/// However many times the file was written since the last look, that is one
-/// change: the list is read once per look, not once per write.
-fn stamp_changed(last: &mut Stamp, path: &std::path::Path) -> bool {
-    let now = file_stamp(path);
-    if now == *last {
-        return false;
-    }
-    *last = now;
-    true
-}
-
 /// What a list of accounts read again from disk means for the account on
 /// screen.
 #[derive(Debug, PartialEq, Eq)]
@@ -6329,53 +6300,6 @@ mod tests {
             "grace@navy.example",
             "the completed text does not parse back to the address"
         );
-    }
-
-    #[test]
-    fn a_change_to_the_account_list_changes_its_stamp() {
-        // The stamp is how an account added in the Accounts window is
-        // noticed. A rewrite of the same size in the same second is the case
-        // it cannot see, and the size is what catches an added account.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("accounts.toml");
-        assert_eq!(file_stamp(&path), None);
-
-        std::fs::write(&path, "").unwrap();
-        let empty = file_stamp(&path);
-        std::fs::write(&path, "[[account]]\nid = \"a\"\n").unwrap();
-
-        assert!(empty.is_some());
-        assert_ne!(file_stamp(&path), empty);
-    }
-
-    #[test]
-    fn the_account_list_is_read_once_per_look_however_often_it_was_written() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("accounts.toml");
-        let mut last = file_stamp(&path);
-
-        // Nothing there, nothing written: nothing to read.
-        assert!(!stamp_changed(&mut last, &path));
-
-        // The Accounts window adding an account is several writes: the
-        // account, then what discovery found for it.
-        std::fs::write(&path, "[[account]]\nid = \"a\"\n").unwrap();
-        std::fs::write(
-            &path,
-            "[[account]]\nid = \"a\"\nurl = \"https://dav.example\"\n",
-        )
-        .unwrap();
-        assert!(stamp_changed(&mut last, &path));
-        assert!(
-            !stamp_changed(&mut last, &path),
-            "one change was read twice"
-        );
-        assert!(!stamp_changed(&mut last, &path));
-
-        // Every account removed, and the file with them.
-        std::fs::remove_file(&path).unwrap();
-        assert!(stamp_changed(&mut last, &path));
-        assert!(!stamp_changed(&mut last, &path));
     }
 
     fn account(id: &str) -> Account {
