@@ -63,7 +63,7 @@ pub struct AppModel {
     accounts_stamp: Stamp,
     /// Circle's contacts, as recipients to complete. Shared rather than
     /// cloned into each keystroke's work.
-    address_book: std::sync::Arc<Vec<crate::recipients::Known>>,
+    address_book: std::sync::Arc<Vec<cosmic_pim_core::recipients::Known>>,
     /// The program that adds accounts for the whole desktop. A field so a
     /// test can name one that is not there.
     accounts_window: &'static str,
@@ -418,7 +418,7 @@ pub struct Composer {
     pub error: Option<String>,
     /// Completions from the address book for the recipient being typed, and
     /// which field it is being typed in.
-    pub suggestions: Vec<crate::recipients::Known>,
+    pub suggestions: Vec<cosmic_pim_core::recipients::Known>,
     pub suggesting: Option<RecipientField>,
 }
 
@@ -446,9 +446,9 @@ impl Composer {
         &mut self,
         field: RecipientField,
         text: String,
-        book: &[crate::recipients::Known],
+        book: &[cosmic_pim_core::recipients::Known],
     ) {
-        self.suggestions = crate::recipients::complete(book, &text);
+        self.suggestions = cosmic_pim_core::recipients::complete(book, &text);
         self.suggesting = (!self.suggestions.is_empty()).then_some(field);
         *self.recipients_mut(field) = text;
     }
@@ -459,7 +459,7 @@ impl Composer {
         let field = self.suggesting?;
         let known = self.suggestions.get(index)?.clone();
         let text = self.recipients_mut(field);
-        *text = crate::recipients::accept(text, &known);
+        *text = cosmic_pim_core::recipients::accept(text, &known);
         self.suggestions.clear();
         self.suggesting = None;
         self.error = None;
@@ -1155,7 +1155,7 @@ pub enum Message {
     /// One of the address book's completions for a recipient was chosen.
     ComposeSuggestionPicked(usize),
     /// The address book, read off the UI thread.
-    AddressBookLoaded(std::sync::Arc<Vec<crate::recipients::Known>>),
+    AddressBookLoaded(std::sync::Arc<Vec<cosmic_pim_core::recipients::Known>>),
     ComposeCcChanged(String),
     ComposeBccChanged(String),
     ComposeSubjectChanged(String),
@@ -6187,7 +6187,7 @@ fn mail_account(name: &str, email: &str, endpoint: Option<MailEndpoint>) -> Acco
 /// Reads the address book off the UI thread.
 fn load_address_book() -> Task<Message> {
     cosmic::task::future(async {
-        let book = tokio::task::spawn_blocking(crate::recipients::read_address_book)
+        let book = tokio::task::spawn_blocking(cosmic_pim_core::recipients::read_address_book)
             .await
             .unwrap_or_default();
         Message::AddressBookLoaded(std::sync::Arc::new(book))
@@ -6341,7 +6341,7 @@ mod tests {
 
     #[test]
     fn typing_a_recipient_completes_it_from_the_address_book_and_a_pick_fills_it_in() {
-        let book = vec![crate::recipients::Known {
+        let book = vec![cosmic_pim_core::recipients::Known {
             name: "Grace Hopper".to_owned(),
             address: "grace@navy.example".to_owned(),
         }];
