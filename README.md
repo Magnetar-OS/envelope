@@ -18,7 +18,9 @@ Microsoft in the shipped manifests, once given a client id — Envelope runs the
 sign-in in your own browser, never an embedded page, and stores the grant in
 the suite's shared account store. Tokens renew themselves; a Google sign-in
 comes out as a Gmail-engine account, not IMAP with a token in the password
-slot.
+slot. An address on a domain of its own whose mail Google Workspace or
+Microsoft 365 hosts signs in with that provider's button: the provider is the
+one pressed, not one guessed from the domain.
 
 **Adding an account is an address and a password.** Accounts → Add account
 asks for those and works the servers out from the address rather than asking:

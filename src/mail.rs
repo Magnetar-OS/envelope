@@ -546,81 +546,50 @@ impl SignedIn {
 /// Runs one OAuth sign-in, start to finish, and stores the account.
 ///
 /// Blocking for up to the flow's five-minute redirect deadline, so strictly a
-/// worker call. The browser is the user's own — opened here, next to the
-/// listener, so the port is already bound when the redirect comes back.
-/// Everything else — PKCE, the loopback listener, the code exchange, the ID
-/// token's checks — is the substrate's.
+/// worker call. The browser is the user's own. Everything else — PKCE, the
+/// loopback listener, the code exchange, the ID token's checks, naming the
+/// account — is `cosmic_pim_sync::setup::sign_in_with_provider`.
+///
+/// The provider is the one whose button was pressed rather than the one the
+/// address's domain names, so an address on a domain the provider hosts
+/// (Google Workspace, Microsoft 365) can sign in too.
 ///
 /// The account is created for whoever actually signed in, as the provider's
 /// ID token names them, not for the address typed: picking another account in
 /// the provider's chooser used to store an account labelled with one address
 /// holding a grant for the other. The typed address is used only when the
 /// provider names nobody.
-///
-/// The provider is the one whose button was pressed rather than the one the
-/// address's domain names, so an address on a domain the provider hosts
-/// (Google Workspace, Microsoft 365) can sign in too. That is why this does
-/// not go through `cosmic_pim_sync::setup::sign_in`, which takes its provider
-/// from the address.
 pub fn sign_in(provider_id: &str, email: &str) -> Result<SignedIn, String> {
     let registry = cosmic_pim_accounts::Registry::load();
+    let mut accounts = AccountStore::open_default().map_err(|why| why.to_string())?;
+    sign_in_to(&mut accounts, &registry, provider_id, email, |url| {
+        open::that_detached(url)
+    })
+}
+
+/// [`sign_in`], into `accounts`, with the providers in `registry`, opening
+/// the authorize page with `open`.
+pub fn sign_in_to(
+    accounts: &mut AccountStore,
+    registry: &cosmic_pim_accounts::Registry,
+    provider_id: &str,
+    email: &str,
+    open: impl FnOnce(&str) -> std::io::Result<()>,
+) -> Result<SignedIn, String> {
     let provider = registry
         .get(provider_id)
         .ok_or_else(|| format!("no provider called {provider_id}"))?;
-    let oauth = provider
-        .oauth
-        .as_ref()
-        .ok_or_else(|| format!("{} does not use sign-in", provider.name))?;
-
-    let pending = cosmic_pim_auth::begin(oauth).map_err(|why| why.to_string())?;
-    open::that_detached(pending.authorize_url())
-        .map_err(|why| format!("could not open the browser: {why}"))?;
-
-    let code = pending.wait().map_err(|why| why.to_string())?;
-    let grant = pending
-        .exchange(&code, oauth)
+    let id = cosmic_pim_sync::setup::sign_in_with_provider(accounts, provider, email, open)
         .map_err(|why| why.to_string())?;
-
-    let account = signed_in_account(
-        provider,
-        email,
-        grant
-            .identity
-            .as_ref()
-            .map(|identity| (identity.email.as_str(), identity.name.as_deref())),
-    );
-    let signed_in = SignedIn {
-        account_id: account.id.clone(),
-        address: account.username.clone(),
+    let address = accounts
+        .get(&id)
+        .map(|account| account.username.clone())
+        .ok_or_else(|| "the signed-in account was not stored".to_owned())?;
+    Ok(SignedIn {
+        account_id: id,
+        address,
         typed: email.trim().to_owned(),
-    };
-    let mut accounts = AccountStore::open_default().map_err(|why| why.to_string())?;
-    accounts
-        .add_oauth(account, &provider.id, &grant.credential)
-        .map_err(|why| why.to_string())?;
-    Ok(signed_in)
-}
-
-/// The account a sign-in stores: for the address the provider says signed in
-/// (`identity`: address and name), or the typed one when it says nothing.
-///
-/// The provider builds it — protocol, endpoints, JMAP URL — which is how a
-/// Google sign-in comes out as a Gmail-engine account rather than an IMAP one
-/// with a token stuffed in the password slot.
-fn signed_in_account(
-    provider: &cosmic_pim_accounts::Provider,
-    typed: &str,
-    identity: Option<(&str, Option<&str>)>,
-) -> Account {
-    let (address, name) = identity.unwrap_or((typed.trim(), None));
-    let mut account = provider.account_for(address);
-    if let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) {
-        account.display_name = name.to_owned();
-        if let Some(mail) = account.mail.as_mut() {
-            mail.from_name = name.to_owned();
-        }
-    }
-    account
+    })
 }
 
 /// The credentials to use right now, renewed if the stored ones expired.
@@ -3523,28 +3492,146 @@ mod tests {
         assert!(document(&html_message("<table><tr><td></td></tr></table>")).is_none());
     }
 
+    /// Answers the authorization redirect the way a browser would once the
+    /// person has signed in, and hands back the authorize URL it was given.
+    fn browser(opened: &std::sync::Mutex<String>, url: &str) -> std::io::Result<()> {
+        use std::io::Write as _;
+        url.clone_into(&mut opened.lock().expect("lock"));
+        let port: u16 = url
+            .split("redirect_uri=http%3A%2F%2F127.0.0.1%3A")
+            .nth(1)
+            .and_then(|rest| rest.split("%2F").next())
+            .and_then(|port| port.parse().ok())
+            .expect("a loopback redirect in the authorize URL");
+        let state = url
+            .split(['?', '&'])
+            .find_map(|pair| pair.strip_prefix("state="))
+            .expect("a state in the authorize URL")
+            .to_owned();
+        std::thread::spawn(move || {
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+            let _ = write!(
+                stream,
+                "GET /callback?code=the-code&state={state} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+            );
+            let _ = std::io::Read::read_to_end(&mut stream, &mut Vec::new());
+        });
+        Ok(())
+    }
+
+    /// A token endpoint on 127.0.0.1 that answers one exchange with a grant
+    /// whose ID token names `email`.
+    fn token_endpoint(email: &'static str) -> String {
+        use base64::Engine as _;
+        use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut out = stream.try_clone().expect("clone");
+            let mut reader = BufReader::new(stream);
+            let mut length = 0;
+            let mut line = String::new();
+            while reader.read_line(&mut line).is_ok_and(|n| n > 2) {
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+                line.clear();
+            }
+            let _ = reader.read_exact(&mut vec![0; length]);
+            // The client id the manifest below names, and an expiry far off.
+            let claims = format!(
+                r#"{{"aud":"test","exp":4102444800,"email":"{email}","name":"Ada Lovelace"}}"#
+            );
+            let body = format!(
+                r#"{{"access_token":"at","refresh_token":"rt","expires_in":3600,"id_token":"e30.{}.sig"}}"#,
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims)
+            );
+            let _ = write!(
+                out,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len()
+            );
+        });
+        format!("http://127.0.0.1:{port}/token")
+    }
+
     #[test]
-    fn a_sign_in_creates_the_account_for_whoever_signed_in() {
-        let registry =
-            cosmic_pim_accounts::Registry::load_from(std::path::Path::new("/nonexistent"));
+    fn an_address_on_its_own_domain_signs_in_at_the_provider_picked() {
+        // Google Workspace on company.example: no manifest claims the domain,
+        // so only the button pressed says which provider it is.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let redirect_port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|listener| listener.local_addr())
+            .expect("a free port")
+            .port();
+        std::fs::write(
+            dir.path().join("google.toml"),
+            format!(
+                "id = \"google\"\n[oauth]\nclient_id = \"test\"\ntoken_url = \"{}\"\n\
+                 redirect_port = {redirect_port}\n",
+                token_endpoint("ada@company.example")
+            ),
+        )
+        .expect("write the manifest");
+        let registry = cosmic_pim_accounts::Registry::load_from(dir.path());
+        assert!(registry.for_email("ada@company.example").is_none());
+        let secrets =
+            cosmic_pim_accounts::SecretStore::open_envelope_only("envelope-test", dir.path());
+        let mut store =
+            AccountStore::open(&dir.path().join("accounts.toml"), secrets).expect("the store");
+        let opened = std::sync::Mutex::new(String::new());
+
+        let signed_in = sign_in_to(
+            &mut store,
+            &registry,
+            "google",
+            " ada@company.example ",
+            |url| browser(&opened, url),
+        )
+        .expect("signed in");
+
+        let authorize = opened.lock().expect("lock").clone();
         let google = registry.get("google").expect("Google is built in");
-
-        // Another account picked in Google's chooser.
-        let account = signed_in_account(
-            google,
-            "ada@gmail.com",
-            Some(("countess@gmail.com", Some("Ada King"))),
+        let endpoint = &google.oauth.as_ref().expect("oauth").auth_url;
+        assert!(authorize.starts_with(endpoint.as_str()), "{authorize}");
+        assert_eq!(signed_in.address, "ada@company.example");
+        assert!(!signed_in.is_other_address());
+        let account = store.get(&signed_in.account_id).expect("stored");
+        assert_eq!(account.provider.as_deref(), Some("google"));
+        assert_eq!(account.display_name, "Ada Lovelace");
+        assert!(account.is_oauth());
+        assert_eq!(
+            account.mail.as_ref().expect("mail").protocol,
+            MailProtocol::Gmail,
+            "a Workspace account uses the Gmail engine like any other"
         );
-        assert_eq!(account.username, "countess@gmail.com");
-        assert_eq!(account.display_name, "Ada King");
-        let mail = account.mail.as_ref().expect("a mail endpoint");
-        assert_eq!(mail.from_address, "countess@gmail.com");
-        assert_eq!(mail.from_name, "Ada King");
+    }
 
-        // A provider that names nobody: the typed address, as before.
-        let account = signed_in_account(google, " ada@gmail.com ", None);
-        assert_eq!(account.username, "ada@gmail.com");
+    #[test]
+    fn a_provider_with_no_client_id_here_opens_no_browser() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (registry, mut store) = local_provider(dir.path(), 1);
 
+        let refused = sign_in_to(
+            &mut store,
+            &registry,
+            "google",
+            "ada@company.example",
+            |_| panic!("no browser may open without a client id"),
+        );
+
+        assert!(refused.is_err(), "{refused:?}");
+        assert_eq!(store.accounts(), []);
+    }
+
+    #[test]
+    fn a_sign_in_as_somebody_else_is_told_apart_from_the_address_typed() {
         let signed_in = |address: &str, typed: &str| SignedIn {
             account_id: String::new(),
             address: address.into(),
