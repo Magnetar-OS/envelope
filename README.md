@@ -24,8 +24,10 @@ slot.
 asks for those and works the servers out from the address rather than asking:
 the provider registry (which knows Fastmail is JMAP), a built-in table for the
 common providers, Mozilla autoconfig for everyone else, and a probed guess as
-a last resort. Only when all of that comes up empty does the server form open,
-on the account already saved. IMAP, JMAP, and POP3 all go this way; Gmail and
+a last resort. The password is tried before anything is saved. Only when all
+of that comes up empty does the form ask for the servers by name, and then it
+signs in to the incoming and the outgoing server with the password before it
+saves the account. IMAP, JMAP, and POP3 all go this way; Gmail and
 Outlook go through the browser sign-in above when it is configured, and over
 IMAP with an app password when it is not.
 

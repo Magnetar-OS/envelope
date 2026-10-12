@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- An address whose mail servers nothing can find — a domain of its own with
+  no published settings — can be added again: the add form asks for the
+  incoming and outgoing servers, signs in to both with the password, and
+  saves the account only when both took it. Since the add form started
+  trying passwords first, such an address could not be added at all.
+
 - A welcome page before there is an account, with one button that opens the
   desktop's Accounts window on its add page. Without the Accounts window
   installed, it opens Envelope's own account form. Envelope opened on three

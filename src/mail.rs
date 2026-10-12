@@ -425,9 +425,9 @@ pub fn transport_of(security: Security) -> Transport {
 ///
 /// Blocking — it may fetch an autoconfig document and it logs in — so a
 /// worker call. Returns the new account's id.
-pub fn add_with_password(name: &str, email: &str, password: &str) -> Result<String, String> {
+pub fn add_with_password(name: &str, email: &str, password: &str) -> Result<String, NotAdded> {
     let registry = cosmic_pim_accounts::Registry::load();
-    let mut accounts = AccountStore::open_default().map_err(|why| why.to_string())?;
+    let mut accounts = AccountStore::open_default().map_err(NotAdded::failed)?;
     add_with_password_to(&mut accounts, &registry, name, email, password)
 }
 
@@ -438,11 +438,89 @@ pub fn add_with_password_to(
     name: &str,
     email: &str,
     password: &str,
-) -> Result<String, String> {
-    let plan = cosmic_pim_sync::setup::plan(registry, email, false)
-        .ok_or_else(|| "that is not a whole email address".to_owned())?;
+) -> Result<String, NotAdded> {
+    let plan = setup_plan(registry, email)?;
     cosmic_pim_sync::setup::add_with_password(accounts, registry, &plan, name, password)
-        .map_err(|why| why.to_string())
+        .map_err(NotAdded::from)
+}
+
+/// Adds a password account at mail servers the person named, for an address
+/// whose servers nothing could find, and stores it only once the incoming
+/// server and — for IMAP and POP3 — the outgoing one have both taken the
+/// password.
+///
+/// `mail` is the servers as the form has them; the From address is the
+/// account's own address. The account has no provider: named servers are not
+/// a manifest's.
+///
+/// Blocking — it logs in twice — so a worker call. Returns the new
+/// account's id.
+pub fn add_with_mail_servers(
+    name: &str,
+    email: &str,
+    mail: MailEndpoint,
+    password: &str,
+) -> Result<String, NotAdded> {
+    let registry = cosmic_pim_accounts::Registry::load();
+    let mut accounts = AccountStore::open_default().map_err(NotAdded::failed)?;
+    add_with_mail_servers_to(&mut accounts, &registry, name, email, mail, password)
+}
+
+/// [`add_with_mail_servers`], into `accounts`, with the providers in
+/// `registry`.
+pub fn add_with_mail_servers_to(
+    accounts: &mut AccountStore,
+    registry: &cosmic_pim_accounts::Registry,
+    name: &str,
+    email: &str,
+    mail: MailEndpoint,
+    password: &str,
+) -> Result<String, NotAdded> {
+    let plan = setup_plan(registry, email)?;
+    cosmic_pim_sync::setup::add_with_mail_servers(accounts, &plan, name, mail, password)
+        .map_err(NotAdded::from)
+}
+
+fn setup_plan(
+    registry: &cosmic_pim_accounts::Registry,
+    email: &str,
+) -> Result<cosmic_pim_sync::setup::Plan, NotAdded> {
+    cosmic_pim_sync::setup::plan(registry, email, false)
+        .ok_or_else(|| NotAdded::Failed("that is not a whole email address".to_owned()))
+}
+
+/// Why the add form's account was not added. Nothing was stored either way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotAdded {
+    /// Nothing could find the address's mail servers, so they have to be
+    /// named; the reason, for when they already were.
+    NoServer(String),
+    /// Anything else, in words: a refused password, a server that could not
+    /// be reached.
+    Failed(String),
+}
+
+impl NotAdded {
+    fn failed(why: impl std::fmt::Display) -> Self {
+        Self::Failed(why.to_string())
+    }
+
+    /// What the form says.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::NoServer(why) | Self::Failed(why) => why,
+        }
+    }
+}
+
+impl From<cosmic_pim_sync::setup::SetupError> for NotAdded {
+    fn from(why: cosmic_pim_sync::setup::SetupError) -> Self {
+        match why {
+            cosmic_pim_sync::setup::SetupError::NoServer(_) => Self::NoServer(why.to_string()),
+            other => Self::failed(other),
+        }
+    }
 }
 
 /// A finished browser sign-in.
@@ -3552,7 +3630,8 @@ mod tests {
         assert!(
             refused
                 .as_ref()
-                .is_err_and(|why| why.contains("not accepted")),
+                .is_err_and(|why| matches!(why, NotAdded::Failed(_))
+                    && why.reason().contains("not accepted")),
             "{refused:?}"
         );
         assert_eq!(store.accounts(), [], "a refused password was stored");
@@ -3568,6 +3647,122 @@ mod tests {
         assert_eq!(store.password(&id).expect("read").as_deref(), Some("right"));
 
         assert!(add_with_password_to(&mut store, &registry, "", "ada", "right").is_err());
+    }
+
+    /// A plaintext SMTP server on 127.0.0.1 that takes one `AUTH PLAIN`,
+    /// and accepts it only with `password`.
+    fn smtp_server(password: &'static str) -> u16 {
+        use base64::Engine as _;
+        use std::io::{BufRead as _, BufReader, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut out = stream.try_clone().expect("clone");
+            let mut reader = BufReader::new(stream);
+            let _ = write!(out, "220 local ESMTP\r\n");
+            let mut line = String::new();
+            while reader.read_line(&mut line).is_ok_and(|n| n > 0) {
+                let command = line.trim_end().to_owned();
+                line.clear();
+                let upper = command.to_ascii_uppercase();
+                let _ = if upper.starts_with("EHLO") {
+                    write!(out, "250-local\r\n250 AUTH PLAIN\r\n")
+                } else if let Some(token) = command.strip_prefix("AUTH PLAIN ") {
+                    // `\0login\0password`, base64.
+                    let given = base64::engine::general_purpose::STANDARD
+                        .decode(token)
+                        .unwrap_or_default();
+                    if given.ends_with(format!("\0{password}").as_bytes()) {
+                        write!(out, "235 2.7.0 Authentication successful\r\n")
+                    } else {
+                        write!(out, "535 5.7.8 Authentication credentials invalid\r\n")
+                    }
+                } else if upper == "QUIT" {
+                    let _ = write!(out, "221 Bye\r\n");
+                    break;
+                } else {
+                    write!(out, "250 Ok\r\n")
+                };
+            }
+        });
+        port
+    }
+
+    /// IMAP and SMTP on loopback, as the add form's servers step collects
+    /// them, for an address no manifest claims.
+    fn named_servers(imap_port: u16, smtp_port: u16) -> MailEndpoint {
+        MailEndpoint {
+            imap_port,
+            imap_transport: Transport::Plaintext,
+            smtp_host: "127.0.0.1".to_owned(),
+            smtp_port,
+            smtp_transport: Transport::Plaintext,
+            ..MailEndpoint::tls("127.0.0.1")
+        }
+    }
+
+    #[test]
+    fn named_servers_are_stored_once_both_take_the_password() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (registry, mut store) = local_provider(dir.path(), 1);
+        let servers = named_servers(imap_server("right"), smtp_server("right"));
+
+        let id = add_with_mail_servers_to(
+            &mut store,
+            &registry,
+            "Ada",
+            "ada@nowhere.example",
+            servers,
+            "right",
+        )
+        .expect("both servers took the password");
+
+        let account = store.get(&id).expect("stored");
+        assert_eq!(account.username, "ada@nowhere.example");
+        assert_eq!(account.provider, None, "named servers are no manifest's");
+        let mail = account.mail.as_ref().expect("mail");
+        assert_eq!(mail.from_address, "ada@nowhere.example");
+        assert_eq!(mail.from_name, "Ada");
+        assert_eq!(mail.smtp_host, "127.0.0.1");
+        assert_eq!(store.password(&id).expect("read").as_deref(), Some("right"));
+    }
+
+    #[test]
+    fn named_servers_are_not_stored_when_the_outgoing_one_refuses_the_password() {
+        // Stored, the account would read mail and fail on its first send.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (registry, mut store) = local_provider(dir.path(), 1);
+        let servers = named_servers(imap_server("right"), smtp_server("other"));
+
+        let refused = add_with_mail_servers_to(
+            &mut store,
+            &registry,
+            "",
+            "ada@nowhere.example",
+            servers,
+            "right",
+        );
+
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| matches!(why, NotAdded::Failed(_))
+                    && why.reason().contains("not accepted")),
+            "{refused:?}"
+        );
+        assert_eq!(store.accounts(), [], "a refused password was stored");
+    }
+
+    #[test]
+    fn an_address_whose_servers_cannot_be_found_is_told_apart_from_a_failure() {
+        // The add form asks for the servers on this one, and only this one.
+        let why = cosmic_pim_sync::setup::SetupError::NoServer("nothing answered".into());
+        assert!(matches!(NotAdded::from(why), NotAdded::NoServer(_)));
+        let why = cosmic_pim_sync::setup::SetupError::Rejected("no".into());
+        assert!(matches!(NotAdded::from(why), NotAdded::Failed(_)));
     }
 
     #[test]

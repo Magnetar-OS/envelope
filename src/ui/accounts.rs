@@ -11,8 +11,9 @@
 //! An account added *here* starts from the other end: an address and a
 //! password, with the servers worked out from the address — the provider
 //! registry, then the built-in table, then autoconfig and a probe — and the
-//! browser sign-in for the providers whose route that is. The endpoint form
-//! is the fallback for the domain nothing could find.
+//! browser sign-in for the providers whose route that is. For the domain
+//! nothing could find, the add form asks for the servers, and tries them
+//! before anything is stored.
 
 use cosmic::Element;
 use cosmic::iced::Length;
@@ -197,9 +198,33 @@ fn add_form<'a>(add: &'a AddForm, sign_in: &SignIn<'a>) -> Element<'a, Message> 
         );
     }
 
-    let mut column = widget::column::with_capacity(3)
+    let mut column = widget::column::with_capacity(6)
         .spacing(spacing.space_s)
         .push(section);
+
+    // The second step, for an address nothing could find servers for: the
+    // person names them, and both are signed in to before anything is saved.
+    if let Some(servers) = &add.servers {
+        column = column
+            .push(
+                widget::text::body(fl!(
+                    "add-servers-needed",
+                    domain = add.domain().unwrap_or_default()
+                ))
+                .wrapping(cosmic::iced::core::text::Wrapping::Word),
+            )
+            .push(incoming(
+                widget::settings::section().title(fl!("mail-server")),
+                servers,
+                add.email.trim(),
+                Message::AddFormServer,
+            ))
+            .push(outgoing(
+                widget::settings::section().title(fl!("sending-section")),
+                servers,
+                Message::AddFormServer,
+            ));
+    }
 
     if let Some(error) = &add.error {
         column = column.push(crate::ui::destructive(error.clone()));
@@ -209,10 +234,10 @@ fn add_form<'a>(add: &'a AddForm, sign_in: &SignIn<'a>) -> Element<'a, Message> 
         .spacing(spacing.space_xs)
         .push(widget::button::text(fl!("cancel")).on_press(Message::AddFormCancel));
     if !wants_sign_in {
-        let label = if add.adding {
-            fl!("adding")
-        } else {
-            fl!("add")
+        let label = match (add.adding, add.servers.is_some()) {
+            (false, _) => fl!("add"),
+            (true, false) => fl!("adding"),
+            (true, true) => fl!("adding-at-servers"),
         };
         buttons = buttons.push(
             widget::button::text(label)

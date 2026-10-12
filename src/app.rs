@@ -978,7 +978,8 @@ impl ServerFields {
 }
 
 /// The add-account form: who you are, and the password. The servers are
-/// worked out from the address.
+/// worked out from the address — or, for an address nothing can work them
+/// out for, named in a second step.
 ///
 /// Envelope's own front door to the suite's account store. An account added
 /// here is the same account Slate and Circle read; what this form has over
@@ -990,7 +991,10 @@ pub struct AddForm {
     pub password: String,
     /// What the registry says about the address, refreshed as it is typed.
     pub provider: Option<mail::ProviderNote>,
-    /// Discovery is on the network.
+    /// The servers, once nothing could find them from the address and the
+    /// form asks for them instead. `None` until then.
+    pub servers: Option<ServerFields>,
+    /// Discovery, or a login, is on the network.
     pub adding: bool,
     pub error: Option<String>,
 }
@@ -1006,11 +1010,30 @@ impl AddForm {
             .is_some_and(|p| p.uses_sign_in && p.sign_in_ready)
     }
 
-    /// Whether Add can be pressed: a whole address and a password.
+    /// Whether Add can be pressed: a whole address and a password, and the
+    /// servers when the form asks for them.
     #[must_use]
     pub fn can_add(&self) -> bool {
-        !self.adding && self.email.trim().contains('@') && !self.password.is_empty()
+        !self.adding
+            && self.email.trim().contains('@')
+            && !self.password.is_empty()
+            && self.servers.as_ref().is_none_or(ServerFields::is_complete)
     }
+
+    /// The domain of the address typed, which is what the servers belong to.
+    #[must_use]
+    pub fn domain(&self) -> Option<String> {
+        domain_of(&self.email)
+    }
+}
+
+/// The part of an address after its `@`, as a domain compares.
+fn domain_of(email: &str) -> Option<String> {
+    email
+        .trim()
+        .rsplit_once('@')
+        .map(|(_, domain)| domain.to_ascii_lowercase())
+        .filter(|domain| !domain.is_empty())
 }
 
 fn transport_index(transport: Transport) -> usize {
@@ -1237,9 +1260,10 @@ pub enum Message {
     AddFormNameChanged(String),
     AddFormEmailChanged(String),
     AddFormPasswordChanged(String),
+    AddFormServer(ServerEdit),
     AddFormConfirm,
     /// The add form's account was stored, or why not.
-    AddFormFinished(Box<Result<String, String>>),
+    AddFormFinished(Box<Result<String, mail::NotAdded>>),
     AccountRemove(String),
     SignInStarted(String),
     SignInFinished(Box<Result<mail::SignedIn, String>>),
@@ -2707,6 +2731,11 @@ impl AppModel {
                 // is typed.
                 let provider = mail::provider_note(&email);
                 self.with_add_form(|form| {
+                    // Servers named for one domain are not another's: a
+                    // different domain starts again from finding them.
+                    if domain_of(&email) != form.domain() {
+                        form.servers = None;
+                    }
                     form.email = email;
                     form.provider = provider;
                 })
@@ -2714,6 +2743,11 @@ impl AppModel {
             Message::AddFormPasswordChanged(password) => {
                 self.with_add_form(|form| form.password = password)
             }
+            Message::AddFormServer(edit) => self.with_add_form(|form| {
+                if let Some(servers) = form.servers.as_mut() {
+                    servers.edit(edit);
+                }
+            }),
             Message::AddFormConfirm => self.confirm_add(),
             Message::AddFormFinished(result) => self.add_finished(*result),
             Message::AccountRemove(id) => {
@@ -6040,8 +6074,8 @@ impl AppModel {
     }
 
     /// Adds the account the form describes, with a password, on a worker:
-    /// the servers are found from the address and the password is tried
-    /// before anything is stored.
+    /// the servers are found from the address, or taken as the form names
+    /// them, and the password is tried before anything is stored.
     fn confirm_add(&mut self) -> Task<Message> {
         let Some(form) = self.add_form.as_mut() else {
             return Task::none();
@@ -6058,23 +6092,33 @@ impl AppModel {
             form.error = Some(fl!("add-needs-password"));
             return Task::none();
         }
+        let named = match form.servers.as_ref().map(ServerFields::endpoint) {
+            None => None,
+            Some(Ok(endpoint)) => Some(endpoint),
+            Some(Err(why)) => {
+                form.error = Some(why);
+                return Task::none();
+            }
+        };
         form.adding = true;
         form.error = None;
         let (name, password) = (form.name.trim().to_owned(), form.password.clone());
 
         cosmic::task::future(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                mail::add_with_password(&name, &email, &password)
+            let result = tokio::task::spawn_blocking(move || match named {
+                Some(servers) => mail::add_with_mail_servers(&name, &email, servers, &password),
+                None => mail::add_with_password(&name, &email, &password),
             })
             .await
-            .unwrap_or_else(|why| Err(why.to_string()));
+            .unwrap_or_else(|why| Err(mail::NotAdded::Failed(why.to_string())));
             Message::AddFormFinished(Box::new(result))
         })
     }
 
-    /// The add form's account is stored, and opens; or the form says why
-    /// not, with everything still typed in it.
-    fn add_finished(&mut self, result: Result<String, String>) -> Task<Message> {
+    /// The add form's account is stored, and opens; or the form asks for the
+    /// servers nothing could find; or it says why not, with everything still
+    /// typed in it.
+    fn add_finished(&mut self, result: Result<String, mail::NotAdded>) -> Task<Message> {
         match result {
             Ok(id) => {
                 self.add_form = None;
@@ -6084,7 +6128,15 @@ impl AppModel {
             Err(why) => {
                 if let Some(form) = self.add_form.as_mut() {
                     form.adding = false;
-                    form.error = Some(fl!("add-failed", reason = why));
+                    match why {
+                        // Not a failure to report but a question to ask: the
+                        // address is fine, and only its servers are unknown.
+                        mail::NotAdded::NoServer(_) if form.servers.is_none() => {
+                            form.servers = Some(ServerFields::default());
+                            form.error = None;
+                        }
+                        why => form.error = Some(fl!("add-failed", reason = why.reason())),
+                    }
                 }
                 Task::none()
             }
@@ -7062,7 +7114,7 @@ mod tests {
         });
 
         let _ = model.dispatch(Message::AddFormFinished(Box::new(Err(
-            "the password was not accepted: Invalid credentials".into(),
+            mail::NotAdded::Failed("the password was not accepted: Invalid credentials".into()),
         ))));
 
         let form = model.add_form.as_ref().expect("the form stays open");
@@ -7073,6 +7125,102 @@ mod tests {
         assert!(error.contains("not accepted"), "{error}");
         assert!(error.contains("Nothing was saved"), "{error}");
         assert!(model.accounts.is_empty());
+    }
+
+    #[test]
+    fn an_address_whose_servers_cannot_be_found_asks_for_them() {
+        let mut model = model();
+        model.add_form = Some(AddForm {
+            name: "Ada".into(),
+            email: "ada@nowhere.example".into(),
+            password: "secret".into(),
+            adding: true,
+            ..AddForm::default()
+        });
+
+        let _ = model.dispatch(Message::AddFormFinished(Box::new(Err(
+            mail::NotAdded::NoServer("no mail server could be found".into()),
+        ))));
+
+        let form = model.add_form.as_ref().expect("the form stays open");
+        assert!(!form.adding);
+        assert_eq!(form.error, None, "a question, not a failure");
+        assert_eq!(form.servers, Some(ServerFields::default()));
+        assert_eq!(form.email, "ada@nowhere.example");
+        assert_eq!(form.password, "secret", "what was typed is kept");
+        assert!(!form.can_add(), "no incoming server named yet");
+
+        let _ = model.dispatch(Message::AddFormServer(ServerEdit::Host(
+            "mail.nowhere.example".into(),
+        )));
+        let _ = model.dispatch(Message::AddFormServer(ServerEdit::SmtpTransport(
+            Transport::StartTls,
+        )));
+        let form = model.add_form.as_ref().expect("open");
+        let servers = form.servers.as_ref().expect("still asked for");
+        assert_eq!(servers.host, "mail.nowhere.example");
+        assert_eq!(servers.smtp_port, "587", "the port follows the encryption");
+        assert!(form.can_add());
+
+        // With the servers named, "none found" is the servers' answer — JMAP
+        // with no session address — and is said, not asked again.
+        model.add_form.as_mut().expect("open").adding = true;
+        let _ = model.dispatch(Message::AddFormFinished(Box::new(Err(
+            mail::NotAdded::NoServer("no JMAP session address".into()),
+        ))));
+        let form = model.add_form.as_ref().expect("open");
+        let error = form.error.as_deref().unwrap_or_default();
+        assert!(error.contains("no JMAP session address"), "{error}");
+        assert!(error.contains("Nothing was saved"), "{error}");
+        assert!(form.servers.is_some(), "what was named is kept to correct");
+        assert!(model.accounts.is_empty());
+    }
+
+    #[test]
+    fn servers_named_for_one_domain_are_dropped_for_another() {
+        let mut model = model();
+        model.add_form = Some(AddForm {
+            email: "ada@nowhere.example".into(),
+            servers: Some(ServerFields {
+                host: "mail.nowhere.example".into(),
+                ..ServerFields::default()
+            }),
+            ..AddForm::default()
+        });
+
+        // The same domain, retyped: what was named stays.
+        let _ = model.dispatch(Message::AddFormEmailChanged(
+            "grace@Nowhere.Example ".into(),
+        ));
+        assert!(model.add_form.as_ref().expect("open").servers.is_some());
+
+        let _ = model.dispatch(Message::AddFormEmailChanged("ada@elsewhere.example".into()));
+        assert_eq!(model.add_form.as_ref().expect("open").servers, None);
+    }
+
+    #[test]
+    fn named_servers_become_an_endpoint_for_the_protocol_chosen() {
+        let mut fields = ServerFields {
+            host: " pop.nowhere.example ".into(),
+            port: "995".into(),
+            username: "  ".into(),
+            ..ServerFields::default()
+        };
+        fields.edit(ServerEdit::Protocol(MailProtocol::Pop3));
+
+        let endpoint = fields.endpoint().expect("valid ports");
+        assert_eq!(endpoint.protocol, MailProtocol::Pop3);
+        assert_eq!(endpoint.pop3_host, "pop.nowhere.example");
+        assert_eq!(endpoint.pop3_port, 995);
+        assert_eq!(
+            endpoint.imap_username, None,
+            "an empty login is the account's"
+        );
+        assert_eq!(endpoint.smtp_port, 465);
+
+        fields.smtp_port = "smtp".into();
+        assert!(fields.endpoint().is_err());
+        assert!(!fields.is_complete());
     }
 
     #[test]
