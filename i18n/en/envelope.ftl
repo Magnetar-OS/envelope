@@ -355,6 +355,8 @@ undo-labelled = Labelled { $label }
 undo-unlabelled = Removed { $label }
 
 # Confirmations for the things that cannot be taken back
+manage-in-accounts = Manage in Accounts…
+online-account-kept-elsewhere = { $name } comes from GNOME Online Accounts, and removing it here would not last: it is linked again from there. Remove it in GNOME Online Accounts, or install the Accounts app to manage it.
 remove-account-title = Remove { $name }?
 remove-account-warning = The account and its stored password are removed from this device. Mail already downloaded stays on disk, and nothing is deleted on the server.
 remove-account-queued = { $count ->

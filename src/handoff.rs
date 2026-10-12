@@ -23,6 +23,13 @@ pub fn add_account(program: &str) -> Command {
     command
 }
 
+/// The command that opens the Accounts window on its list, where an account
+/// GNOME Online Accounts keeps is managed.
+#[must_use]
+pub fn manage_accounts(program: &str) -> Command {
+    Command::new(program)
+}
+
 /// The command that shows who has `address` in Circle: their card when they
 /// have one, a search for the address when they do not. Circle is
 /// single-instance, so one already open shows it.
@@ -70,6 +77,14 @@ mod tests {
 
         assert_eq!(command.get_program(), "magnetar-accounts");
         assert_eq!(arguments(&command), ["--for=mail"]);
+    }
+
+    #[test]
+    fn the_accounts_window_is_opened_on_its_list_to_manage_an_account() {
+        let command = manage_accounts(ACCOUNTS_WINDOW);
+
+        assert_eq!(command.get_program(), "magnetar-accounts");
+        assert!(arguments(&command).is_empty());
     }
 
     #[test]

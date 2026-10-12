@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 //! The Accounts context page: add an account, point one at a mail server,
-//! remove one, and sync.
+//! remove one, and sync. An account GNOME Online Accounts keeps is not
+//! removed here — it would be linked again — but in the Accounts window.
 //!
 //! Accounts are the suite's, held in `$XDG_CONFIG_HOME/cosmic-pim/accounts.toml`,
 //! and an account added in Slate is already here with its password. What is
@@ -15,9 +16,9 @@
 //! nothing could find, the add form asks for the servers, and tries them
 //! before anything is stored.
 
-use cosmic::Element;
 use cosmic::iced::Length;
 use cosmic::widget;
+use cosmic::{Apply as _, Element};
 use cosmic_pim_accounts::{Account, MailProtocol, Transport};
 
 use crate::app::{AddForm, MailForm, Message, ServerEdit, ServerFields};
@@ -57,10 +58,17 @@ pub fn view<'a>(
                     })
                     .on_press(Message::MailFormStart(account.id.clone())),
                 )
-                .push(
+                .push(if account.online_account().is_some() {
+                    // Removed here, it would be linked again from GNOME
+                    // Online Accounts; the Accounts window is where it goes.
+                    widget::button::text(fl!("manage-in-accounts"))
+                        .on_press(Message::AccountManageElsewhere(account.id.clone()))
+                        .apply(Element::from)
+                } else {
                     widget::button::icon(widget::icon::from_name("edit-delete-symbolic"))
-                        .on_press(Message::AccountRemove(account.id.clone())),
-                );
+                        .on_press(Message::AccountRemove(account.id.clone()))
+                        .apply(Element::from)
+                });
             section = section.add(
                 widget::settings::item::builder(account.display_name.clone())
                     .description(description)

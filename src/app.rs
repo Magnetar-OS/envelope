@@ -1265,6 +1265,9 @@ pub enum Message {
     /// The add form's account was stored, or why not.
     AddFormFinished(Box<Result<String, mail::NotAdded>>),
     AccountRemove(String),
+    /// Opens the Accounts window for an account GNOME Online Accounts keeps,
+    /// which is where it is removed.
+    AccountManageElsewhere(String),
     SignInStarted(String),
     SignInFinished(Box<Result<mail::SignedIn, String>>),
     PaletteQueryChanged(String),
@@ -2750,6 +2753,24 @@ impl AppModel {
             }),
             Message::AddFormConfirm => self.confirm_add(),
             Message::AddFormFinished(result) => self.add_finished(*result),
+            // Removed here, an account GNOME Online Accounts keeps comes back
+            // at the next link; it is removed where it is kept.
+            Message::AccountRemove(id) if self.is_online_account(&id) => {
+                self.update(Message::AccountManageElsewhere(id))
+            }
+            Message::AccountManageElsewhere(id) => {
+                let window = crate::handoff::manage_accounts(self.accounts_window);
+                if let Err(why) = crate::handoff::start(window) {
+                    tracing::info!(%why, "no Accounts window to manage an online account in");
+                    let name = self
+                        .accounts
+                        .iter()
+                        .find(|account| account.id == id)
+                        .map_or(id, |account| account.display_name.clone());
+                    self.say(fl!("online-account-kept-elsewhere", name = name));
+                }
+                Task::none()
+            }
             Message::AccountRemove(id) => {
                 let name = self
                     .accounts
@@ -6143,6 +6164,13 @@ impl AppModel {
         }
     }
 
+    /// Whether GNOME Online Accounts keeps the account `id`.
+    fn is_online_account(&self, id: &str) -> bool {
+        self.accounts
+            .iter()
+            .any(|account| account.id == id && account.online_account().is_some())
+    }
+
     /// Forgets an account and its password.
     ///
     /// The mail already on disk stays: it is the user's, in maildir, and a
@@ -7028,6 +7056,43 @@ mod tests {
             ),
             "the confirmation does not count the unsent message"
         );
+    }
+
+    fn online_account() -> Account {
+        Account::for_online_account("Google", "ada@gmail.com", "google", "account_1_0")
+            .expect("a plain GOA id")
+    }
+
+    #[test]
+    fn an_account_online_accounts_keeps_is_managed_in_the_accounts_window() {
+        // Removed here, it came back at the next link.
+        let mut model = model();
+        let account = online_account();
+        let id = account.id.clone();
+        model.accounts = vec![account];
+        model.accounts_window = "true";
+
+        let _ = model.dispatch(Message::AccountRemove(id));
+
+        assert!(model.folder_dialog.is_none(), "offered to remove it here");
+        assert_eq!(model.status, None, "the Accounts window opened");
+        assert_eq!(model.accounts.len(), 1);
+    }
+
+    #[test]
+    fn without_the_accounts_window_an_online_account_says_where_it_is_kept() {
+        let mut model = model();
+        let account = online_account();
+        let id = account.id.clone();
+        model.accounts = vec![account];
+        model.accounts_window = "/nonexistent/magnetar-accounts";
+
+        let _ = model.dispatch(Message::AccountRemove(id));
+
+        assert!(model.folder_dialog.is_none(), "offered to remove it here");
+        let said = model.status.clone().unwrap_or_default();
+        assert!(said.contains("GNOME Online Accounts"), "{said}");
+        assert_eq!(model.accounts.len(), 1);
     }
 
     #[test]

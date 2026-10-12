@@ -13,6 +13,10 @@ All notable changes to this project are documented here. The format follows
   incoming and outgoing servers, signs in to both with the password, and
   saves the account only when both took it. Since the add form started
   trying passwords first, such an address could not be added at all.
+- An account GNOME Online Accounts keeps has a Manage in Accounts button
+  instead of Remove: it opens the Accounts window, where it is removed.
+  Removed here, it was linked again from GNOME Online Accounts. Without the
+  Accounts window installed, Envelope says where the account is kept.
 
 - A welcome page before there is an account, with one button that opens the
   desktop's Accounts window on its add page. Without the Accounts window
