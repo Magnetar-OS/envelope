@@ -61,10 +61,16 @@ All notable changes to this project are documented here. The format follows
   opens with its text and a note that its formatting was left out, instead
   of keeping the reader waiting. An HTML part that cannot be read at all is
   shown the same way.
+- A folder holding a message whose HTML names a character set without a
+  value (`<meta http-equiv="Content-Type" content="text/html; charset">`)
+  lists again, and the message opens; both failed with an internal error.
+  A message with deeply nested markup (some ten thousand elements) no longer
+  aborts Envelope when its folder is listed or it is opened. Both are fixed
+  in cosmic-pim 3.1.0.
 
 ### Changed
 
-- Built against cosmic-pim 3.0.0 and libcosmic `60ad2cc`. Queued mail now
+- Built against cosmic-pim 3.1.0 and libcosmic `a6ac45c`. Queued mail now
   leaves oldest first. Yahoo, AOL, Proton, mailbox.org, Posteo and GMX
   addresses are recognised when an account is added. A sync that fetched
   mail but could not send the outbox now says so, as a failure, instead of

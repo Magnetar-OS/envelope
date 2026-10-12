@@ -1322,7 +1322,7 @@ source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.1#f1326
 dependencies = [
  "cosmic-ext-nib-css",
  "cosmic-ext-nib-model 1.2.1 (git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.1)",
- "html5ever 0.40.1",
+ "html5ever",
 ]
 
 [[package]]
@@ -1381,9 +1381,9 @@ dependencies = [
 
 [[package]]
 name = "cosmic-pim-accounts"
-version = "3.0.0"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ed905820dad2cac9178d081b6926f0bf3215c3f28b114e271ccbc7aa8e8e2d6"
+checksum = "34c5214e449784a7418943cec8d692235053e8ea5c46968d66936ffbd6ce5fc0"
 dependencies = [
  "base64 0.23.1",
  "chacha20poly1305",
@@ -1403,9 +1403,9 @@ dependencies = [
 
 [[package]]
 name = "cosmic-pim-auth"
-version = "3.0.0"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed908a63fe294a39ba3a65a0419e23d5bc5fca59ac16fd0a9e79174a46a99bd3"
+checksum = "886c13f9d58ada8dd3a7fbcc889c73cb9075c65919463e19e36ea374d27a28cc"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1422,9 +1422,9 @@ dependencies = [
 
 [[package]]
 name = "cosmic-pim-caldav"
-version = "3.0.0"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3187e592e4160ddf173c732ce16fb191ae6a1dddbd9f14f8e85063f7d0b7cb9"
+checksum = "d189831ddfc8d9d3353cec6c44a88700a74146b7ed480e3584253163b96a7f49"
 dependencies = [
  "base64 0.23.1",
  "calcard",
@@ -1441,9 +1441,9 @@ dependencies = [
 
 [[package]]
 name = "cosmic-pim-core"
-version = "3.0.0"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79320c90df0c19fae9fd55fdd3ef72af04aca5f0c2d21033d343998248938d51"
+checksum = "58358f0e5c47a98ac29d84469070752b254b590b3a85d641c124c05ab98b11ea"
 dependencies = [
  "base64 0.23.1",
  "calcard",
@@ -1463,16 +1463,16 @@ dependencies = [
 
 [[package]]
 name = "cosmic-pim-mail"
-version = "3.0.0"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a97c321b23c337f2918eadf8a4f86469cc95ad61d0c26b7bb29176d3d291a75a"
+checksum = "34e6449e0ced02f75482bf9d164d650a9cb3216258ca80f8cb671ba69a7ab377"
 dependencies = [
  "base64 0.23.1",
  "chrono",
  "cosmic-ext-nib-text 1.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "cosmic-pim-core",
  "dirs 7.0.0",
- "ego-tree",
+ "html5ever",
  "imap",
  "imap-proto",
  "lettre",
@@ -1482,7 +1482,6 @@ dependencies = [
  "quick-xml 0.42.0",
  "reqwest",
  "rusqlite",
- "scraper",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -1493,9 +1492,9 @@ dependencies = [
 
 [[package]]
 name = "cosmic-pim-sync"
-version = "3.0.0"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6808925945bc79bb77ae0dcf6271d3c831fb086e0bd85236aaf834df747463cd"
+checksum = "40b977389881b8625e56dfb027af68610ec98c1cc17fccd20f2bda4673689f97"
 dependencies = [
  "cosmic-pim-accounts",
  "cosmic-pim-auth",
@@ -1683,29 +1682,6 @@ dependencies = [
  "phf 0.13.1",
  "serde",
  "uncased",
-]
-
-[[package]]
-name = "cssparser"
-version = "0.37.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c9cdaae01d5ed7882b04d795e7f752f46ff52d2fa3b50a20d28c464510bba98"
-dependencies = [
- "cssparser-macros",
- "dtoa-short",
- "itoa",
- "phf 0.13.1",
- "smallvec",
-]
-
-[[package]]
-name = "cssparser-macros"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d045de693cb712d0b22c6a64be5b953f67b3ce00ab5ad3dd5d8b441886ab8e1a"
-dependencies = [
- "quote",
- "syn 3.0.9",
 ]
 
 [[package]]
@@ -2172,21 +2148,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dtoa"
-version = "1.0.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c3cf4824e2d5f025c7b531afcb2325364084a16806f6d47fbc1f5fbd9960590"
-
-[[package]]
-name = "dtoa-short"
-version = "0.3.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd1511a7b6a56299bd043a9c167a6d2bfb37bf84a6dfceaba651168adfb43c87"
-dependencies = [
- "dtoa",
-]
-
-[[package]]
 name = "dtor"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2243,12 +2204,6 @@ dependencies = [
  "subtle",
  "zeroize",
 ]
-
-[[package]]
-name = "ego-tree"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b04dc5a38e4f151a79d9f2451ae6037fb6eaf5cba34771f44781f80e508498e3"
 
 [[package]]
 name = "elliptic-curve"
@@ -3110,22 +3065,12 @@ dependencies = [
 
 [[package]]
 name = "html5ever"
-version = "0.39.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46a1761807faccc9a19e86944bbf40610014066306f96edcdedc2fb714bcb7b8"
-dependencies = [
- "log",
- "markup5ever 0.39.0",
-]
-
-[[package]]
-name = "html5ever"
 version = "0.40.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "456a1a377e608e555d22ddab27ac0114bc7a7b4199078108e34c2aeae6c9b130"
 dependencies = [
  "log",
- "markup5ever 0.40.0",
+ "markup5ever",
  "memchr",
 ]
 
@@ -4404,24 +4349,13 @@ dependencies = [
 
 [[package]]
 name = "markup5ever"
-version = "0.39.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7122d987ec5f704ee56f6e5b41a7d93722e9aae27ae07cafa4036c4d3f9757de"
-dependencies = [
- "log",
- "tendril",
- "web_atoms 0.2.6",
-]
-
-[[package]]
-name = "markup5ever"
 version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ab3dc68ac4a0f5719e560136778c1ee716e296030d75dbd4484e37e39e3a842"
 dependencies = [
  "log",
  "tendril",
- "web_atoms 0.3.0",
+ "web_atoms",
 ]
 
 [[package]]
@@ -5400,16 +5334,6 @@ dependencies = [
 
 [[package]]
 name = "phf_codegen"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49aa7f9d80421bca176ca8dbfebe668cc7a2684708594ec9f3c0db0805d5d6e1"
-dependencies = [
- "phf_generator 0.13.1",
- "phf_shared 0.13.1",
-]
-
-[[package]]
-name = "phf_codegen"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "41b585a510fb76fdebead6897982ef2a03a21d8e6cbcca904999742a4afc6ffe"
@@ -6339,20 +6263,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
-name = "scraper"
-version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bdd0be4d296f048bfb06dd01bbc80ef789ddd2e55583e8d2e6b804942abfabc2"
-dependencies = [
- "cssparser",
- "ego-tree",
- "html5ever 0.39.0",
- "precomputed-hash",
- "selectors",
- "tendril",
-]
-
-[[package]]
 name = "sctk-adwaita"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6420,25 +6330,6 @@ checksum = "6ce2691df843ecc5d231c0b14ece2acc3efb62c0a398c7e1d875f3983ce020e3"
 dependencies = [
  "core-foundation-sys",
  "libc",
-]
-
-[[package]]
-name = "selectors"
-version = "0.38.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8adfa1c298912827b8a28b223b3b874357397ae706e6190acd9bf28cee99114d"
-dependencies = [
- "bitflags 2.13.2",
- "cssparser",
- "derive_more",
- "log",
- "new_debug_unreachable",
- "phf 0.13.1",
- "phf_codegen 0.13.1",
- "precomputed-hash",
- "rustc-hash 2.1.3",
- "servo_arc",
- "smallvec",
 ]
 
 [[package]]
@@ -6548,15 +6439,6 @@ checksum = "f42f67da2385b51a5f9652db9c93d78aeaf7610bf5ec366080b6de810604af53"
 dependencies = [
  "base16ct",
  "serde",
-]
-
-[[package]]
-name = "servo_arc"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "170fb83ab34de17dc69aa7c67482b22218ddb85da56546f9bd6b929e32a05930"
-dependencies = [
- "stable_deref_trait",
 ]
 
 [[package]]
@@ -6904,18 +6786,6 @@ dependencies = [
 
 [[package]]
 name = "string_cache"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a18596f8c785a729f2819c0f6a7eae6ebeebdfffbfe4214ae6b087f690e31901"
-dependencies = [
- "new_debug_unreachable",
- "parking_lot",
- "phf_shared 0.13.1",
- "precomputed-hash",
-]
-
-[[package]]
-name = "string_cache"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ffa8a5dbe8b3f0bbe29d4c3225daafaeead63afdc1b65fc4c01a1384166038e6"
@@ -6924,18 +6794,6 @@ dependencies = [
  "parking_lot",
  "phf_shared 0.14.0",
  "precomputed-hash",
-]
-
-[[package]]
-name = "string_cache_codegen"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "585635e46db231059f76c5849798146164652513eb9e8ab2685939dd90f29b69"
-dependencies = [
- "phf_generator 0.13.1",
- "phf_shared 0.13.1",
- "proc-macro2",
- "quote",
 ]
 
 [[package]]
@@ -7971,26 +7829,14 @@ dependencies = [
 
 [[package]]
 name = "web_atoms"
-version = "0.2.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba8b815c1b593dc0baf78dd0f4fc8fdb2de53198fb1163738093e9a311c33fb3"
-dependencies = [
- "phf 0.13.1",
- "phf_codegen 0.13.1",
- "string_cache 0.9.0",
- "string_cache_codegen 0.6.1",
-]
-
-[[package]]
-name = "web_atoms"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7572660c8890448ba236b7376f27e389c6a7e1c70195622faced601f855c0ada"
 dependencies = [
  "phf 0.14.0",
- "phf_codegen 0.14.0",
- "string_cache 0.11.0",
- "string_cache_codegen 0.11.2",
+ "phf_codegen",
+ "string_cache",
+ "string_cache_codegen",
 ]
 
 [[package]]
