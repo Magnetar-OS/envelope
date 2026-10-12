@@ -732,15 +732,8 @@ pub struct MailForm {
     /// same login the account already has", which is right far more often than
     /// not.
     pub account_username: String,
-    pub host: String,
-    pub port: String,
-    pub transport: Transport,
-    pub username: String,
-    /// Empty means "the same host as IMAP", which is right for nearly every
-    /// provider.
-    pub smtp_host: String,
-    pub smtp_port: String,
-    pub smtp_transport: Transport,
+    /// Where the account reads and sends its mail.
+    pub servers: ServerFields,
     /// Empty means "the login, if it is an address".
     pub from_address: String,
     pub from_name: String,
@@ -754,11 +747,6 @@ pub struct MailForm {
     /// Whether the account signs in with a password at all. A browser
     /// sign-in has none to change; signing in again renews it.
     pub uses_password: bool,
-    /// Which protocol reads this account's mail.
-    pub protocol: MailProtocol,
-    /// The JMAP session resource. Meaningful only when the protocol is JMAP,
-    /// and filled in by the provider registry far more often than by hand.
-    pub jmap_url: String,
     /// The address discovery works from — usually the From address, which is
     /// the only thing the user reliably knows.
     pub discovering: bool,
@@ -772,25 +760,13 @@ impl MailForm {
         Self {
             account_id: account.id.clone(),
             account_username: account.username.clone(),
-            host: mail.map(|m| m.imap_host.clone()).unwrap_or_default(),
-            port: mail.map_or_else(|| "993".to_string(), |m| m.imap_port.to_string()),
-            transport: mail.map(|m| m.imap_transport).unwrap_or_default(),
-            username: mail
-                .and_then(|m| m.imap_username.clone())
-                .unwrap_or_default(),
-            smtp_host: mail.map(|m| m.smtp_host.clone()).unwrap_or_default(),
-            smtp_port: mail.map_or_else(|| "465".to_string(), |m| m.smtp_port.to_string()),
-            smtp_transport: mail.map(|m| m.smtp_transport).unwrap_or_default(),
+            servers: ServerFields::of(mail),
             from_address: mail.map(|m| m.from_address.clone()).unwrap_or_default(),
             from_name: mail.map(|m| m.from_name.clone()).unwrap_or_default(),
             aliases: mail.map(|m| m.aliases.clone()).unwrap_or_default(),
             alias_input: String::new(),
             password: String::new(),
             uses_password: account.auth == cosmic_pim_accounts::AuthMethod::Password,
-            protocol: mail.map(|m| m.protocol).unwrap_or_default(),
-            jmap_url: mail
-                .and_then(|m| m.jmap_session_url.clone())
-                .unwrap_or_default(),
             discovering: false,
             discovered_from: None,
             error: None,
@@ -802,14 +778,15 @@ impl MailForm {
     /// The registry knows more than discovery does — which protocol, and the
     /// JMAP session URL — so a hit here fills everything.
     fn apply_endpoint(&mut self, endpoint: &MailEndpoint) {
-        self.protocol = endpoint.protocol;
-        self.host = endpoint.imap_host.clone();
-        self.port = endpoint.imap_port.to_string();
-        self.transport = endpoint.imap_transport;
-        self.smtp_host = endpoint.smtp_host.clone();
-        self.smtp_port = endpoint.smtp_port.to_string();
-        self.smtp_transport = endpoint.smtp_transport;
-        self.jmap_url = endpoint.jmap_session_url.clone().unwrap_or_default();
+        let servers = &mut self.servers;
+        servers.protocol = endpoint.protocol;
+        servers.host = endpoint.imap_host.clone();
+        servers.port = endpoint.imap_port.to_string();
+        servers.transport = endpoint.imap_transport;
+        servers.smtp_host = endpoint.smtp_host.clone();
+        servers.smtp_port = endpoint.smtp_port.to_string();
+        servers.smtp_transport = endpoint.smtp_transport;
+        servers.jmap_url = endpoint.jmap_session_url.clone().unwrap_or_default();
         self.discovered_from = Some(fl!("found-provider"));
     }
 
@@ -818,13 +795,14 @@ impl MailForm {
     /// The From address is left alone: discovery answers "where does this
     /// domain's mail live", and the user may well be sending as an alias.
     fn apply(&mut self, found: &cosmic_pim_mail::Discovered) {
-        self.host = found.imap_host.clone();
-        self.port = found.imap_port.to_string();
-        self.transport = mail::transport_of(found.imap_security);
-        self.smtp_host = found.smtp_host.clone();
-        self.smtp_port = found.smtp_port.to_string();
-        self.smtp_transport = mail::transport_of(found.smtp_security);
-        self.username = found.username.clone();
+        let servers = &mut self.servers;
+        servers.host = found.imap_host.clone();
+        servers.port = found.imap_port.to_string();
+        servers.transport = mail::transport_of(found.imap_security);
+        servers.smtp_host = found.smtp_host.clone();
+        servers.smtp_port = found.smtp_port.to_string();
+        servers.smtp_transport = mail::transport_of(found.smtp_security);
+        servers.username = found.username.clone();
         self.discovered_from = Some(match found.source {
             cosmic_pim_mail::discovery::Source::Known => fl!("found-known"),
             cosmic_pim_mail::discovery::Source::Autoconfig => fl!("found-autoconfig"),
@@ -832,6 +810,152 @@ impl MailForm {
             // not the same confidence as a published setting.
             cosmic_pim_mail::discovery::Source::Guessed => fl!("found-guessed"),
         });
+    }
+}
+
+/// The servers a mail account reads and sends through, as a form holds them:
+/// as typed, so a half-typed port is kept rather than refused per keystroke.
+///
+/// One set of fields for both forms that name servers: the endpoint form,
+/// which points an account at them, and the add form's step for an address
+/// whose servers nothing could find.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerFields {
+    /// Which protocol reads the mail.
+    pub protocol: MailProtocol,
+    /// The incoming server, whichever protocol that is.
+    pub host: String,
+    pub port: String,
+    pub transport: Transport,
+    /// The login, only where it differs from the account's.
+    pub username: String,
+    /// Empty means "the same host as the incoming one", which is right for
+    /// nearly every provider.
+    pub smtp_host: String,
+    pub smtp_port: String,
+    pub smtp_transport: Transport,
+    /// The JMAP session resource. Meaningful only when the protocol is JMAP,
+    /// and filled in by the provider registry far more often than by hand.
+    pub jmap_url: String,
+}
+
+/// One change to [`ServerFields`], as a form field reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerEdit {
+    Protocol(MailProtocol),
+    Host(String),
+    Port(String),
+    Transport(Transport),
+    Username(String),
+    JmapUrl(String),
+    SmtpHost(String),
+    SmtpPort(String),
+    SmtpTransport(Transport),
+}
+
+impl Default for ServerFields {
+    fn default() -> Self {
+        Self::of(None)
+    }
+}
+
+impl ServerFields {
+    /// The fields for an endpoint, or the usual defaults for none: IMAP over
+    /// TLS on 993, submission over TLS on 465.
+    fn of(mail: Option<&MailEndpoint>) -> Self {
+        Self {
+            protocol: mail.map(|m| m.protocol).unwrap_or_default(),
+            host: mail.map(|m| m.imap_host.clone()).unwrap_or_default(),
+            port: mail.map_or_else(|| "993".to_string(), |m| m.imap_port.to_string()),
+            transport: mail.map(|m| m.imap_transport).unwrap_or_default(),
+            username: mail
+                .and_then(|m| m.imap_username.clone())
+                .unwrap_or_default(),
+            smtp_host: mail.map(|m| m.smtp_host.clone()).unwrap_or_default(),
+            smtp_port: mail.map_or_else(|| "465".to_string(), |m| m.smtp_port.to_string()),
+            smtp_transport: mail.map(|m| m.smtp_transport).unwrap_or_default(),
+            jmap_url: mail
+                .and_then(|m| m.jmap_session_url.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    fn edit(&mut self, edit: ServerEdit) {
+        match edit {
+            ServerEdit::Protocol(protocol) => self.protocol = protocol,
+            ServerEdit::Host(host) => self.host = host,
+            ServerEdit::Port(port) => self.port = port,
+            ServerEdit::Transport(transport) => {
+                // The conventional port follows the encryption unless the
+                // user has already typed something that is not one of them.
+                if self.port == "993" || self.port == "143" {
+                    self.port = match transport {
+                        Transport::Tls => "993".to_string(),
+                        Transport::StartTls | Transport::Plaintext => "143".to_string(),
+                    };
+                }
+                self.transport = transport;
+            }
+            ServerEdit::Username(username) => self.username = username,
+            ServerEdit::JmapUrl(url) => self.jmap_url = url,
+            ServerEdit::SmtpHost(host) => self.smtp_host = host,
+            ServerEdit::SmtpPort(port) => self.smtp_port = port,
+            ServerEdit::SmtpTransport(transport) => {
+                if self.smtp_port == "465" || self.smtp_port == "587" {
+                    self.smtp_port = match transport {
+                        Transport::Tls => "465".to_string(),
+                        // 587 is the submission port for STARTTLS. Never 25 —
+                        // a client has no business talking to a relay port.
+                        Transport::StartTls | Transport::Plaintext => "587".to_string(),
+                    };
+                }
+                self.smtp_transport = transport;
+            }
+        }
+    }
+
+    /// An incoming server and two valid ports: the minimum that could work.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        !self.host.trim().is_empty()
+            && self.port.trim().parse::<u16>().is_ok()
+            && self.smtp_port.trim().parse::<u16>().is_ok()
+    }
+
+    /// The endpoint the fields describe, with no sender: the caller adds the
+    /// From address, the name and the aliases where it has them.
+    fn endpoint(&self) -> Result<MailEndpoint, String> {
+        let Ok(port) = self.port.trim().parse::<u16>() else {
+            return Err(fl!("bad-port"));
+        };
+        let Ok(smtp_port) = self.smtp_port.trim().parse::<u16>() else {
+            return Err(fl!("bad-port"));
+        };
+
+        // Struct-update over the constructor, so a field the substrate grows
+        // — it has already grown five — defaults sensibly here instead of
+        // breaking the build or, worse, being zeroed.
+        // The one "incoming server" pair the form shows maps to whichever
+        // protocol was chosen — a POP3 user typed their POP3 server into it,
+        // and asking them which field family that was would be exposing the
+        // storage schema as UI.
+        let mut endpoint = MailEndpoint {
+            protocol: self.protocol,
+            imap_port: port,
+            imap_transport: self.transport,
+            imap_username: Some(self.username.trim().to_owned()).filter(|u| !u.is_empty()),
+            smtp_host: self.smtp_host.trim().to_owned(),
+            smtp_port,
+            smtp_transport: self.smtp_transport,
+            jmap_session_url: Some(self.jmap_url.trim().to_owned()).filter(|u| !u.is_empty()),
+            ..MailEndpoint::tls(self.host.trim())
+        };
+        if self.protocol == MailProtocol::Pop3 {
+            endpoint.pop3_host = self.host.trim().to_owned();
+            endpoint.pop3_port = port;
+            endpoint.pop3_transport = self.transport;
+        }
+        Ok(endpoint)
     }
 
     #[must_use]
@@ -1098,16 +1222,8 @@ pub enum Message {
     Undone(Result<String, String>),
 
     MailFormStart(String),
-    MailFormHostChanged(String),
-    MailFormPortChanged(String),
-    MailFormTransportChanged(Transport),
-    MailFormProtocolChanged(MailProtocol),
-    MailFormJmapUrlChanged(String),
-    MailFormUsernameChanged(String),
+    MailFormServer(ServerEdit),
     MailFormPasswordChanged(String),
-    MailFormSmtpHostChanged(String),
-    MailFormSmtpPortChanged(String),
-    MailFormSmtpTransportChanged(Transport),
     MailFormFromAddressChanged(String),
     MailFormFromNameChanged(String),
     MailFormAliasInputChanged(String),
@@ -2483,42 +2599,10 @@ impl AppModel {
                 self.core.window.show_context = true;
                 Task::none()
             }
-            Message::MailFormHostChanged(host) => self.with_form(|form| form.host = host),
-            Message::MailFormPortChanged(port) => self.with_form(|form| form.port = port),
-            Message::MailFormTransportChanged(transport) => self.with_form(|form| {
-                // The conventional port follows the encryption unless the user
-                // has already typed something that is not one of them.
-                if form.port == "993" || form.port == "143" {
-                    form.port = match transport {
-                        Transport::Tls => "993".to_string(),
-                        Transport::StartTls | Transport::Plaintext => "143".to_string(),
-                    };
-                }
-                form.transport = transport;
-            }),
+            Message::MailFormServer(edit) => self.with_form(|form| form.servers.edit(edit)),
             Message::MailFormPasswordChanged(password) => {
                 self.with_form(|form| form.password = password)
             }
-            Message::MailFormUsernameChanged(username) => {
-                self.with_form(|form| form.username = username)
-            }
-            Message::MailFormProtocolChanged(protocol) => {
-                self.with_form(|form| form.protocol = protocol)
-            }
-            Message::MailFormJmapUrlChanged(url) => self.with_form(|form| form.jmap_url = url),
-            Message::MailFormSmtpHostChanged(host) => self.with_form(|form| form.smtp_host = host),
-            Message::MailFormSmtpPortChanged(port) => self.with_form(|form| form.smtp_port = port),
-            Message::MailFormSmtpTransportChanged(transport) => self.with_form(|form| {
-                if form.smtp_port == "465" || form.smtp_port == "587" {
-                    form.smtp_port = match transport {
-                        Transport::Tls => "465".to_string(),
-                        // 587 is the submission port for STARTTLS. Never 25 —
-                        // a client has no business talking to a relay port.
-                        Transport::StartTls | Transport::Plaintext => "587".to_string(),
-                    };
-                }
-                form.smtp_transport = transport;
-            }),
             Message::MailFormFromAddressChanged(address) => {
                 // The no-network half of discovery runs on every keystroke, so
                 // a recognised provider fills the form in as soon as the
@@ -2528,7 +2612,7 @@ impl AppModel {
                 let known = mail::known_settings(&address);
                 self.with_form(|form| {
                     form.from_address = address;
-                    if form.host.trim().is_empty() {
+                    if form.servers.host.trim().is_empty() {
                         if let Some(endpoint) = provider {
                             form.apply_endpoint(&endpoint);
                         } else if let Some(found) = known {
@@ -6069,40 +6153,12 @@ impl AppModel {
 /// the account and adding it again — a new account id, and with it the rules,
 /// the queued sends, the snoozes and the drafts of the old one orphaned.
 fn store_form(store: &mut AccountStore, form: &MailForm) -> Result<(), String> {
-    let Ok(port) = form.port.trim().parse::<u16>() else {
-        return Err(fl!("bad-port"));
-    };
-
-    let Ok(smtp_port) = form.smtp_port.trim().parse::<u16>() else {
-        return Err(fl!("bad-port"));
-    };
-
-    // Struct-update over the constructor, so a field the substrate grows —
-    // it has already grown five — defaults sensibly here instead of
-    // breaking the build or, worse, being zeroed.
-    // The one "incoming server" pair the form shows maps to whichever
-    // protocol was chosen — a POP3 user typed their POP3 server into it,
-    // and asking them which field family that was would be exposing the
-    // storage schema as UI.
-    let mut endpoint = MailEndpoint {
-        protocol: form.protocol,
-        imap_port: port,
-        imap_transport: form.transport,
-        imap_username: Some(form.username.trim().to_owned()).filter(|u| !u.is_empty()),
-        smtp_host: form.smtp_host.trim().to_owned(),
-        smtp_port,
-        smtp_transport: form.smtp_transport,
-        jmap_session_url: Some(form.jmap_url.trim().to_owned()).filter(|u| !u.is_empty()),
+    let endpoint = MailEndpoint {
         from_address: form.from_address.trim().to_owned(),
         from_name: form.from_name.trim().to_owned(),
         aliases: form.aliases.clone(),
-        ..MailEndpoint::tls(form.host.trim())
+        ..form.servers.endpoint()?
     };
-    if form.protocol == MailProtocol::Pop3 {
-        endpoint.pop3_host = form.host.trim().to_owned();
-        endpoint.pop3_port = port;
-        endpoint.pop3_transport = form.transport;
-    }
     store
         .set_mail_endpoint(&form.account_id, Some(endpoint))
         .map_err(|why| why.to_string())?;

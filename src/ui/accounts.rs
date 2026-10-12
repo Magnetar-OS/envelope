@@ -19,7 +19,7 @@ use cosmic::iced::Length;
 use cosmic::widget;
 use cosmic_pim_accounts::{Account, MailProtocol, Transport};
 
-use crate::app::{AddForm, MailForm, Message};
+use crate::app::{AddForm, MailForm, Message, ServerEdit, ServerFields};
 use crate::fl;
 
 pub fn view<'a>(
@@ -227,58 +227,12 @@ fn add_form<'a>(add: &'a AddForm, sign_in: &SignIn<'a>) -> Element<'a, Message> 
 fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
     let spacing = cosmic::theme::spacing();
 
-    let section = widget::settings::section()
-        .title(fl!("mail-server"))
-        .add(
-            widget::settings::item::builder(fl!("protocol"))
-                .description(fl!("protocol-hint"))
-                .flex_control(
-                    widget::dropdown(PROTOCOL_LABELS, Some(form.protocol_index()), |index| {
-                        Message::MailFormProtocolChanged(PROTOCOLS[index])
-                    })
-                    .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
-                ),
-        )
-        .add(
-            widget::settings::item::builder(fl!("imap-host")).flex_control(
-                widget::text_input("imap.example.com", &form.host)
-                    .on_input(Message::MailFormHostChanged)
-                    .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
-            ),
-        )
-        .add(
-            widget::settings::item::builder(fl!("port")).flex_control(
-                widget::text_input("993", &form.port)
-                    .on_input(Message::MailFormPortChanged)
-                    .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
-            ),
-        )
-        .add(
-            widget::settings::item::builder(fl!("encryption")).flex_control(
-                widget::dropdown(TRANSPORT_LABELS, Some(form.transport_index()), |index| {
-                    Message::MailFormTransportChanged(TRANSPORTS[index])
-                })
-                .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
-            ),
-        )
-        .add(
-            widget::settings::item::builder(fl!("jmap-url"))
-                .description(fl!("jmap-url-hint"))
-                .flex_control(
-                    widget::text_input("https://…/.well-known/jmap", &form.jmap_url)
-                        .on_input(Message::MailFormJmapUrlChanged)
-                        .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
-                ),
-        )
-        .add(
-            widget::settings::item::builder(fl!("username"))
-                .description(fl!("imap-username-hint"))
-                .flex_control(
-                    widget::text_input(form.account_username.clone(), &form.username)
-                        .on_input(Message::MailFormUsernameChanged)
-                        .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
-                ),
-        );
+    let section = incoming(
+        widget::settings::section().title(fl!("mail-server")),
+        &form.servers,
+        &form.account_username,
+        Message::MailFormServer,
+    );
     // Only for an account that has one: a browser sign-in is renewed by
     // signing in again, not by typing anything here.
     let section = if form.uses_password {
@@ -313,33 +267,8 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                     .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
             ),
         )
-        .add(aliases(form))
-        .add(
-            widget::settings::item::builder(fl!("smtp-host"))
-                .description(fl!("smtp-host-hint"))
-                .flex_control(
-                    widget::text_input(form.host.clone(), &form.smtp_host)
-                        .on_input(Message::MailFormSmtpHostChanged)
-                        .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
-                ),
-        )
-        .add(
-            widget::settings::item::builder(fl!("smtp-port")).flex_control(
-                widget::text_input("465", &form.smtp_port)
-                    .on_input(Message::MailFormSmtpPortChanged)
-                    .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
-            ),
-        )
-        .add(
-            widget::settings::item::builder(fl!("smtp-encryption")).flex_control(
-                widget::dropdown(
-                    TRANSPORT_LABELS,
-                    Some(form.smtp_transport_index()),
-                    |index| Message::MailFormSmtpTransportChanged(TRANSPORTS[index]),
-                )
-                .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
-            ),
-        );
+        .add(aliases(form));
+    let sending = outgoing(sending, &form.servers, Message::MailFormServer);
 
     // Above the fields, because filling them in by hand is the thing it is
     // there to avoid.
@@ -367,13 +296,10 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
         column = column.push(crate::ui::destructive(error.clone()));
     }
 
-    // An incoming server and two valid ports are the minimum that could work.
     // The From address is deliberately not required: an account that can only
     // read mail is a useful account, and demanding a field to save the ones
     // that matter would be the wrong trade.
-    let can_save = !form.host.trim().is_empty()
-        && form.port.trim().parse::<u16>().is_ok()
-        && form.smtp_port.trim().parse::<u16>().is_ok();
+    let can_save = form.servers.is_complete();
 
     column
         .push(
@@ -391,6 +317,107 @@ fn endpoint_form(form: &MailForm) -> Element<'_, Message> {
                 }),
         )
         .into()
+}
+
+/// The incoming-server rows: protocol, server, port, encryption, JMAP
+/// session and login. `login` is the login the account already has, shown
+/// where the field is empty because empty means "that one".
+fn incoming<'a>(
+    section: widget::settings::Section<'a, Message>,
+    fields: &'a ServerFields,
+    login: &str,
+    on_edit: fn(ServerEdit) -> Message,
+) -> widget::settings::Section<'a, Message> {
+    section
+        .add(
+            widget::settings::item::builder(fl!("protocol"))
+                .description(fl!("protocol-hint"))
+                .flex_control(
+                    widget::dropdown(
+                        PROTOCOL_LABELS,
+                        Some(fields.protocol_index()),
+                        move |index| on_edit(ServerEdit::Protocol(PROTOCOLS[index])),
+                    )
+                    .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
+                ),
+        )
+        .add(
+            widget::settings::item::builder(fl!("imap-host")).flex_control(
+                widget::text_input("imap.example.com", &fields.host)
+                    .on_input(move |host| on_edit(ServerEdit::Host(host)))
+                    .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
+            ),
+        )
+        .add(
+            widget::settings::item::builder(fl!("port")).flex_control(
+                widget::text_input("993", &fields.port)
+                    .on_input(move |port| on_edit(ServerEdit::Port(port)))
+                    .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
+            ),
+        )
+        .add(
+            widget::settings::item::builder(fl!("encryption")).flex_control(
+                widget::dropdown(
+                    TRANSPORT_LABELS,
+                    Some(fields.transport_index()),
+                    move |index| on_edit(ServerEdit::Transport(TRANSPORTS[index])),
+                )
+                .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
+            ),
+        )
+        .add(
+            widget::settings::item::builder(fl!("jmap-url"))
+                .description(fl!("jmap-url-hint"))
+                .flex_control(
+                    widget::text_input("https://…/.well-known/jmap", &fields.jmap_url)
+                        .on_input(move |url| on_edit(ServerEdit::JmapUrl(url)))
+                        .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
+                ),
+        )
+        .add(
+            widget::settings::item::builder(fl!("username"))
+                .description(fl!("imap-username-hint"))
+                .flex_control(
+                    widget::text_input(login.to_owned(), &fields.username)
+                        .on_input(move |username| on_edit(ServerEdit::Username(username)))
+                        .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
+                ),
+        )
+}
+
+/// The outgoing-server rows: server, port and encryption.
+fn outgoing<'a>(
+    section: widget::settings::Section<'a, Message>,
+    fields: &'a ServerFields,
+    on_edit: fn(ServerEdit) -> Message,
+) -> widget::settings::Section<'a, Message> {
+    section
+        .add(
+            widget::settings::item::builder(fl!("smtp-host"))
+                .description(fl!("smtp-host-hint"))
+                .flex_control(
+                    widget::text_input(fields.host.clone(), &fields.smtp_host)
+                        .on_input(move |host| on_edit(ServerEdit::SmtpHost(host)))
+                        .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
+                ),
+        )
+        .add(
+            widget::settings::item::builder(fl!("smtp-port")).flex_control(
+                widget::text_input("465", &fields.smtp_port)
+                    .on_input(move |port| on_edit(ServerEdit::SmtpPort(port)))
+                    .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
+            ),
+        )
+        .add(
+            widget::settings::item::builder(fl!("smtp-encryption")).flex_control(
+                widget::dropdown(
+                    TRANSPORT_LABELS,
+                    Some(fields.smtp_transport_index()),
+                    move |index| on_edit(ServerEdit::SmtpTransport(TRANSPORTS[index])),
+                )
+                .width(Length::Fixed(crate::ui::CONTROL_WIDTH)),
+            ),
+        )
 }
 
 /// The send-as aliases: what is configured, and a field to add one.
