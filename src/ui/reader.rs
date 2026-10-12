@@ -52,7 +52,7 @@ use cosmic::{Apply as _, Element};
 
 use crate::app::Message;
 use crate::fl;
-use crate::mail::Opened;
+use crate::mail::{Body, Opened};
 
 pub struct Reader<'a> {
     pub opened: Option<&'a Opened>,
@@ -156,9 +156,19 @@ impl<'a> Reader<'a> {
     /// read-only document. A `text/plain` message has only what its `>`
     /// markers say, and that is what the folding path below reads.
     fn body(&self, opened: &'a Opened) -> Element<'a, Message> {
-        match &opened.body_doc {
-            Some(doc) => self.rich_body(doc),
-            None => self.text_body(&opened.message.body.text),
+        match &opened.body {
+            Body::Document(doc) => self.rich_body(doc),
+            Body::Text => self.text_body(&opened.message.body.text),
+            // Its formatting could not be read in time, or at all: the
+            // words, and a line saying why they look plain.
+            Body::Unformatted => widget::column::with_capacity(2)
+                .spacing(cosmic::theme::spacing().space_s)
+                .push(
+                    crate::ui::muted(fl!("reader-formatting-skipped"))
+                        .wrapping(cosmic::iced::core::text::Wrapping::Word),
+                )
+                .push(self.text_body(&opened.message.body.text))
+                .into(),
         }
     }
 

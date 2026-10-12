@@ -56,6 +56,11 @@ All notable changes to this project are documented here. The format follows
   in, as the provider reports it, and says so when that is not the address
   typed. Choosing another account in the provider's chooser used to store
   an account named after one address holding the sign-in of another.
+- A message whose HTML takes more than two seconds to read — deeply nested
+  markup takes the parser time that grows with the square of the depth —
+  opens with its text and a note that its formatting was left out, instead
+  of keeping the reader waiting. An HTML part that cannot be read at all is
+  shown the same way.
 
 ### Changed
 

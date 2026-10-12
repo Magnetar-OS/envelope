@@ -372,6 +372,7 @@ pgp-key-imported = Key imported for { $address }. Their signed mail can now be v
 compose-body-placeholder = Write your message
 
 # Reader — message text
+reader-formatting-skipped = This message's formatting could not be shown quickly, so here is its text.
 show-quoted = { $lines ->
         [one] Show 1 quoted line
        *[other] Show { $lines } quoted lines

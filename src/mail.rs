@@ -73,7 +73,8 @@ pub struct Opened {
     /// and the stored bytes — the verbatim original, which is the only thing
     /// a signature can be checked against.
     pub pgp: cosmic_pim_mail::pgp::Examined,
-    /// The message's HTML part as a Nib document, when it had one.
+    /// How the body is shown: the message's HTML part as a Nib document, or
+    /// its text.
     ///
     /// Built once, here, rather than in the view: parsing a newsletter's HTML
     /// on every frame is work proportional to how long somebody looks at it.
@@ -85,7 +86,32 @@ pub struct Opened {
     /// An `<img>` becomes a node that draws its alt text, because nothing in
     /// Nib resolves a URL. The reader's guarantee is unchanged: a tracking
     /// pixel cannot fire from a document that has no way to ask for one.
-    pub body_doc: Option<nib_model::state::EditorState>,
+    pub body: Body,
+}
+
+/// How long the reader waits for a message's HTML to become a document
+/// before it shows the message's text instead.
+///
+/// html5ever's tree builder is quadratic in the depth of nested block
+/// elements: 50,000 nested `<div>`s take about two seconds in a release
+/// build and a megabyte of them about half a minute (Nib's round-3
+/// measurements). Bounding the wait bounds every such input, not only the
+/// ones measured, and changes nothing about what a parse produces.
+pub const HTML_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How a message's body is shown.
+#[derive(Debug, Clone)]
+pub enum Body {
+    /// The HTML part, as a read-only document.
+    Document(nib_model::state::EditorState),
+    /// The text: a `text/plain` message, which the reader shows better than
+    /// a document would (its quoted history folds on the `>` markers), or an
+    /// HTML part with no words in it.
+    Text,
+    /// The HTML part could not be made a document within [`HTML_BUDGET`], or
+    /// its parse failed: the text, with a note that its formatting was left
+    /// out.
+    Unformatted,
 }
 
 /// What one sync pass did, as the status line reports it.
@@ -2186,7 +2212,7 @@ pub fn open(connection: &Connection, folder: &Folder, uid: u32) -> Result<Opened
 
     Ok(Opened {
         uid_validity: state.cursor.uid_validity,
-        body_doc: body_document(&message),
+        body: body_of(&message),
         auth: cosmic_pim_mail::auth::rollup(&message.auth),
         bounces: bounces_in(&raw, &message),
         invitation: cosmic_pim_mail::calendar::invitation(&raw),
@@ -2198,17 +2224,61 @@ pub fn open(connection: &Connection, folder: &Folder, uid: u32) -> Result<Opened
     })
 }
 
-/// The message's HTML part as a read-only document, when it has one.
+/// How the reader shows `message`'s body: its HTML part as a document, parsed
+/// within [`HTML_BUDGET`], or its text.
+fn body_of(message: &Message) -> Body {
+    let Some(html) = message.body.html.clone() else {
+        return Body::Text;
+    };
+    within(HTML_BUDGET, move || html_document(&html))
+}
+
+/// Runs `parse` on a thread of its own and waits for it at most `budget`.
 ///
-/// `None` for a `text/plain` message, which the reader already shows better
-/// than a document would: its quoted history folds, and that fold is built on
-/// the `>` markers a plain-text body carries and a document does not.
-fn body_document(message: &Message) -> Option<nib_model::state::EditorState> {
-    let html = message.body.html.as_deref()?;
+/// A parse that takes longer is left to finish on its thread and its result
+/// dropped, since html5ever cannot be interrupted; the reader shows the text
+/// meanwhile. A parse that panics, or a thread that cannot be started, is
+/// read the same way: the message is shown, without its formatting, rather
+/// than not at all.
+fn within(
+    budget: std::time::Duration,
+    parse: impl FnOnce() -> Option<nib_model::state::EditorState> + Send + 'static,
+) -> Body {
+    let (done, result) = std::sync::mpsc::channel();
+    let started = std::thread::Builder::new()
+        .name("envelope-html".into())
+        .spawn(move || {
+            // The reader stops listening once the budget is spent; a result
+            // nobody is waiting for any more has nowhere to go.
+            let _ = done.send(parse());
+        });
+    if let Err(why) = started {
+        tracing::warn!(%why, "a thread to read the message's HTML could not be started");
+        return Body::Unformatted;
+    }
+    match result.recv_timeout(budget) {
+        Ok(Some(doc)) => Body::Document(doc),
+        Ok(None) => Body::Text,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            tracing::info!(
+                ?budget,
+                "a message's HTML took too long to read; showing its text"
+            );
+            Body::Unformatted
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            tracing::warn!("reading a message's HTML failed; showing its text");
+            Body::Unformatted
+        }
+    }
+}
+
+/// An HTML part as a read-only document. `None` when it survives the
+/// schema with nothing in it — a layout table and a spacer gif — for which
+/// the extracted text is the better showing.
+fn html_document(html: &str) -> Option<nib_model::state::EditorState> {
     let schema = nib_model::basic::schema();
     let doc = nib_html::Html::new(&schema).parse(html);
-    // An HTML part that survives the schema with nothing in it is a layout
-    // table and a spacer gif; the extracted text is the better showing.
     if doc.text_content().trim().is_empty() {
         return None;
     }
@@ -3190,6 +3260,52 @@ mod tests {
         remove_dir(&opened).expect("nothing to remove is not a failure");
     }
 
+    /// The document the reader shows for `message`, if it shows one.
+    fn document(message: &Message) -> Option<nib_model::state::EditorState> {
+        match body_of(message) {
+            Body::Document(doc) => Some(doc),
+            Body::Text => None,
+            Body::Unformatted => panic!("an ordinary message ran out of time"),
+        }
+    }
+
+    #[test]
+    fn deeply_nested_html_is_shown_as_text_once_its_budget_is_spent() {
+        // Nib's round-3 case: 50,000 nested <div>s, about two seconds of
+        // parsing in a release build and many more in a test build. Parsed
+        // directly, not through `Message::parse`: cosmic-pim-mail 3.0's own
+        // text extraction overflows a thread's stack on it first.
+        let depth = 50_000;
+        let html = format!("{}deep{}", "<div>".repeat(depth), "</div>".repeat(depth));
+        let budget = std::time::Duration::from_millis(200);
+
+        let started = std::time::Instant::now();
+        let body = within(budget, move || html_document(&html));
+        let waited = started.elapsed();
+
+        assert!(matches!(body, Body::Unformatted), "{body:?}");
+        assert!(
+            waited < budget + std::time::Duration::from_secs(5),
+            "the reader waited {waited:?} for a {budget:?} budget"
+        );
+    }
+
+    #[test]
+    fn a_parse_that_fails_shows_the_text_instead() {
+        let body = within(HTML_BUDGET, || panic!("the parser fell over"));
+        assert!(matches!(body, Body::Unformatted), "{body:?}");
+    }
+
+    #[test]
+    fn a_parse_within_its_budget_is_a_document() {
+        let body = within(HTML_BUDGET, || html_document("<p>Hello</p>"));
+        let Body::Document(doc) = body else {
+            panic!("{body:?}");
+        };
+        assert_eq!(doc.doc().text_content().trim(), "Hello");
+        assert!(matches!(within(HTML_BUDGET, || None), Body::Text));
+    }
+
     /// A message whose only part is the HTML given.
     fn html_message(body: &str) -> Message {
         let raw = format!(
@@ -3216,7 +3332,7 @@ mod tests {
 
     #[test]
     fn an_html_message_keeps_the_structure_the_extracted_text_threw_away() {
-        let opened = body_document(&html_message(
+        let opened = document(&html_message(
             "<h1>Title</h1><ul><li>one</li><li>two</li></ul>",
         ))
         .expect("an HTML body becomes a document");
@@ -3235,7 +3351,7 @@ mod tests {
         // Its quoted history folds, which a document has no markers to do.
         let raw = b"From: ada@example.com\r\nSubject: Test\r\n\r\njust words\r\n";
         let message = Message::parse(raw).expect("parse");
-        assert!(body_document(&message).is_none());
+        assert!(document(&message).is_none());
     }
 
     #[test]
@@ -3243,7 +3359,7 @@ mod tests {
         // Not sanitised out — unrepresentable. There is no node type a
         // `<script>` could become, so the schema drops it on the way in, and
         // this is the guarantee the reader's security position rests on.
-        let doc = body_document(&html_message(
+        let doc = document(&html_message(
             "<p>Hello</p><script>alert('x')</script><style>p{color:red}</style>",
         ))
         .expect("document");
@@ -3258,7 +3374,7 @@ mod tests {
         // The `src` is carried in the model because a document should say what
         // it holds, but nothing in Nib resolves one: the widget has no image
         // loader, so what a reader sees is the alt text.
-        let doc = body_document(&html_message(
+        let doc = document(&html_message(
             r#"<p>Before <img src="https://tracker.example/pixel.gif" alt="Chart"> after</p>"#,
         ))
         .expect("document");
@@ -3275,7 +3391,7 @@ mod tests {
     fn a_senders_styling_reaches_the_document() {
         // Colour, weight and alignment are what make a receipt legible as
         // something other than a wall of text.
-        let doc = body_document(&html_message(
+        let doc = document(&html_message(
             r#"<p style="text-align:center; color:#cc0000"><b>Total</b></p>"#,
         ))
         .expect("document");
@@ -3302,7 +3418,7 @@ mod tests {
         // The reader's guarantee restated at the level the message actually
         // arrives at: a CSS background image is a request, and there is nowhere
         // in the model for one to land.
-        let doc = body_document(&html_message(
+        let doc = document(&html_message(
             r#"<p style="background-image:url(https://tracker.example/p.gif)">Hi</p>"#,
         ))
         .expect("document");
@@ -3315,7 +3431,7 @@ mod tests {
     fn hidden_text_is_shown_rather_than_hidden() {
         // Honouring `display:none` would reintroduce the exact attack the
         // extractor's hidden-text accounting exists to expose.
-        let doc = body_document(&html_message(
+        let doc = document(&html_message(
             r#"<p>Visible</p><p style="display:none">Hidden</p>"#,
         ))
         .expect("document");
@@ -3326,7 +3442,7 @@ mod tests {
     fn a_layout_only_html_part_falls_back_to_the_extracted_text() {
         // A spacer table with no words in it is not worth a document; the
         // reader shows the extracted text instead.
-        assert!(body_document(&html_message("<table><tr><td></td></tr></table>")).is_none());
+        assert!(document(&html_message("<table><tr><td></td></tr></table>")).is_none());
     }
 
     #[test]
