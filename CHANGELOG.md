@@ -44,6 +44,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A POP3 account opens its server settings with its POP3 server filled in,
+  and a POP3 provider fills the form with it. The form read the IMAP fields
+  whatever the protocol, so an account from a provider whose settings name
+  only a POP3 server showed an empty server field, and saving it as shown
+  stored no server.
 - A message the server refused says so again, with the server's reply, and
   that nothing was delivered: in the composer, in the Outbox and in the
   status line. Since 1.3.0 every stopped send was described as one that

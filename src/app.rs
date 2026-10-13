@@ -779,10 +779,11 @@ impl MailForm {
     /// JMAP session URL — so a hit here fills everything.
     fn apply_endpoint(&mut self, endpoint: &MailEndpoint) {
         let servers = &mut self.servers;
+        let (host, port, transport) = incoming_server(endpoint);
         servers.protocol = endpoint.protocol;
-        servers.host = endpoint.imap_host.clone();
-        servers.port = endpoint.imap_port.to_string();
-        servers.transport = endpoint.imap_transport;
+        servers.host = host.to_owned();
+        servers.port = port.to_string();
+        servers.transport = transport;
         servers.smtp_host = endpoint.smtp_host.clone();
         servers.smtp_port = endpoint.smtp_port.to_string();
         servers.smtp_transport = endpoint.smtp_transport;
@@ -839,6 +840,18 @@ pub struct ServerFields {
     pub jmap_url: String,
 }
 
+/// The incoming server an endpoint names, as host, port and encryption: the
+/// POP3 fields for POP3, the IMAP ones otherwise. The form shows one incoming
+/// server whichever the protocol, and a provider manifest for a POP3 service
+/// fills in only the POP3 fields.
+fn incoming_server(mail: &MailEndpoint) -> (&str, u16, Transport) {
+    if mail.protocol == MailProtocol::Pop3 {
+        (&mail.pop3_host, mail.pop3_port, mail.pop3_transport)
+    } else {
+        (&mail.imap_host, mail.imap_port, mail.imap_transport)
+    }
+}
+
 /// One change to [`ServerFields`], as a form field reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerEdit {
@@ -863,11 +876,16 @@ impl ServerFields {
     /// The fields for an endpoint, or the usual defaults for none: IMAP over
     /// TLS on 993, submission over TLS on 465.
     fn of(mail: Option<&MailEndpoint>) -> Self {
+        let incoming = mail.map(incoming_server);
         Self {
             protocol: mail.map(|m| m.protocol).unwrap_or_default(),
-            host: mail.map(|m| m.imap_host.clone()).unwrap_or_default(),
-            port: mail.map_or_else(|| "993".to_string(), |m| m.imap_port.to_string()),
-            transport: mail.map(|m| m.imap_transport).unwrap_or_default(),
+            host: incoming
+                .map(|(host, ..)| host.to_owned())
+                .unwrap_or_default(),
+            port: incoming.map_or_else(|| "993".to_string(), |(_, port, _)| port.to_string()),
+            transport: incoming
+                .map(|(.., transport)| transport)
+                .unwrap_or_default(),
             username: mail
                 .and_then(|m| m.imap_username.clone())
                 .unwrap_or_default(),
@@ -7286,6 +7304,46 @@ mod tests {
         fields.smtp_port = "smtp".into();
         assert!(fields.endpoint().is_err());
         assert!(!fields.is_complete());
+    }
+
+    /// A POP3 endpoint as a provider manifest describes it: the POP3 fields
+    /// only, nothing in the IMAP ones.
+    fn pop3_only() -> MailEndpoint {
+        MailEndpoint {
+            protocol: MailProtocol::Pop3,
+            pop3_host: "pop.nowhere.example".into(),
+            pop3_port: 110,
+            pop3_transport: Transport::StartTls,
+            ..MailEndpoint::tls("")
+        }
+    }
+
+    #[test]
+    fn a_pop3_account_opens_with_its_pop3_server_in_the_form() {
+        // The form read the IMAP fields whatever the protocol, so an account
+        // from a manifest that fills only the POP3 ones opened with an empty
+        // server, and saving it as shown would have stored that.
+        let mut account = Account::new("Ada", "", "ada@nowhere.example");
+        account.mail = Some(pop3_only());
+
+        let form = MailForm::new(&account);
+
+        assert_eq!(form.servers.protocol, MailProtocol::Pop3);
+        assert_eq!(form.servers.host, "pop.nowhere.example");
+        assert_eq!(form.servers.port, "110");
+        assert_eq!(form.servers.transport, Transport::StartTls);
+    }
+
+    #[test]
+    fn a_pop3_provider_fills_the_form_with_its_pop3_server() {
+        let mut form = MailForm::new(&Account::new("Ada", "", "ada@nowhere.example"));
+
+        form.apply_endpoint(&pop3_only());
+
+        assert_eq!(form.servers.protocol, MailProtocol::Pop3);
+        assert_eq!(form.servers.host, "pop.nowhere.example");
+        assert_eq!(form.servers.port, "110");
+        assert_eq!(form.servers.transport, Transport::StartTls);
     }
 
     #[test]
