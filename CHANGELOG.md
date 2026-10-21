@@ -15,6 +15,13 @@ All notable changes to this project are documented here. The format follows
   composer window (keeping what was typed), or clears the search. It used to
   only take the focus out of the field, so it took a second press.
 
+### Fixed
+
+- Opening an encrypted message whose X25519 session key was too short
+  crashed Envelope. It now says the message could not be decrypted. The fix
+  is in rpgp 0.21, through cosmic-pim 3.3.0
+  ([GHSA-939f-rrrj-p2pc](https://github.com/advisories/GHSA-939f-rrrj-p2pc)).
+
 ## [1.4.0] - 2026-10-13
 
 ### Added
