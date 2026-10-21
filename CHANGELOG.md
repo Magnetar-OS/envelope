@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Rebuilt against the current COSMIC libraries (libcosmic `430f3d4`) with
+  Rust 1.99.1.
+- Escape pressed in a text field now does what Escape does elsewhere in the
+  window — closes the command palette or the folder picker, closes a
+  composer window (keeping what was typed), or clears the search. It used to
+  only take the focus out of the field, so it took a second press.
+
 ## [1.4.0] - 2026-10-13
 
 ### Added
