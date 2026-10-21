@@ -97,4 +97,4 @@ all = { level = "warn", priority = -1 }
 [dev-dependencies]
 tempfile = "3"
 # The SMTP stand-in decodes the login it is sent. Already in the graph.
-base64 = "0.22"
+base64 = "0.23"
