@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-21
+
 ### Changed
 
 - Rebuilt against the current COSMIC libraries (libcosmic `430f3d4`) with
@@ -450,7 +452,8 @@ All notable changes to this project are documented here. The format follows
 - A crash now leaves a report under the state directory, and the next launch
   says so once in the status line.
 
-[Unreleased]: https://github.com/Magnetar-OS/envelope/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/Magnetar-OS/envelope/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/Magnetar-OS/envelope/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/Magnetar-OS/envelope/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/Magnetar-OS/envelope/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/Magnetar-OS/envelope/compare/v1.2.0...v1.3.0
