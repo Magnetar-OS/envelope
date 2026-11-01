@@ -103,3 +103,12 @@ all = { level = "warn", priority = -1 }
 tempfile = "3"
 # The SMTP stand-in decodes the login it is sent. Already in the graph.
 base64 = "0.23"
+
+# cosmic-pim-mail takes `cosmic-ext-nib-text` (and through it the model) from
+# crates.io, while Envelope takes Nib from git, above: two copies of each,
+# whose types differ. They agree today only because cosmic-pim-mail passes
+# strings across and both copies are 1.2.1. Patching the registry crates to
+# the same git tag leaves one copy, so moving Nib's tag moves both.
+[patch.crates-io]
+cosmic-ext-nib-model = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.1" }
+cosmic-ext-nib-text = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.1" }

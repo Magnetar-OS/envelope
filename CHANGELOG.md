@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The rules' state file is written with an fsync of the file and its
+  directory, so a power cut right after a sync can no longer leave it empty
+  and make the rules skip a window of mail.
+- The folder list's scrollbar sits beside the folders instead of over the
+  selected folder's highlight.
+- The delete buttons in the rules, accounts and aliases lists have tooltips.
+
+### Changed
+
+- Nib's model and text crates come from one source: cosmic-pim-mail's
+  crates.io copies are patched to the same git tag Envelope uses, instead of
+  building both.
+
 ## [1.6.1] - 2026-11-01
 
 ### Fixed

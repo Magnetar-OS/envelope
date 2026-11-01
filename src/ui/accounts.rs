@@ -65,9 +65,11 @@ pub fn view<'a>(
                         .on_press(Message::AccountManageElsewhere(account.id.clone()))
                         .apply(Element::from)
                 } else {
-                    widget::button::icon(widget::icon::from_name("edit-delete-symbolic"))
-                        .on_press(Message::AccountRemove(account.id.clone()))
-                        .apply(Element::from)
+                    crate::ui::icon_button(
+                        "edit-delete-symbolic",
+                        fl!("remove"),
+                        Message::AccountRemove(account.id.clone()),
+                    )
                 });
             section = section.add(
                 widget::settings::item::builder(account.display_name.clone())
@@ -483,10 +485,11 @@ fn aliases(form: &MailForm) -> Element<'_, Message> {
                 .align_y(cosmic::iced::Alignment::Center)
                 .spacing(spacing.space_xxs)
                 .push(widget::text::caption(label).width(Length::Fill))
-                .push(
-                    widget::button::icon(widget::icon::from_name("edit-delete-symbolic"))
-                        .on_press(Message::MailFormAliasRemoved(index)),
-                ),
+                .push(crate::ui::icon_button(
+                    "edit-delete-symbolic",
+                    fl!("remove"),
+                    Message::MailFormAliasRemoved(index),
+                )),
         );
     }
     widget::settings::item::builder(fl!("aliases"))

@@ -68,10 +68,11 @@ impl<'a> Rules<'a> {
                         .push(widget::text::caption(summarise(rule, self.folders)))
                         .width(Length::Fill),
                 )
-                .push(
-                    widget::button::icon(widget::icon::from_name("edit-delete-symbolic"))
-                        .on_press(Message::RuleDeleted(index)),
-                );
+                .push(crate::ui::icon_button(
+                    "edit-delete-symbolic",
+                    fl!("delete"),
+                    Message::RuleDeleted(index),
+                ));
             listing = listing.add(row);
         }
 

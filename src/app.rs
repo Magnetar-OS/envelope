@@ -1708,15 +1708,11 @@ impl cosmic::Application for AppModel {
                     ],
                 ),
             )])
-            // `Dynamic` rather than the default `Uniform(30)`: uniform gives
-            // every entry the same row, dividers included, so each hairline
-            // separator claimed a full item's height and the menu read as
-            // three lists with gaps rather than one list with rules. Dynamic
-            // lets a button keep its own 36 and a divider be a divider.
-            .item_height(menu::ItemHeight::Dynamic(36))
-            // And 150 is not a width for entries like "Rename folder" beside
-            // a shortcut column — the label ellipsized and the accelerator
-            // had nowhere to sit.
+            // Item height is left to libcosmic, whose default has been
+            // dynamic since fcb3865, so a divider is a divider rather than a
+            // full row. The default width of 150 is not one for entries like
+            // "Rename folder" beside a shortcut column — the label ellipsized
+            // and the accelerator had nowhere to sit.
             .item_width(menu::ItemWidth::Uniform(260))
             .into(),
         ]

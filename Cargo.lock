@@ -1311,7 +1311,7 @@ source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.1#f1326
 dependencies = [
  "cosmic-ext-nib-css",
  "cosmic-ext-nib-html",
- "cosmic-ext-nib-model 1.2.1 (git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.1)",
+ "cosmic-ext-nib-model",
  "libcosmic",
  "unicode-segmentation",
 ]
@@ -1321,7 +1321,7 @@ name = "cosmic-ext-nib-css"
 version = "1.2.1"
 source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.1#f1326dfaf01fdf053b3bfcfa1efc8cf5a4b3403c"
 dependencies = [
- "cosmic-ext-nib-model 1.2.1 (git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.1)",
+ "cosmic-ext-nib-model",
 ]
 
 [[package]]
@@ -1330,24 +1330,13 @@ version = "1.2.1"
 source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.1#f1326dfaf01fdf053b3bfcfa1efc8cf5a4b3403c"
 dependencies = [
  "cosmic-ext-nib-css",
- "cosmic-ext-nib-model 1.2.1 (git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.1)",
+ "cosmic-ext-nib-model",
  "html5ever",
 ]
 
 [[package]]
 name = "cosmic-ext-nib-model"
 version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0264c11e35fff11f117bfb7f454601ffc9df4708c141bf8f293b7ce312f6126"
-dependencies = [
- "regex",
- "thiserror 2.0.21",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "cosmic-ext-nib-model"
-version = "1.2.1"
 source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.1#f1326dfaf01fdf053b3bfcfa1efc8cf5a4b3403c"
 dependencies = [
  "regex",
@@ -1358,19 +1347,9 @@ dependencies = [
 [[package]]
 name = "cosmic-ext-nib-text"
 version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "237bf8ceea04feac191f5c43a60388b31102f76561afa96243f6653885cbc634"
-dependencies = [
- "cosmic-ext-nib-model 1.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "cosmic-ext-nib-text"
-version = "1.2.1"
 source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.1#f1326dfaf01fdf053b3bfcfa1efc8cf5a4b3403c"
 dependencies = [
- "cosmic-ext-nib-model 1.2.1 (git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.1)",
+ "cosmic-ext-nib-model",
  "unicode-segmentation",
 ]
 
@@ -1508,7 +1487,7 @@ checksum = "77e90663da0486b1733dd21bc340eb440c2f3252d542da93b0e5f1d396a86bb1"
 dependencies = [
  "base64 0.23.1",
  "chrono",
- "cosmic-ext-nib-text 1.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cosmic-ext-nib-text",
  "cosmic-pim-core",
  "dirs 7.0.0",
  "html5ever",
@@ -2392,8 +2371,8 @@ dependencies = [
  "chrono",
  "cosmic-ext-nib",
  "cosmic-ext-nib-html",
- "cosmic-ext-nib-model 1.2.1 (git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.1)",
- "cosmic-ext-nib-text 1.2.1 (git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.1)",
+ "cosmic-ext-nib-model",
+ "cosmic-ext-nib-text",
  "cosmic-ext-widgets",
  "cosmic-pim-accounts",
  "cosmic-pim-auth",

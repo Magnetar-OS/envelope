@@ -76,6 +76,9 @@ impl<'a> Sidebar<'a> {
             .push(
                 self.folder_list()
                     .apply(widget::scrollable)
+                    // Beside the rows rather than over them: floating, the
+                    // bar covered the selected folder's highlight.
+                    .spacing(spacing.space_xxxs)
                     .height(Length::Fill),
             )
             .padding(spacing.space_xxs)
