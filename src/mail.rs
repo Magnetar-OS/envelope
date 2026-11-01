@@ -2876,12 +2876,13 @@ pub fn apply_rules(
 
 fn write_rules_state(path: &std::path::Path, state: &RulesState) -> Result<(), String> {
     let json = serde_json::to_string_pretty(state).map_err(|why| why.to_string())?;
-    // Write-then-rename, so a crash mid-write cannot leave a torn file. A
-    // torn file here would silently re-initialise the high-water mark and
-    // skip a window of mail the rules were supposed to see.
-    let temp = path.with_extension("json.new");
-    std::fs::write(&temp, json).map_err(|why| why.to_string())?;
-    std::fs::rename(&temp, path).map_err(|why| why.to_string())
+    // Atomic and durable, so neither a crash mid-write nor a power cut after
+    // it can leave a torn or empty file. A torn file here would silently
+    // re-initialise the high-water mark and skip a window of mail the rules
+    // were supposed to see.
+    cosmic_pim_core::atomic::write(path, &json, None)
+        .map(drop)
+        .map_err(|why| why.to_string())
 }
 
 /// A session for a one-off folder operation. IMAP only: the label-shaped
