@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The New message button in the header bar is drawn whole at Spacious
+  interface density; the header used to cut off its top half. It dims with
+  the window controls when the window is not focused, and its tooltip is
+  also its accessible name.
+
 ## [1.6.0] - 2026-11-01
 
 ### Changed

@@ -24,6 +24,7 @@ use cosmic::iced::window;
 use cosmic::widget::{self, about::About, menu};
 use cosmic::{Application as _, ApplicationExt as _};
 use cosmic::{Apply as _, Element};
+use cosmic_ext_widgets::header_button;
 use cosmic_pim_accounts::account::ACCOUNTS_FILE_CHECK_INTERVAL;
 use cosmic_pim_accounts::{
     Account, AccountStore, FileStamp, MailEndpoint, MailProtocol, Transport,
@@ -1693,11 +1694,16 @@ impl cosmic::Application for AppModel {
             // reachable only from the menu and from `c`, which makes writing
             // a message the one common action with no button — every mail
             // client worth measuring against puts it in the toolbar, first.
-            widget::tooltip(
-                widget::button::icon(widget::icon::from_name("mail-message-new-symbolic"))
-                    .on_press(Message::Act(Action::Compose)),
-                widget::text::body(fl!("compose")),
-                widget::tooltip::Position::Bottom,
+            header_button(
+                widget::icon::from_name("mail-message-new-symbolic"),
+                fl!("compose"),
+                Message::Act(Action::Compose),
+            )
+            .focused(
+                self.core
+                    .focus_chain()
+                    .iter()
+                    .any(|id| Some(*id) == self.core.main_window_id()),
             )
             .into(),
             menu::bar(vec![menu::Tree::with_children(
