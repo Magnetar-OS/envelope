@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Built on cosmic-pim 4.1.1 and cosmic-ext-widgets 1.3.1, and the latest
+  releases of its other dependencies: tokio 1.54 and rust-embed 8.13.
+
 ## [1.7.0] - 2026-11-01
 
 ### Fixed
