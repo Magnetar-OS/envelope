@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Rebuilt against the current COSMIC libraries (libcosmic `95236a9`).
+
 ## [1.5.0] - 2026-10-21
 
 ### Changed
