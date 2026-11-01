@@ -1306,8 +1306,8 @@ dependencies = [
 
 [[package]]
 name = "cosmic-ext-nib"
-version = "1.2.1"
-source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.1#f1326dfaf01fdf053b3bfcfa1efc8cf5a4b3403c"
+version = "1.2.2"
+source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.2#8d6dbfb17d1af6bca43c205d7645f5385af74c8e"
 dependencies = [
  "cosmic-ext-nib-css",
  "cosmic-ext-nib-html",
@@ -1318,16 +1318,16 @@ dependencies = [
 
 [[package]]
 name = "cosmic-ext-nib-css"
-version = "1.2.1"
-source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.1#f1326dfaf01fdf053b3bfcfa1efc8cf5a4b3403c"
+version = "1.2.2"
+source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.2#8d6dbfb17d1af6bca43c205d7645f5385af74c8e"
 dependencies = [
  "cosmic-ext-nib-model",
 ]
 
 [[package]]
 name = "cosmic-ext-nib-html"
-version = "1.2.1"
-source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.1#f1326dfaf01fdf053b3bfcfa1efc8cf5a4b3403c"
+version = "1.2.2"
+source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.2#8d6dbfb17d1af6bca43c205d7645f5385af74c8e"
 dependencies = [
  "cosmic-ext-nib-css",
  "cosmic-ext-nib-model",
@@ -1336,8 +1336,8 @@ dependencies = [
 
 [[package]]
 name = "cosmic-ext-nib-model"
-version = "1.2.1"
-source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.1#f1326dfaf01fdf053b3bfcfa1efc8cf5a4b3403c"
+version = "1.2.2"
+source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.2#8d6dbfb17d1af6bca43c205d7645f5385af74c8e"
 dependencies = [
  "regex",
  "thiserror 2.0.21",
@@ -1346,8 +1346,8 @@ dependencies = [
 
 [[package]]
 name = "cosmic-ext-nib-text"
-version = "1.2.1"
-source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.1#f1326dfaf01fdf053b3bfcfa1efc8cf5a4b3403c"
+version = "1.2.2"
+source = "git+https://github.com/Magnetar-OS/cosmic-ext-nib.git?tag=v1.2.2#8d6dbfb17d1af6bca43c205d7645f5385af74c8e"
 dependencies = [
  "cosmic-ext-nib-model",
  "unicode-segmentation",
@@ -1399,9 +1399,9 @@ dependencies = [
 
 [[package]]
 name = "cosmic-pim-accounts"
-version = "4.1.1"
+version = "4.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cebba0018d2d0b1eced1b3c7574081e8b07f2fe62761ee74aec42de088993b36"
+checksum = "72582818e08edadb518e6c136cb9d5b285e323034dab3f14d82f4fd2a2e865ec"
 dependencies = [
  "base64 0.23.1",
  "chacha20poly1305",
@@ -1421,9 +1421,9 @@ dependencies = [
 
 [[package]]
 name = "cosmic-pim-auth"
-version = "4.1.1"
+version = "4.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e91716e95a72af9a6606c17be50bed3be316215c4bdbe112897b4e6eed0f9db"
+checksum = "cb50d53cd755cf5468356b174ffbf73955e94a620ced2355198f854738a65dd0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1440,9 +1440,9 @@ dependencies = [
 
 [[package]]
 name = "cosmic-pim-caldav"
-version = "4.1.1"
+version = "4.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c808047f2cc7e047a935c50ffd374e72875fa8588ec7bb7db73ecd34094c5226"
+checksum = "9c019ad6137762aee332d4f65550a962c6a940b08daafb31a636c5ef4777a36d"
 dependencies = [
  "base64 0.23.1",
  "calcard",
@@ -1459,9 +1459,9 @@ dependencies = [
 
 [[package]]
 name = "cosmic-pim-core"
-version = "4.1.1"
+version = "4.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da08b3592f06f4e860c626d2e4fca206c1b08694f030228463c27d3125323420"
+checksum = "0e2fb81fafea9d4d4dc1c4d32a0c78905763c06ae47e411ea64af42b7ac083ef"
 dependencies = [
  "base64 0.23.1",
  "calcard",
@@ -1481,9 +1481,9 @@ dependencies = [
 
 [[package]]
 name = "cosmic-pim-mail"
-version = "4.1.1"
+version = "4.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ccf5bb3e880a288df0ce80b3a8f255fa5deccd0136af38469784107c0c4fdd4"
+checksum = "5e65d48271a07e009b3601535c742cad1182d91fbeee5e6d1bc6df1fbd993097"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1510,9 +1510,9 @@ dependencies = [
 
 [[package]]
 name = "cosmic-pim-sync"
-version = "4.1.1"
+version = "4.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64d968ce95b143f8d81d86b25e4c32268afbf1f0928320d56fc2e746aa1c9782"
+checksum = "34d53679a030796d1c3e5e1bc1072b716c17071fe267e9103bbeb2ca9d99139f"
 dependencies = [
  "cosmic-pim-accounts",
  "cosmic-pim-auth",

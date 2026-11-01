@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Built on Nib 1.2.2 and cosmic-pim 4.1.2.
+
 ## [1.7.1] - 2026-11-01
 
 ### Changed
