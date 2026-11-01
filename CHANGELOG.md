@@ -6,7 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A recipient whose name has a comma in it — "Doe, Jane" — stays one
+  recipient. Replying to her used to split the field into "Doe" and a
+  broken "Jane <…>", and typing `"Doe, Jane" <jane@…>` did the same. Names
+  that need it are written quoted, and the field is read around the quotes.
+
 ### Changed
+
+- Built on cosmic-pim 4.1.
 
 - The sidebar has one Drafts entry. An IMAP account used to show two —
   this device's drafts above the folders and the server's Drafts folder

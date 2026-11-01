@@ -696,35 +696,25 @@ fn identity_labels(connection: &Connection) -> Vec<String> {
 fn join(mailboxes: &[cosmic_pim_mail::Mailbox]) -> String {
     mailboxes
         .iter()
-        .map(|m| match &m.name {
-            Some(name) => format!("{name} <{}>", m.address),
-            None => m.address.clone(),
-        })
+        .map(|m| cosmic_pim_core::recipients::mailbox(m.name.as_deref().unwrap_or(""), &m.address))
         .collect::<Vec<_>>()
         .join(", ")
 }
 
-/// Splits a comma-separated address field, accepting both `a@b` and
-/// `Name <a@b>`.
-///
-/// Commas inside a quoted display name would break this, and are left broken:
-/// the alternative is an RFC 5322 address-list parser in the UI layer, and a
-/// user whose contact has a comma in their name can drop the quotes. The
-/// substrate validates what comes out.
+/// Splits an address field into recipients, accepting `a@b`, `Name <a@b>`
+/// and `"Last, First" <a@b>`: a comma inside a quoted name is part of the
+/// name, as [`join`] writes it. Addresses are folded to lower case so they
+/// match the address book; the substrate validates what comes out.
 fn parse_addresses(field: &str) -> Vec<cosmic_pim_mail::Mailbox> {
-    field
-        .split(',')
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .map(|entry| match entry.rsplit_once('<') {
-            Some((name, rest)) => cosmic_pim_mail::Mailbox {
-                name: Some(name.trim().trim_matches('"').to_owned()).filter(|n| !n.is_empty()),
-                address: rest.trim_end_matches('>').trim().to_ascii_lowercase(),
-            },
-            None => cosmic_pim_mail::Mailbox {
-                name: None,
-                address: entry.to_ascii_lowercase(),
-            },
+    use cosmic_pim_core::recipients;
+    recipients::split(field)
+        .into_iter()
+        .map(|entry| {
+            let (name, address) = recipients::parse(entry);
+            cosmic_pim_mail::Mailbox {
+                name,
+                address: address.to_ascii_lowercase(),
+            }
         })
         .collect()
 }
@@ -7477,6 +7467,25 @@ mod tests {
         // A blank Cc must not become an unsendable draft.
         assert!(parse_addresses("").is_empty());
         assert!(parse_addresses("  ,  , ").is_empty());
+    }
+
+    #[test]
+    fn a_comma_in_a_display_name_is_one_recipient() {
+        // A reply to "Doe, Jane" fills the field with her quoted name; it has
+        // to come back as her, not as "Doe" and a broken "Jane <…>".
+        let original = vec![
+            cosmic_pim_mail::Mailbox {
+                name: Some("Doe, Jane".into()),
+                address: "jane@example.com".into(),
+            },
+            cosmic_pim_mail::Mailbox {
+                name: None,
+                address: "bob@example.net".into(),
+            },
+        ];
+        let shown = join(&original);
+        assert_eq!(shown, r#""Doe, Jane" <jane@example.com>, bob@example.net"#);
+        assert_eq!(parse_addresses(&shown), original);
     }
 
     #[test]

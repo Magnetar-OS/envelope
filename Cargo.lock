@@ -1399,9 +1399,9 @@ dependencies = [
 
 [[package]]
 name = "cosmic-pim-accounts"
-version = "4.0.1"
+version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84ff1599b281a9396eb9f4868570e823ecf4c38acbc2524cd07eaba59a4e6e9c"
+checksum = "68def73ba7bd543585d9b7b342fc034c5494615c6fe9775a6d0fca0bc3e22662"
 dependencies = [
  "base64 0.23.1",
  "chacha20poly1305",
@@ -1421,9 +1421,9 @@ dependencies = [
 
 [[package]]
 name = "cosmic-pim-auth"
-version = "4.0.1"
+version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "001cd1091b1d1fbd10c160768fe3edb4f773094c474b145b7af05be59082e2ee"
+checksum = "b66cda5964d07ddfba28e8fb4377a7009466c8c7b0f0a1031160eab02e5c9058"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1440,9 +1440,9 @@ dependencies = [
 
 [[package]]
 name = "cosmic-pim-caldav"
-version = "4.0.1"
+version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e70b73bdbd453cbcaab732510bfc5e22bf51188e8e3a1896793f817acfd7319"
+checksum = "693a1f36441f31f3f31fb52d68443c63289a0c027db789d5b308d09b8655aaa9"
 dependencies = [
  "base64 0.23.1",
  "calcard",
@@ -1459,9 +1459,9 @@ dependencies = [
 
 [[package]]
 name = "cosmic-pim-core"
-version = "4.0.1"
+version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b16adf9ca822da896855c9b5202bd24e87124b49414da6839743d9a8ca5976a2"
+checksum = "0952ac1d51dd075e0efb63382fc43f417f2ee18790867e26214a1449eae51047"
 dependencies = [
  "base64 0.23.1",
  "calcard",
@@ -1481,9 +1481,9 @@ dependencies = [
 
 [[package]]
 name = "cosmic-pim-mail"
-version = "4.0.1"
+version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77e90663da0486b1733dd21bc340eb440c2f3252d542da93b0e5f1d396a86bb1"
+checksum = "dc986361ccc6f8627d174ab27468d5ac5bf5743f1f3135c0d7406c81e3d00a97"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1510,9 +1510,9 @@ dependencies = [
 
 [[package]]
 name = "cosmic-pim-sync"
-version = "4.0.1"
+version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a677350f26751e30456b8fdf17411c1780b75d870e50cb108b3ebd4f5a35541"
+checksum = "044629469c4798575712e9277a295c5cde3e4a3b814ec4e4f4d585ddb5b3e93c"
 dependencies = [
  "cosmic-pim-accounts",
  "cosmic-pim-auth",
