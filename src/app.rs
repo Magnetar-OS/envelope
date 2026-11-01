@@ -176,6 +176,9 @@ pub struct AppModel {
     palette_rows: Vec<(Action, String)>,
     /// Local drafts for the selected account, newest first.
     drafts: Vec<cosmic_pim_mail::drafts::Saved>,
+    /// Drafts in the server's Drafts folder that this device holds no record
+    /// of, listed under the local ones in the one Drafts view.
+    foreign_drafts: Vec<mail::ForeignDraft>,
     showing_drafts: bool,
     outbox: Vec<cosmic_pim_mail::outbox::Queued>,
     showing_outbox: bool,
@@ -1332,7 +1335,9 @@ pub enum Message {
     ComposeCancel,
     /// Close and throw it away — the explicit choice, not the default.
     ComposeDiscard,
-    DraftsLoaded(Vec<cosmic_pim_mail::drafts::Saved>),
+    DraftsLoaded(Vec<cosmic_pim_mail::drafts::Saved>, Vec<mail::ForeignDraft>),
+    /// A draft from the server's Drafts folder, by UID, to adopt and edit.
+    ForeignDraftOpened(u32),
     ShowDrafts,
     ConfigChanged(Config),
     /// An inbox watch came back. The generation says whether it is still ours.
@@ -1735,7 +1740,7 @@ impl cosmic::Application for AppModel {
             folders: &self.folders,
             selected_folder: self.selected_folder,
             unread: &self.unread,
-            drafts: self.drafts.len(),
+            drafts: self.drafts.len() + self.foreign_drafts.len(),
             showing_drafts: self.showing_drafts,
             outbox: self.outbox.len(),
             showing_outbox: self.showing_outbox,
@@ -2027,7 +2032,7 @@ impl cosmic::Application for AppModel {
         } else if self.showing_outbox {
             crate::ui::list::outbox(&self.outbox, chrono::Utc::now().timestamp_millis())
         } else if self.showing_drafts {
-            crate::ui::list::drafts(&self.drafts)
+            crate::ui::list::drafts(&self.drafts, &self.foreign_drafts)
         } else {
             crate::ui::list::List {
                 conversations: &self.conversations,
@@ -2236,6 +2241,7 @@ impl AppModel {
             palette_rows: Vec::new(),
             undo_stack: Vec::new(),
             drafts: Vec::new(),
+            foreign_drafts: Vec::new(),
             showing_drafts: false,
             outbox: Vec::new(),
             showing_outbox: false,
@@ -2388,6 +2394,9 @@ impl AppModel {
                         Task::batch([
                             self.reload_conversations(),
                             self.reload_outbox(),
+                            // The pass may have brought in another device's
+                            // drafts.
+                            self.reload_drafts(),
                             if self.showing_unified {
                                 self.reload_unified()
                             } else {
@@ -3041,8 +3050,9 @@ impl AppModel {
             Message::WindowDrag => self.core.drag(self.routed),
             Message::WindowToggleMaximize => self.core.toggle_maximize(self.routed),
             Message::WindowMinimize => self.core.minimize(self.routed),
-            Message::DraftsLoaded(drafts) => {
+            Message::DraftsLoaded(drafts, foreign) => {
                 self.drafts = drafts;
+                self.foreign_drafts = foreign;
                 Task::none()
             }
             Message::ShowUnified => {
@@ -3423,7 +3433,9 @@ impl AppModel {
                     Ok(_) => {}
                     Err(why) => self.say(fl!("draft-sync-failed", reason = why)),
                 }
-                Task::none()
+                // The sweep changes which mirrors the server holds, and with
+                // it which of them are another device's.
+                self.reload_drafts()
             }
 
             Message::ServerDraftOpened(opened) => {
@@ -3799,6 +3811,7 @@ impl AppModel {
             },
 
             Message::DraftOpened(id) => self.open_draft(&id),
+            Message::ForeignDraftOpened(uid) => self.open_foreign_draft(uid),
             Message::DraftDeleted(id) => {
                 let Some(name) = self
                     .drafts
@@ -3911,7 +3924,13 @@ impl AppModel {
 
         self.folders = folders;
         self.selected_folder = self.restore_folder();
-        Task::batch([self.reload_conversations(), self.update_title()])
+        Task::batch([
+            self.reload_conversations(),
+            self.update_title(),
+            // Which drafts are another device's is read from the Drafts
+            // folder, which the first reload ran before it was known.
+            self.reload_drafts(),
+        ])
     }
 
     fn reload_conversations(&mut self) -> Task<Message> {
@@ -5257,9 +5276,15 @@ impl AppModel {
     /// inbox. Remembering is what stops somebody who reads out of Archive from
     /// having to navigate there on every launch.
     fn restore_folder(&self) -> Option<usize> {
+        // Not the server's Drafts folder: it has no row of its own any more —
+        // the sidebar's one Drafts entry shows the drafts view — so restoring
+        // it would list a folder nothing in the sidebar shows as selected.
         self.folders
             .iter()
-            .position(|folder| folder.wire_name == self.config.last_folder)
+            .position(|folder| {
+                folder.wire_name == self.config.last_folder
+                    && folder.special_use != Some(SpecialUse::Drafts)
+            })
             .or_else(|| self.default_folder())
     }
 
@@ -5898,17 +5923,49 @@ impl AppModel {
     fn reload_drafts(&mut self) -> Task<Message> {
         let Some(connection) = self.connection.clone() else {
             self.drafts.clear();
+            self.foreign_drafts.clear();
             return Task::none();
         };
+        let folder = mail::drafts_folder(&self.folders).cloned();
         cosmic::task::future(async move {
-            let drafts = tokio::task::spawn_blocking(move || mail::list_drafts(&connection))
-                .await
-                .unwrap_or_else(|why| Err(why.to_string()))
-                .unwrap_or_else(|why| {
+            let (drafts, foreign) = tokio::task::spawn_blocking(move || {
+                let drafts = mail::list_drafts(&connection).unwrap_or_else(|why| {
                     tracing::warn!(why, "could not list drafts");
                     Vec::new()
                 });
-            Message::DraftsLoaded(drafts)
+                let foreign = folder
+                    .map(|folder| mail::foreign_drafts(&connection, &folder))
+                    .transpose()
+                    .unwrap_or_else(|why| {
+                        tracing::warn!(why, "could not list the server's drafts");
+                        None
+                    })
+                    .unwrap_or_default();
+                (drafts, foreign)
+            })
+            .await
+            .unwrap_or_default();
+            Message::DraftsLoaded(drafts, foreign)
+        })
+    }
+
+    /// Adopts a draft from the server's Drafts folder and opens it in a
+    /// composer, as opening it from the folder's list used to.
+    fn open_foreign_draft(&mut self, uid: u32) -> Task<Message> {
+        let (Some(connection), Some(folder), Some(scope)) = (
+            self.connection.clone(),
+            mail::drafts_folder(&self.folders).cloned(),
+            self.main_scope(),
+        ) else {
+            return Task::none();
+        };
+        cosmic::task::future(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                mail::edit_server_draft(&connection, &folder, uid)
+            })
+            .await
+            .unwrap_or_else(|why| Err(why.to_string()));
+            Message::ServerDraftOpened(Box::new((scope, result)))
         })
     }
 

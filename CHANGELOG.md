@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The sidebar has one Drafts entry. An IMAP account used to show two —
+  this device's drafts above the folders and the server's Drafts folder
+  among them — and the server's held a copy of every draft in the first, so
+  each one was listed twice. The entry sits where the server's Drafts folder
+  is and opens the drafts view, which lists this device's drafts and, under
+  "From other devices", the server's drafts that are not on this device.
+  Opening one of those brings it here to edit, as opening it from the
+  folder did.
+
 ## [1.6.2] - 2026-11-01
 
 ### Fixed

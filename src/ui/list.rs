@@ -170,10 +170,13 @@ impl<'a> List<'a> {
 /// A separate function rather than a mode on [`List`]: a draft has no sender,
 /// no flags, and no thread, so every field the conversation row shows would be
 /// empty or invented.
-pub fn drafts(saved: &[cosmic_pim_mail::drafts::Saved]) -> Element<'_, Message> {
+pub fn drafts<'a>(
+    saved: &'a [cosmic_pim_mail::drafts::Saved],
+    foreign: &'a [crate::mail::ForeignDraft],
+) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
 
-    if saved.is_empty() {
+    if saved.is_empty() && foreign.is_empty() {
         return widget::column::with_capacity(2)
             .spacing(spacing.space_xxs)
             .push(crate::ui::muted(fl!("no-drafts")))
@@ -183,7 +186,7 @@ pub fn drafts(saved: &[cosmic_pim_mail::drafts::Saved]) -> Element<'_, Message> 
             .into();
     }
 
-    let mut column = widget::column::with_capacity(saved.len() + 1)
+    let mut column = widget::column::with_capacity(saved.len() + foreign.len() + 2)
         .spacing(spacing.space_xxs)
         .push(
             crate::ui::muted(fl!("drafts-sync-note"))
@@ -231,6 +234,43 @@ pub fn drafts(saved: &[cosmic_pim_mail::drafts::Saved]) -> Element<'_, Message> 
                     fl!("delete"),
                     Message::DraftDeleted(draft.id.clone()),
                 )),
+        );
+    }
+
+    // The server's Drafts folder's others, under their own heading: they are
+    // not on this device until opened, which adopts them.
+    if !foreign.is_empty() {
+        column = column.push(
+            widget::text::heading(fl!("drafts-other-devices"))
+                .apply(widget::container)
+                .padding([spacing.space_xs, spacing.space_s, 0, spacing.space_s]),
+        );
+    }
+    for draft in foreign {
+        let subject = if draft.subject.trim().is_empty() {
+            fl!("draft-no-subject")
+        } else {
+            draft.subject.clone()
+        };
+        let mut heading = widget::row::with_capacity(2)
+            .align_y(Alignment::Center)
+            .spacing(spacing.space_xxs)
+            .push(one_line(widget::text::body(subject)).width(Length::Fill));
+        if draft.date_ms != 0 {
+            heading = heading.push(widget::text::caption(crate::ui::relative_date_ms(
+                draft.date_ms,
+            )));
+        }
+        let body = widget::column::with_capacity(2)
+            .spacing(spacing.space_xxxs)
+            .push(heading)
+            .push(one_line(widget::text::caption(draft.to.clone())));
+        column = column.push(
+            widget::button::custom(body)
+                .width(Length::Fill)
+                .padding([spacing.space_xs, spacing.space_s])
+                .class(crate::ui::multiline_row_class(false))
+                .on_press(Message::ForeignDraftOpened(draft.uid)),
         );
     }
 

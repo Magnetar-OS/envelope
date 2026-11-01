@@ -1378,6 +1378,90 @@ pub fn list_drafts(connection: &Connection) -> Result<Vec<Saved>, String> {
     drafts(connection)?.list().map_err(|why| why.to_string())
 }
 
+/// A message in the server's Drafts folder that this device holds no draft
+/// record for: written on another device, or by another client here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForeignDraft {
+    pub uid: u32,
+    pub subject: String,
+    /// Who it is addressed to, joined for the list row as [`Saved::to`] is.
+    pub to: String,
+    /// Its Date header in epoch milliseconds, 0 when it has none.
+    pub date_ms: i64,
+}
+
+/// The server's Drafts folder: the account's folder with the Drafts special
+/// use, among those that have been synced to this device.
+pub fn drafts_folder(folders: &[Folder]) -> Option<&Folder> {
+    folders
+        .iter()
+        .find(|folder| folder.special_use == Some(SpecialUse::Drafts))
+}
+
+/// The drafts in the server's Drafts folder that are not one of this
+/// device's records, newest first.
+///
+/// The mirror puts a copy of every local draft in that folder, so listing the
+/// folder beside the local drafts showed each one twice. What the folder adds
+/// is only what is not already here: another device's drafts. Mirrors of
+/// records deleted here, which the next sweep retires, are left out too.
+/// Opening one adopts it ([`edit_server_draft`]).
+pub fn foreign_drafts(
+    connection: &Connection,
+    folder: &Folder,
+) -> Result<Vec<ForeignDraft>, String> {
+    let path = connection.mailbox_path(folder);
+    if !path.join("cur").is_dir() {
+        return Ok(Vec::new());
+    }
+    let store = MaildirStore::open(&path).map_err(|why| why.to_string())?;
+    let drafts_store = drafts(connection)?;
+    // Deleted here, awaiting the sweep that retires the server copy: listing
+    // it would bring back the draft that was just discarded.
+    let retracting: std::collections::HashSet<String> = drafts_store
+        .pending_retractions()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    let mut foreign = Vec::new();
+    for (uid, flags) in store.state().map_err(|why| why.to_string())?.entries {
+        if flags.deleted {
+            continue;
+        }
+        let Some(raw) = store.raw(uid).map_err(|why| why.to_string())? else {
+            continue;
+        };
+        let Some(message) = Message::parse(&raw) else {
+            continue;
+        };
+        // A record that is there but unreadable still counts as ours: the
+        // local list shows it, and adopting the mirror would be refused.
+        let ours = message
+            .message_id
+            .as_deref()
+            .and_then(own_draft_id)
+            .is_some_and(|id| {
+                retracting.contains(id) || !matches!(drafts_store.peek(id), Ok(None))
+            });
+        if ours {
+            continue;
+        }
+        foreign.push(ForeignDraft {
+            uid,
+            subject: message.subject,
+            to: message
+                .to
+                .iter()
+                .map(|to| to.display().to_owned())
+                .collect::<Vec<_>>()
+                .join(", "),
+            date_ms: message.date.map_or(0, |date| date.timestamp_millis()),
+        });
+    }
+    foreign.sort_by_key(|draft| std::cmp::Reverse(draft.date_ms));
+    Ok(foreign)
+}
+
 /// Reopens one draft for editing.
 ///
 /// The stored From survives when it is still one of the account's
@@ -3851,6 +3935,68 @@ mod tests {
         assert!(matches!(NotAdded::from(why), NotAdded::NoServer(_)));
         let why = cosmic_pim_sync::setup::SetupError::Rejected("no".into());
         assert!(matches!(NotAdded::from(why), NotAdded::Failed(_)));
+    }
+
+    #[test]
+    fn the_drafts_view_lists_only_the_servers_drafts_this_device_lacks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let connection = offline_connection("acct", dir.path());
+        let folder = cosmic_pim_mail::folder::from_list_entry("Drafts", Some('/'), &[]);
+        assert_eq!(drafts_folder(std::slice::from_ref(&folder)), Some(&folder));
+
+        let mut draft = Draft::new(Mailbox {
+            name: None,
+            address: "me@acct.example".into(),
+        });
+        draft.subject = "Kept here".into();
+        let kept = save_draft(&connection, None, &draft).expect("save");
+        draft.subject = "Thrown away".into();
+        let discarded = save_draft(&connection, None, &draft).expect("save");
+        // A mirrored record leaves a tombstone when deleted, which is what
+        // keeps its server copy out of the list until the sweep retires it.
+        drafts(&connection)
+            .expect("drafts")
+            .mark_mirrored(
+                &discarded,
+                &format!("{discarded}.draft@acct.example"),
+                Some((1, 3)),
+                &draft,
+            )
+            .expect("mirrored");
+        delete_draft(&connection, &discarded).expect("delete");
+
+        let mut store = MaildirStore::open(connection.mailbox_path(&folder)).expect("maildir");
+        for (uid, message_id, subject) in [
+            (1, format!("{kept}.draft@acct.example"), "Kept here"),
+            (
+                2,
+                "written-on-a-phone@phone.example".to_owned(),
+                "From the phone",
+            ),
+            (3, format!("{discarded}.draft@acct.example"), "Thrown away"),
+        ] {
+            let raw = format!(
+                "Message-ID: <{message_id}>\r\nFrom: me@acct.example\r\nTo: ada@example.com\r\n\
+                 Subject: {subject}\r\nDate: Sun, 1 Nov 2026 10:00:00 +0000\r\n\r\nBody\r\n"
+            );
+            store
+                .upsert(&RemoteMessage {
+                    uid,
+                    flags: Flags::default(),
+                    raw: raw.into_bytes(),
+                    internal_date_ms: 0,
+                })
+                .expect("deliver");
+        }
+
+        let foreign = foreign_drafts(&connection, &folder).expect("list");
+        assert_eq!(
+            foreign
+                .iter()
+                .map(|draft| (draft.uid, draft.subject.as_str(), draft.to.as_str()))
+                .collect::<Vec<_>>(),
+            [(2, "From the phone", "ada@example.com")]
+        );
     }
 
     #[test]

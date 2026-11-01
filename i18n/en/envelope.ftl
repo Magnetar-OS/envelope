@@ -117,6 +117,9 @@ no-drafts = No saved drafts.
 draft-no-subject = (no subject)
 save-draft = Save
 drafts-sync-note = Synced to the server as you save.
+# In the Drafts view, above drafts that are in the server's Drafts folder but
+# not on this device — written elsewhere. Opening one brings it here.
+drafts-other-devices = From other devices
 search = Search
 no-results = Nothing matched.
 searching = Searching…

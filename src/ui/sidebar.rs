@@ -42,9 +42,11 @@ pub struct Sidebar<'a> {
     pub folders: &'a [Folder],
     pub selected_folder: Option<usize>,
     pub unread: &'a std::collections::HashMap<String, usize>,
-    /// Draft records. Listed above the server's folders because they are the
-    /// editable copies this device holds; the mirror keeps the server's
-    /// Drafts folder showing the same set for IMAP accounts.
+    /// Drafts: this device's records and the server's Drafts folder's others.
+    /// One entry, wherever there is a server Drafts folder, in that folder's
+    /// place; above the folders otherwise. The mirror keeps a copy of every
+    /// record in the server's folder, so a row for each listed every draft
+    /// twice.
     pub drafts: usize,
     pub showing_drafts: bool,
     /// Messages waiting to go out. Shown whenever there are any: a message the
@@ -172,7 +174,9 @@ impl<'a> Sidebar<'a> {
     }
 
     fn drafts_row(&self) -> Element<'a, Message> {
-        if self.drafts == 0 && !self.showing_drafts {
+        if crate::mail::drafts_folder(self.folders).is_some()
+            || (self.drafts == 0 && !self.showing_drafts)
+        {
             return widget::Space::new().height(Length::Fixed(0.0)).into();
         }
         Self::row(
@@ -243,14 +247,28 @@ impl<'a> Sidebar<'a> {
             let indent =
                 f32::from(u16::try_from(folder.depth().min(4)).unwrap_or(0) * spacing.space_s);
 
-            column = column.push(Self::row(
-                row_icon(folder),
-                crate::ui::folder_name(folder),
-                self.unread.get(&folder.wire_name).copied().unwrap_or(0),
-                indent,
-                showing_a_folder && self.selected_folder == Some(index),
-                Message::FolderSelected(index),
-            ));
+            // The server's Drafts folder is the drafts view's entry: it opens
+            // this device's drafts and the server's others together.
+            let row = if folder.special_use == Some(SpecialUse::Drafts) {
+                Self::row(
+                    row_icon(folder),
+                    crate::ui::folder_name(folder),
+                    self.drafts,
+                    indent,
+                    self.showing_drafts,
+                    Message::ShowDrafts,
+                )
+            } else {
+                Self::row(
+                    row_icon(folder),
+                    crate::ui::folder_name(folder),
+                    self.unread.get(&folder.wire_name).copied().unwrap_or(0),
+                    indent,
+                    showing_a_folder && self.selected_folder == Some(index),
+                    Message::FolderSelected(index),
+                )
+            };
+            column = column.push(row);
         }
 
         column.into()
