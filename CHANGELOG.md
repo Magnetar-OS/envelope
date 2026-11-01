@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Built on cosmic-pim 4, which reads mail with mail-parser 1.0 and stores it
+  with rusqlite 0.41. Well-formed mail reads as before.
+- A `multipart/alternative` whose HTML part carries a file name shows its
+  plain text, and offers the HTML as an attachment.
+
+### Fixed
+
+- A sender's address hidden behind a header that only looks like `From:`
+  — a stray colon or blank in the name — is no longer shown as the sender.
+  Envelope shows the `From` that DKIM and DMARC verify.
+- A `--boundary` written inside a line of the body no longer cuts the
+  message short at that point.
+- One kind of malformed multipart message crashed Envelope when opened. It
+  opens.
+- In damaged mail, the body text is shown as the body rather than offered
+  as a nameless attachment.
+
 ## [1.5.1] - 2026-11-01
 
 ### Changed
