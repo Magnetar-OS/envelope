@@ -16,7 +16,6 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - Built on cosmic-pim 4.1.
-
 - The sidebar has one Drafts entry. An IMAP account used to show two —
   this device's drafts above the folders and the server's Drafts folder
   among them — and the server's held a copy of every draft in the first, so
