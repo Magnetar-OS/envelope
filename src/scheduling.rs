@@ -115,9 +115,7 @@ pub async fn deliver_invitation(
     let reply = match sent {
         // A Slate from before `DeliverInvitation2`. It gets the payload the
         // way it knows, and checks it without a sender.
-        Err(zbus::Error::MethodError(error, ..))
-            if error.as_str() == "org.freedesktop.DBus.Error.UnknownMethod" =>
-        {
+        Err(zbus::Error::FDO(error)) if matches!(*error, zbus::fdo::Error::UnknownMethod(_)) => {
             conn.call_method(
                 Some(SLATE_NAME),
                 SLATE_PATH,

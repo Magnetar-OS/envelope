@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Built on zbus 6 and cosmic-pim 5, as libcosmic now is. Invitations still
+  reach a Slate from before DeliverInvitation2.
+
 ## [1.7.2] - 2026-11-01
 
 ### Changed
