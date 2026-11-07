@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Rebuilt against the current COSMIC libraries (libcosmic `dd108aa`).
 - Built on zbus 6 and cosmic-pim 5, as libcosmic now is. Invitations still
   reach a Slate from before DeliverInvitation2.
 
