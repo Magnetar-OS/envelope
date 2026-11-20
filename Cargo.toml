@@ -5,7 +5,7 @@ edition = "2024"
 license = "GPL-3.0-only"
 description = "Envelope — mail for the COSMIC desktop"
 repository = "https://github.com/Magnetar-OS/envelope"
-rust-version = "1.99.1"
+rust-version = "1.100.0"
 # Not on crates.io: this application links libcosmic and the Nib widget, both
 # of which are git dependencies, and crates.io refuses any crate that carries
 # one. Envelope ships as a distribution package, not as a crate.
@@ -16,18 +16,18 @@ publish = false
 # Registry versions: cosmic-pim 4 is on crates.io. `accounts` is shared with
 # Slate and Circle — one account, one password, one file. `mail` is the engine:
 # the message model, the maildir store, threading, and IMAP.
-cosmic-pim-accounts = "5.0"
+cosmic-pim-accounts = "6.0"
 # The contact store, read to complete recipients from Circle's address book.
 # Already in the graph through cosmic-pim-mail.
-cosmic-pim-core = "5.0"
-cosmic-pim-mail = "5.0"
+cosmic-pim-core = "6.0"
+cosmic-pim-mail = "6.0"
 # The dispatch layer: one sync pass per account, over whichever protocol the
 # account says. Envelope stopped running its own IMAP-only pass the day the
 # substrate could route all five.
-cosmic-pim-sync = "5.0"
+cosmic-pim-sync = "6.0"
 # The OAuth flow: sign-in in the user's own browser, and token renewal. What
 # turns "Gmail needs an app password" into "sign in with Google".
-cosmic-pim-auth = "5.0"
+cosmic-pim-auth = "6.0"
 
 # --- the text engine (MPL-2.0) ---
 # Nib began here, as the composer's quoting, wrapping and undo, and outgrew the
@@ -51,25 +51,25 @@ cosmic-pim-auth = "5.0"
 #
 # Nib's libcosmic is unpinned and from the same URL as ours, so cargo unifies
 # the two rather than building both.
-nib = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.2", package = "cosmic-ext-nib" }
+nib = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.3", package = "cosmic-ext-nib" }
 # HTML into a document, for the reader. Not a renderer of arbitrary HTML: the
 # schema is the allow-list, so a `<script>`, a `<style>` and an inline
 # `style=` are dropped because there is nowhere in the model to put them —
 # and an `<img>` becomes a node that draws a placeholder rather than a
 # request. See `ui::reader` for why that is the display-security position
 # rather than a retreat from it.
-nib-html = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.2", package = "cosmic-ext-nib-html" }
-nib-model = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.2", package = "cosmic-ext-nib-model" }
-nib-text = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.2", package = "cosmic-ext-nib-text" }
+nib-html = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.3", package = "cosmic-ext-nib-html" }
+nib-model = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.3", package = "cosmic-ext-nib-model" }
+nib-text = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.3", package = "cosmic-ext-nib-text" }
 
 i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
 i18n-embed-fl = "0.10"
-rust-embed = "8.13"
+rust-embed = "8.14"
 open = "5.4"
 tokio = { version = "1.54", features = ["full"] }
 # The bus: the iMIP hand-off to the calendar rides the same connection
 # libcosmic already owns for single-instance. Version pinned to libcosmic's.
-zbus = { version = "6.2", default-features = false, features = ["tokio"] }
+zbus = { version = "6.5", default-features = false, features = ["tokio"] }
 
 dirs = "7"
 chrono = { version = "0.4.45", features = ["clock", "serde"] }
@@ -81,7 +81,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 # `header_button`, a header-bar icon button that is not cut off at Spacious
 # density as libcosmic's `button::icon` is, and `search_field`. Consumed by
 # tag; it unifies with this crate's own libcosmic.
-cosmic-ext-widgets = { git = "https://github.com/Magnetar-OS/cosmic-ext-widgets.git", tag = "v1.3.1" }
+cosmic-ext-widgets = { git = "https://github.com/Magnetar-OS/cosmic-ext-widgets.git", tag = "v1.3.2" }
 
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic.git"
@@ -110,5 +110,5 @@ base64 = "0.23"
 # strings across and both copies are 1.2.1. Patching the registry crates to
 # the same git tag leaves one copy, so moving Nib's tag moves both.
 [patch.crates-io]
-cosmic-ext-nib-model = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.2" }
-cosmic-ext-nib-text = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.2" }
+cosmic-ext-nib-model = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.3" }
+cosmic-ext-nib-text = { git = "https://github.com/Magnetar-OS/cosmic-ext-nib.git", tag = "v1.2.3" }

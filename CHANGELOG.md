@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Built with Rust 1.100.0, now the minimum supported version (was 1.99.1).
+- Built on cosmic-pim 6, Nib 1.2.3 and zbus 6.5.
+
 ## [1.7.3] - 2026-11-07
 
 ### Changed
